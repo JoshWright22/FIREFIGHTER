@@ -181,7 +181,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
 		return
 	}
-	if req.Running && caller == 0 {
+	if req.Running && caller <= 0 {
 		fail(w, http.StatusForbidden, "couldn't tell which process is asking; adopt from a normal terminal")
 		return
 	}
@@ -248,7 +248,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		t.State, t.Started = "running", now
 	}
 	j := newJob(&t)
-	j.ownerAgent = owner
+	j.ownerAgent, j.ownerCreated = owner, sysinfo.Created(owner)
 	if req.Running && req.Adopt {
 		// Work started outside the queue and brought in: priced and placed like any adopted
 		// process (1.5x, spot, preempted first), so start-then-adopt never beats queueing.
@@ -391,9 +391,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	caller := callerPID(r)
-	callerAgent := 0
+	callerAgent, callerAgentAt := 0, int64(0)
 	if caller > 1 {
 		callerAgent = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
+		callerAgentAt = sysinfo.Created(callerAgent)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -408,7 +409,9 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	// the agent session that submitted it, or an agent in the same project. Other agents need
 	// --force. A guard against agents touching each other's work by accident, not a sandbox.
 	if verb == "cancel" || verb == "bid" || verb == "extend" || verb == "done" {
-		if callerAgent != 0 && callerAgent != j.ownerAgent && cleanText(a.Project, 100) != j.Project && !a.Force {
+		sameSession := callerAgent != 0 && callerAgent == j.ownerAgent && callerAgentAt == j.ownerCreated
+		human := caller > 1 && callerAgent == 0 // identified, with no agent above it
+		if !human && !sameSession && cleanText(a.Project, 100) != j.Project && !a.Force {
 			fail(w, http.StatusForbidden, fmt.Sprintf("job %s belongs to another agent session (project %s); add --force if you mean it", id, j.Project))
 			return
 		}
@@ -426,6 +429,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		starter := caller
 		if starter < 0 { // the connection table isn't available on this system
 			starter = j.ClientPID
+		}
+		if j.ClientPID > 1 && starter != j.ClientPID {
+			fail(w, http.StatusForbidden, "only the client that queued this job can start it")
+			return
 		}
 		if starter <= 1 || !sysinfo.DescendantOf(a.PID, starter) {
 			// The job is a process its client started. Anything else (a game, a browser, another
@@ -741,6 +748,7 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 	if caller := callerPID(r); caller > 1 {
 		planOwner = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
 	}
+	planOwnerAt := sysinfo.Created(planOwner)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	mine := 0
@@ -754,17 +762,19 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID, p.Added = NewID(), time.Now()
-	p.owner = planOwner
+	p.owner, p.ownerAt = planOwner, planOwnerAt
 	d.st.Plans = append(d.st.Plans, &p)
 	reply(w, p)
 }
 
 func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 	caller := callerPID(r)
-	agent := 0
+	agent, agentAt := 0, int64(0)
 	if caller > 1 {
 		agent = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
+		agentAt = sysinfo.Created(agent)
 	}
+	human := caller > 1 && agent == 0
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id := r.PathValue("id")
@@ -772,7 +782,7 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 	for _, p := range d.st.Plans {
 		// The human removes any plan; an agent removes its own session's (or, after a restart
 		// forgot who added it, its project's).
-		mine := agent == 0 || p.owner == agent || (p.owner == 0 && p.Project == id)
+		mine := human || (p.owner != 0 && p.owner == agent && p.ownerAt == agentAt) || (p.owner == 0 && p.Project == id)
 		if (p.ID == id || p.Project == id) && mine {
 			continue
 		}
@@ -828,7 +838,7 @@ func cleanText(s string, max int) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 {
+		if sysinfo.Printable(string(r)) == "" {
 			r = ' '
 		}
 		if n >= max {
@@ -846,7 +856,7 @@ func cleanText(s string, max int) string {
 // available here (callers fall back); 0: no such connection (the request is refused).
 func callerPID(r *http.Request) int {
 	host, port, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || (host != "127.0.0.1" && host != "::1") {
+	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() { // all of 127/8 and ::1
 		return 0
 	}
 	local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)

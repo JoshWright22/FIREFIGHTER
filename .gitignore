@@ -3,3 +3,4 @@
 /firefighter.exe
 *.test
 *.out
+node_modules/

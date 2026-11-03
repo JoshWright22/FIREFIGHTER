@@ -92,4 +92,4 @@ jobs:
       - working-directory: integrations/vscode
         run: |
           node --check extension.js
-          npx --yes @vscode/vsce@4.1.0 package --no-dependencies -o /tmp/firefighter-vscode.vsix
+          npm ci --prefix tools --ignore-scripts && tools/node_modules/.bin/vsce package --no-dependencies -o /tmp/firefighter-vscode.vsix

@@ -1,0 +1,8 @@
+{
+  "name": "firefighter-vscode-build-tools",
+  "private": true,
+  "description": "Pinned packaging tools for the VS Code extension (npm ci uses the lockfile).",
+  "devDependencies": {
+    "@vscode/vsce": "4.1.0"
+  }
+}

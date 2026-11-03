@@ -304,12 +304,17 @@ tests both one-command installers.
   every agent. It runs as you, binds only 127.0.0.1, and
   keeps its folder private (0700/0600 on Unix).
 - It only acts on what a job's own client started (the caller is identified by its exact TCP
-  connection, not by what it claims), on containers labeled for that job, and on processes adopted
-  by you or, for its own session's work only, by an agent. Ancestry checks ignore reused pids.
+  connection, not by what it claims; only that client can start the job), on containers labeled
+  for that job, and on processes adopted by you or, for its own session's work only, by an agent.
+  Ancestry and ownership checks ignore reused pids. "You" means a caller with no agent CLI above
+  it, so an agent that detaches a helper process, or one hosted inside an IDE (Cline, Copilot),
+  is treated as you: these are guardrails against accidents, not a boundary against a hostile agent.
 - `firefighter_submit` runs a command as you, outside an agent's own sandbox; its MCP annotations
   say so, so hosts can ask for approval as they do for a shell.
-- Releases are built by GitHub Actions with SHA-pinned actions and least-privilege tokens, and carry
-  signed build provenance: `gh attestation verify firefighter_windows_amd64.zip --repo JoshWright22/FIREFIGHTER`.
+- Releases are built by GitHub Actions with SHA-pinned actions, the Go toolchain from go.mod, a
+  locked npm toolchain for the extension, and least-privilege tokens, and carry signed build
+  provenance. The installers check it automatically when the GitHub CLI is installed and signed in;
+  by hand: `gh attestation verify firefighter_windows_amd64.zip --repo JoshWright22/FIREFIGHTER`.
 - Not a sandbox: an agent with your shell can do anything you can. firefighter makes the polite
   path the cheap one and catches the careless one; it doesn't contain a hostile one.
 - Windows: shared build servers a job starts (MSBuild nodes, VBCSCompiler) end with the job, because

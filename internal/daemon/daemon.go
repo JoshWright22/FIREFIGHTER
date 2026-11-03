@@ -28,36 +28,37 @@ const tick = 500 * time.Millisecond
 
 type job struct {
 	*policy.Ticket
-	rootCreated int64
-	pids        map[int]int64  // member pid -> start time (pid + start time = one process, for good)
-	applied     map[int]string // pid -> cpu set applied
-	cpuPrev     float64
-	cpuNow      float64 // CPUs in use
-	ramGB       float64
-	vramGB      float64
-	gpuUtil     float64
-	peakVRAM    float64
-	peakRAM     float64
-	charged     float64
-	overrun     bool
-	granted     time.Time
-	pausedAt    time.Time // cooperative pause flag set
-	pausedTotal time.Duration
-	suspended   time.Time
-	checkpoint  time.Time // checkpoint-and-exit requested
-	termAt      time.Time
-	killedAt    time.Time
-	reason      string
-	container   string
-	receipt     *Receipt
-	extended    float64
-	price       float64   // locked at grant: bid price x congestion x surcharge
-	adopted     bool      // auto-adopted: heavy work an agent started outside firefighter
-	backfilled  bool      // started ahead of a GPU head waiting on VRAM: can't extend its lease
-	device      int       // GPU index the job was placed on (-1: any/unknown)
-	engine      string    // container engine of j.container: docker | podman
-	ownerAgent  int       // pid of the agent session that submitted it (0: a human)
-	ackBusy     time.Time // acked the pause but still computing on the GPU since then
+	rootCreated  int64
+	pids         map[int]int64  // member pid -> start time (pid + start time = one process, for good)
+	applied      map[int]string // pid -> cpu set applied
+	cpuPrev      float64
+	cpuNow       float64 // CPUs in use
+	ramGB        float64
+	vramGB       float64
+	gpuUtil      float64
+	peakVRAM     float64
+	peakRAM      float64
+	charged      float64
+	overrun      bool
+	granted      time.Time
+	pausedAt     time.Time // cooperative pause flag set
+	pausedTotal  time.Duration
+	suspended    time.Time
+	checkpoint   time.Time // checkpoint-and-exit requested
+	termAt       time.Time
+	killedAt     time.Time
+	reason       string
+	container    string
+	receipt      *Receipt
+	extended     float64
+	price        float64   // locked at grant: bid price x congestion x surcharge
+	adopted      bool      // auto-adopted: heavy work an agent started outside firefighter
+	backfilled   bool      // started ahead of a GPU head waiting on VRAM: can't extend its lease
+	device       int       // GPU index the job was placed on (-1: any/unknown)
+	engine       string    // container engine of j.container: docker | podman
+	ownerAgent   int       // pid of the agent session that submitted it (0: a human)
+	ownerCreated int64     // its start time (a reused pid isn't the same session)
+	ackBusy      time.Time // acked the pause but still computing on the GPU since then
 }
 
 func newJob(t *policy.Ticket) *job {

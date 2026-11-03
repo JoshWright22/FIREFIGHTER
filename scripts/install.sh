@@ -40,6 +40,12 @@ else
   want=$(grep " $name\$" "$tmp/checksums.txt" | cut -d' ' -f1)
   if command -v sha256sum >/dev/null; then got=$(sha256sum "$tmp/$name" | cut -d' ' -f1); else got=$(shasum -a 256 "$tmp/$name" | cut -d' ' -f1); fi
   [ "$want" = "$got" ] || { echo "checksum mismatch for $name" >&2; exit 1; }
+  # The checksum only proves the download wasn't corrupted. With the GitHub CLI signed in, also
+  # check the release's signed build provenance (it can't be forged by editing the release).
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    gh attestation verify "$tmp/$name" --repo "$REPO" >/dev/null || { echo "provenance check failed for $name" >&2; exit 1; }
+    echo "verified signed build provenance"
+  fi
   tar -xzf "$tmp/$name" -C "$tmp"
   put "$tmp/firefighter"
 fi

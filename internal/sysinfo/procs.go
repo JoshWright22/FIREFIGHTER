@@ -50,6 +50,7 @@ func (s *Scanner) Scan(minCPU, minRAM float64) []Proc {
 		}
 		if cpu >= minCPU || ram >= minRAM {
 			n, _ := p.Name()
+			n = printable(n)
 			out = append(out, Proc{PID: int(p.Pid), Name: strings.ToLower(n), CPU: cpu, RAMGB: ram})
 		}
 	}

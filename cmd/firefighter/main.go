@@ -891,6 +891,9 @@ func install(args []string) error {
 }
 
 func uninstall(args []string) error {
+	if sysinfo.Elevated() && os.Getenv("FIREFIGHTER_ALLOW_ELEVATED") != "1" {
+		return errors.New("run uninstall from a normal (not administrator/root) terminal: it edits your own agent configs")
+	}
 	if len(args) > 0 {
 		return fmt.Errorf("uninstall takes no arguments (got %q)", args[0])
 	}

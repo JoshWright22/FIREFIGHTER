@@ -444,10 +444,20 @@ func Name(pid int) string {
 	return printable(strings.ToLower(n))
 }
 
+// invisible: control characters, line/paragraph separators, and the zero-width and bidi format
+// characters that can make text read differently than it is.
+func invisible(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 ||
+		(r >= 0x200b && r <= 0x200f) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2060 && r <= 0x2069) || r == 0xfeff
+}
+
+// Printable is printable for other packages.
+func Printable(s string) string { return printable(s) }
+
 // printable drops control characters: a process may name itself with a newline and a fake line.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 {
+		if invisible(r) {
 			return -1
 		}
 		return r

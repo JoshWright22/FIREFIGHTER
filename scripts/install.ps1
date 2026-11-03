@@ -45,6 +45,15 @@ if ($env:FIREFIGHTER_LOCAL_BINARY) {
         $want = ((Get-Content "$tmp\checksums.txt") | Where-Object { $_ -match " $([regex]::Escape($name))$" }).Split(' ')[0]
         $got = (Get-FileHash "$tmp\$name" -Algorithm SHA256).Hash.ToLower()
         if ($want -ne $got) { throw "checksum mismatch for $name" }
+        # With the GitHub CLI signed in, also check the release's signed build provenance.
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+            $null = & gh auth status 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $null = & gh attestation verify "$tmp\$name" --repo $repo 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "provenance check failed for $name" }
+                Write-Host 'verified signed build provenance'
+            }
+        }
         Expand-Archive "$tmp\$name" -DestinationPath $tmp -Force
         Install-Exe "$tmp\firefighter.exe"
     } finally {

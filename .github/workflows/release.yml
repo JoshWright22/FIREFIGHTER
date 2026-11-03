@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: stable
+          go-version-file: go.mod # the toolchain go.mod names, not whatever "stable" is today
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: "v2.19.0" # exact: this job can publish and sign
@@ -48,7 +48,8 @@ jobs:
         working-directory: integrations/vscode
         run: |
           npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
-          npx --yes @vscode/vsce@4.1.0 package --no-dependencies -o firefighter-vscode.vsix
+          npm ci --prefix tools --ignore-scripts   # vsce and its dependencies from a lockfile
+          tools/node_modules/.bin/vsce package --no-dependencies -o firefighter-vscode.vsix
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vsix

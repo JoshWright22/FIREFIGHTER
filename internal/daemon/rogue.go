@@ -73,7 +73,7 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 		delete(d.rogueSeen, pid)
 		project := "unmanaged"
 		if cwd := sysinfo.Cwd(pid); cwd != "" {
-			project = projectOf(cwd)
+			project = cleanText(projectOf(cwd), 100)
 		}
 		u := snap.ProcGPU[pid]
 		out = append(out, rogue{proc: p, agent: agent, project: project, gpu: u.Util-u.Util3D >= c.Reserve.ForeignGPUPct,
