@@ -659,10 +659,13 @@ func TestAPIRejectsBadPIDs(t *testing.T) {
 
 func TestOnlyOneDaemon(t *testing.T) {
 	e := newEnv(t, nil)
-	e.status() // starts one
-	out, code := e.ff("daemon")
-	if code == 0 || !strings.Contains(out, "already running") {
-		t.Fatalf("a second daemon must refuse to start: %d\n%s", code, out)
+	before := e.status()["time"]
+	out, code := e.ff("daemon") // returns at once (exit 0, so service managers don't crash-loop)
+	if code != 0 || !strings.Contains(out, "already running") {
+		t.Fatalf("a second daemon must step aside quietly: %d\n%s", code, out)
+	}
+	if e.status()["time"] == before {
+		t.Fatal("the first daemon must still be serving")
 	}
 }
 
