@@ -145,7 +145,8 @@ func Defaults() Config {
 	c.Harvester.IdleSeconds = 180
 	c.Guard.AutoAdopt = true
 	// Agent CLIs only: IDEs (Cursor, Windsurf, VS Code) also host the human's own terminals.
-	c.Guard.AgentParents = []string{"claude", "codex", "gemini", "aider", "goose", "opencode", "cline"}
+	c.Guard.AgentParents = []string{"claude", "codex", "gemini", "aider", "goose", "opencode", "cline", "grok", "kimi",
+		"kiro-cli", "devin", "copilot", "amp", "qwen", "crush", "droid", "agy", "muse-bin", "fx", "pi", "cursor-agent"}
 	c.Guard.HeavyCPUs = 2
 	c.Guard.HeavyRAMGB = 4
 	c.Guard.HeavySeconds = 60

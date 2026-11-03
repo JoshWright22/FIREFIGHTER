@@ -51,6 +51,11 @@ func Install(exe string) []Step {
 	for _, r := range registerMCP(exe) {
 		steps = append(steps, r)
 	}
+	for _, a := range agents() {
+		if a.installed() && a.mcp != nil && os.Getenv("FIREFIGHTER_NO_CLI_REGISTER") == "" {
+			add("MCP -> "+a.name, a.mcp(exe, true))
+		}
+	}
 	return steps
 }
 
@@ -58,10 +63,25 @@ func Uninstall() []Step {
 	var steps []Step
 	add := func(what string, err error) { steps = append(steps, Step{what, err}) }
 	add("remove logon start", removeAutostart())
-	for _, f := range instructionFiles() {
+	for _, f := range allInstructionFiles() {
+		if _, err := os.Stat(f); err != nil {
+			continue
+		}
 		add("remove agent rules from "+f, upsertBlock(f, ""))
+		if filepath.Base(f) == "firefighter.md" { // a rules file of its own: gone entirely
+			if b, err := os.ReadFile(f); err == nil && strings.TrimSpace(string(b)) == "" {
+				_ = os.Remove(f)
+			}
+		}
 	}
 	steps = append(steps, unregisterMCP()...)
+	for _, a := range agents() {
+		if a.mcp != nil {
+			if err := a.mcp("", false); err != nil {
+				add("MCP <- "+a.name, err)
+			}
+		}
+	}
 	return steps
 }
 
@@ -94,8 +114,38 @@ func instructionFiles() []string {
 			out = append(out, filepath.Join(c.dir, c.file))
 		}
 	}
+	seen := map[string]bool{}
+	for _, f := range out {
+		seen[f] = true
+	}
+	for _, a := range agents() {
+		for _, f := range a.rules {
+			if a.installed() && !seen[f] {
+				seen[f] = true
+				out = append(out, f)
+			}
+		}
+	}
 	if len(out) == 0 { // no agent CLI yet: still teach Claude Code, the most common
 		out = append(out, filepath.Join(claudeDir(), "CLAUDE.md"))
+	}
+	return out
+}
+
+// allInstructionFiles is every file setup may have written, installed or not (for uninstall).
+func allInstructionFiles() []string {
+	out := []string{filepath.Join(claudeDir(), "CLAUDE.md"), filepath.Join(codexDir(), "AGENTS.md"), filepath.Join(home(), ".gemini", "GEMINI.md")}
+	seen := map[string]bool{}
+	for _, f := range out {
+		seen[f] = true
+	}
+	for _, a := range agents() {
+		for _, f := range a.rules {
+			if !seen[f] {
+				seen[f] = true
+				out = append(out, f)
+			}
+		}
 	}
 	return out
 }
@@ -202,8 +252,19 @@ func claudeJSON() string {
 	return filepath.Join(home(), ".claude.json")
 }
 
-// jsonServers adds or removes {"firefighter": {"command": exe, "args": ["mcp"]}} under key.
+// jsonServers adds or removes {"firefighter": {"type": "stdio", "command": exe, "args": ["mcp"]}}
+// under key.
 func jsonServers(path, key, exe string, add bool) error {
+	var e map[string]any
+	if add {
+		e = map[string]any{"type": "stdio", "command": exe, "args": []string{"mcp"}}
+	}
+	return jsonEntry(path, key, e, add, nil)
+}
+
+// jsonEntry adds (entry) or removes the "firefighter" server under key in a JSON config. A new or
+// empty file starts from fresh (fields some agents require, like Muse's schema_version).
+func jsonEntry(path, key string, entry map[string]any, add bool, fresh map[string]any) error {
 	m := map[string]any{}
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -212,9 +273,13 @@ func jsonServers(path, key, exe string, add bool) error {
 	if os.IsNotExist(err) && !add {
 		return nil
 	}
-	if len(b) > 0 {
+	if len(strings.TrimSpace(string(b))) > 0 {
 		if err := json.Unmarshal(b, &m); err != nil {
-			return fmt.Errorf("%s isn't valid JSON, left alone: %w", path, err)
+			return fmt.Errorf("%s isn't valid JSON (comments?), left alone: %w", path, err)
+		}
+	} else if add {
+		for k, v := range fresh {
+			m[k] = v
 		}
 	}
 	servers, _ := m[key].(map[string]any)
@@ -222,7 +287,7 @@ func jsonServers(path, key, exe string, add bool) error {
 		servers = map[string]any{}
 	}
 	if add {
-		servers["firefighter"] = map[string]any{"type": "stdio", "command": exe, "args": []string{"mcp"}}
+		servers["firefighter"] = entry
 	} else {
 		if _, ok := servers["firefighter"]; !ok {
 			return nil
@@ -242,7 +307,11 @@ var anyHeader = regexp.MustCompile(`^[ \t]*\[`)
 // whole lines only, then parses the result and refuses to write anything that isn't valid TOML
 // with exactly the intended change.
 func codexTOML(exe string, add bool) error {
-	path := filepath.Join(codexDir(), "config.toml")
+	return tomlServers(filepath.Join(codexDir(), "config.toml"), exe, add)
+}
+
+// tomlServers edits [mcp_servers.firefighter] in a Codex-style config.toml (Codex, Grok Build).
+func tomlServers(path, exe string, add bool) error {
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err

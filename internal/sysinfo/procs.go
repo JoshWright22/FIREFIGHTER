@@ -66,9 +66,10 @@ func AgentAncestor(pid int, names []string) string {
 			return ""
 		}
 		n, _ := p.Name()
-		n = strings.ToLower(n)
+		n = strings.TrimSuffix(strings.ToLower(n), ".exe")
 		for _, a := range names {
-			if strings.HasPrefix(n, strings.ToLower(a)) {
+			// "claude" matches claude and claude-1.2, not claudette; "pi" never matches pip.
+			if a = strings.ToLower(a); n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
 				return n
 			}
 		}
