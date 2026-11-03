@@ -46,9 +46,11 @@ crawl, your game stutters, audio crackles, and nobody knows who's using what or 
 - ⏸️ **Polite preemption.** The ladder goes: shrink the job's CPU set → cooperative pause at a step
   boundary → bounded suspend → checkpoint-and-exit with automatic requeue → kill, but only when RAM
   is critical.
-- 🔌 **Set and forget.** `setup` starts the guard at logon. It also registers the MCP server with
-  Claude Code, Codex, Gemini CLI and Cursor and adds a short rule block to their global instructions,
-  so every new session (including T3 Code threads) already knows the protocol.
+- 🔌 **Set and forget.** `setup` starts the guard at logon and registers the MCP server with Claude
+  Code, Codex, Gemini CLI and Cursor. For Claude Code, Codex and Gemini it also adds a short rule
+  block to their global instructions, so every new session (including T3 Code threads) already
+  knows the protocol. Cursor has no global rules file, so it gets the MCP server, whose own
+  instructions carry the rules.
 
 ## Install (one command)
 
@@ -65,9 +67,27 @@ curl -fsSL https://raw.githubusercontent.com/JoshWright22/firefighter/main/scrip
 ```
 
 The installer checks the release checksum, puts one ~8 MB binary on your PATH, and runs `firefighter setup`.
-Autostart uses Task Scheduler on Windows, launchd on macOS and a systemd user unit on Linux. Undo
-everything with `firefighter uninstall`. With Go installed:
+With Go 1.23+:
 `go install github.com/JoshWright22/firefighter/cmd/firefighter@latest && firefighter setup`.
+
+**Requirements:** Windows 10/11, macOS 12+ or Linux, on x64 or arm64. No admin rights needed. For
+GPU numbers you need `nvidia-smi` (NVIDIA driver) or `rocm-smi` (AMD). On Linux, idle detection
+uses GNOME, KDE or another freedesktop ScreenSaver desktop, or `xprintidle`; headless machines
+count you as "present".
+
+**What install changes** (each config file gets a one-time `*.firefighter.bak` backup first):
+
+| What | Where |
+|---|---|
+| Binary | `%LOCALAPPDATA%\Programs\firefighter` (added to your user PATH) or `~/.local/bin` (added to your shell rc) |
+| Autostart | Task Scheduler task `firefighter` (falls back to the HKCU Run key) · `~/Library/LaunchAgents/dev.firefighter.plist` · `~/.config/systemd/user/firefighter.service` (falls back to XDG autostart) |
+| Agent rules | a marked block in `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` |
+| MCP server | `claude mcp add` (or `~/.claude.json`), `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.cursor/mcp.json` |
+| State | `%LOCALAPPDATA%\firefighter`, `~/Library/Application Support/firefighter`, `~/.local/state/firefighter` (or `FIREFIGHTER_HOME`) |
+
+**Verify:** open a new terminal and run `firefighter status`. **Remove:** `firefighter uninstall` undoes
+autostart, the rule blocks and the MCP entries. Then delete the binary and, if you want to forget
+budgets and history, the state folder.
 
 ## Use
 
@@ -75,7 +95,7 @@ everything with `firefighter uninstall`. With Go installed:
 firefighter run --gpu --minutes 40 --vram 10 --name "nanoGPT train" -- python train.py
 firefighter run --minutes 5 -- npm run build                          # long CPU work
 firefighter run --gpu --minutes 20 -- docker run --gpus all my/eval    # containers are governed too
-firefighter run --detach --gpu --minutes 90 -- python sweep.py         # returns an id; then: firefighter wait <id>
+id=$(firefighter run --detach --gpu --minutes 90 -- python sweep.py) && firefighter wait "$id"
 firefighter quote --gpu --minutes 30 --vram 8                          # the market, no side effects
 firefighter bid <id> 7                                                 # re-bid a waiting job
 firefighter status                                                     # who's on stage until when, the queue, budgets
@@ -98,19 +118,20 @@ docker all just work), passes its output and exit code through, and ends with a 
 
 ## How it decides (and how to change it)
 
-Zero config gives you the researched defaults below. You or your agents can swap each part by name,
-live, with `firefighter config set <key> <value>` or the `firefighter_config` MCP tool.
+Zero config gives you the researched defaults below. You can swap each part by name, live, with
+`firefighter config set <key> <value>`. Agents can read the policy through the `firefighter_config`
+MCP tool, and can change it only if you set `guard.agents_can_configure true`.
 
 | Stage | Default | What it does | Swap with |
 |---|---|---|---|
-| **You** | dynamic reserve | Four states: away, present, active and game. The reserve grows within one 0.5 s tick and gives back 1 CPU every 15 s, RAM after 60 s and VRAM after 120 s. Jobs are pinned to the CPUs outside your reserve, after PerfIso's idle-core buffer. | `reserve.<state>.cpus / ram_pct / vram_gb / pause_gpu`, `reserve.exclusive_apps` |
+| **You** | dynamic reserve | Four states: away, present, active and game. The reserve grows within one 0.5 s tick and gives back 1 CPU every 15 s, RAM after 60 s and VRAM after 120 s. Jobs are pinned to the CPUs outside your reserve (Windows and Linux; macOS uses background QoS instead). A state with `pause_gpu` (game, by default) pauses GPU jobs and starts no new ones. | `reserve.<state>.cpus / ram_pct / vram_gb / pause_gpu`, `reserve.exclusive_apps` |
 | **Order** | `las` | The project with the least use goes first, with a 12 h half-life (Tiresias, Slurm fair share). A 45-minute wait cap overrides it. | `order.policy = las \| stride \| lottery \| drf \| fifo \| srpt` |
-| **Market** | `priced` | Posted congestion price (×0.5 idle up to ×4 contended), locked when the job is granted. A bid costs `bid/5` and buys at most 30 min of lead. | `pricing.policy = priced \| free`, `pricing.max_lead_minutes` |
-| **Budget** | `karma` | Steady refill of 240 machine-minutes a day, banked up to 2 days (Karma, OSDI '23). An empty budget drops the project to the spot band. | `budget.policy = karma \| daily \| none`, `budget.projects.<name>`, `budget.weights.<name>` |
+| **Market** | `priced` | Price per machine-minute = bid/5 × congestion (×0.5 when idle up to ×4 when contended) × 1.25 for projects whose jobs habitually overrun their estimates. It's locked when the job is granted, and overruns pay ×2 on top. Under `las` and `stride` a bid buys at most 30 min of queue lead; under `lottery` it buys tickets; under `drf`, `fifo` and `srpt` it only changes the price. | `pricing.policy = priced \| free`, `pricing.max_lead_minutes` |
+| **Budget** | `karma` | Steady refill of 240 machine-minutes a day, banked up to 2 days (Karma, OSDI '23). While a project's budget is empty, its waiting jobs sit in the spot band. | `budget.policy = karma \| daily \| none`, `budget.daily_minutes`, `budget.bank_days`, `budget.projects.<name>`, `budget.weights.<name>` |
 | **Charge** | DRF | One machine-minute is all of the GPU, VRAM, RAM or CPUs for one minute (Dominant Resource Fairness). Idle VRAM is charged ×3 (ESX idle tax), overruns ×2, and chronic under-estimates ×1.25. | built in |
-| **Admission** | learned peaks | A job's need is the larger of its declared size and 1.2 × its learned peak, checked against what's left after your reserve. Short jobs may backfill behind a head that's waiting on VRAM. | `gpu.max_jobs`, `gpu.pack_below_util`, `gpu.vram_margin` |
-| **Preemption** | ladder | CPU set → pause file → 60 s suspend → checkpoint file with 60 s grace, then requeue → kill when RAM is critical. Spot jobs and jobs past their lease go first. | `ladder.*` |
-| **Guard** | on | Adopts heavy processes started by agent CLIs outside firefighter, and caps each project at 20 open jobs. | `guard.*` |
+| **Admission** | learned peaks | A job's need is the larger of its declared size and 1.2 × its learned peak, checked against what's left on the freest single GPU after your reserve. Short jobs (≤ 10 min) may backfill behind a head that's waiting on VRAM. With no discrete GPU (Apple silicon), VRAM needs count as RAM. | `gpu.max_jobs`, `gpu.pack_below_util`, `gpu.vram_margin`, `gpu.default_vram_gb` |
+| **Preemption** | ladder | See [the ladder](#the-preemption-ladder) below. | `ladder.*` |
+| **Guard** | on | Heavy processes an agent CLI (Claude Code, Codex, Gemini, Aider, Goose, OpenCode, Cline) starts outside firefighter get adopted: spot band, idle priority, charged. IDE terminals are never adopted. Each project is capped at 20 open jobs. Agents can read the policy but can't change it unless you allow it. | `guard.auto_adopt`, `guard.agent_parents`, `guard.heavy_*`, `guard.agents_can_configure` |
 
 **Presets:** `balanced` (default), `gamer`, `throughput`, `fair` → `firefighter config set preset gamer`.
 
@@ -122,23 +143,59 @@ live, with `firefighter config set <key> <value>` or the `firefighter_config` MC
 | 3 · afterparty | over budget, `--spot`, past the lease, or adopted | anything |
 | 4 · harvester | optional idle-GPU program (Salad, BOINC, Folding@home) | anything |
 
-### Long GPU jobs: pause politely
+### The preemption ladder
 
-Windows has no way to checkpoint a CUDA process from outside the job, so the job itself has to
-cooperate. `firefighter protocol` prints a 15-line helper: call it once per step, and the job
-pauses while you game and checkpoints and exits (code 75) when you need the memory. firefighter then
-puts it back in line.
+Steps run in order, and each one fires only if the trigger is still there:
+
+1. **CPU set.** Jobs always live outside your CPU reserve (Windows, Linux).
+2. **Cooperative pause** (GPU jobs, while your state holds the GPU): firefighter creates the file
+   at `FIREFIGHTER_PAUSE_FILE`. A job that honors it creates `FIREFIGHTER_PAUSED_FILE` and sleeps
+   until the pause file is gone.
+3. **Suspend:** if the job hasn't acknowledged within 10 s, it's suspended for at most 60 s.
+   `--evict never` jobs stay suspended until you're done.
+4. **Checkpoint:** after that, or when RAM or VRAM stays under your reserve for 20 s, or when a
+   spot job has run its 10-minute minimum and an in-budget job is waiting, firefighter creates
+   `FIREFIGHTER_CHECKPOINT_FILE`. The job gets 60 s to save and exit. On Unix it then gets a
+   SIGTERM, and 10 s later it's killed. A job that exits with 75, or exits at all after the
+   request, is put back in line under the same id. `--evict force` jobs are killed at once.
+5. **Kill:** if available RAM drops under 3%, the highest-band, heaviest job is killed at once,
+   even if another job is already in its grace period.
+
+Victims are picked from the highest band first (spot, jobs past their lease, adopted processes),
+then the heaviest. Jobs marked `never` go last. CUDA can't be checkpointed from outside on Windows
+or macOS, so the job has to cooperate. `firefighter protocol` prints a short Python helper you
+call once per step.
 
 ## Per-OS support
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Your input | GetLastInputInfo | IOHIDSystem idle time | GNOME idle monitor, xprintidle |
-| Games and fullscreen | fullscreen foreground window, 3D-engine use per process, exclusive apps | exclusive apps | exclusive apps |
+| Your input | GetLastInputInfo | IOHIDSystem idle time | GNOME/Mutter, freedesktop ScreenSaver (KDE, Wayland), xprintidle |
+| Games and fullscreen | fullscreen foreground window (not merely maximized), 3D-engine use per process, exclusive apps | exclusive apps | exclusive apps; non-job processes holding over 1 GB VRAM count as GPU load |
 | GPU / VRAM | nvidia-smi + WDDM per-process GPU counters | unified memory | nvidia-smi, rocm-smi |
-| Job priority | idle CPU, idle GPU scheduling, very low memory and I/O priority | nice 19 + background QoS | nice 19, SCHED_IDLE, idle I/O |
+| Job priority | idle CPU, idle GPU scheduling, very low memory and I/O priority | nice 19 + background QoS | nice 19, SCHED_IDLE, idle I/O class, on every thread |
 | CPU reserve | affinity | QoS | affinity |
 | No orphans | Job Object, kill on close | process group | process group |
+
+## CLI reference
+
+| Command | What it does |
+|---|---|
+| `run [flags] -- <cmd...>` | Wait for a turn, run, receipt. Flags: `--gpu`, `--minutes N` (lease; 30 if omitted), `--vram GB`, `--ram GB`, `--bid 1-10` (default 5), `--name`, `--project` (default: the git repo or folder), `--evict never\|graceful\|force`, `--spot`, `--detach` (prints the id), `--quiet` |
+| `wait <id> [--timeout s]` | Block until the job ends (following requeues); prints the receipt and log tail. Exits with the job's exit code, or 124 on timeout |
+| `quote [--gpu] --minutes N [--vram GB] [--ram GB] [--json]` | The market, no side effects |
+| `bid <id> <1-10>` · `extend <id> <minutes>` · `cancel <id>` | Change a job |
+| `status [--json]` | The human's state and reserve, the market, running and waiting jobs, budgets, plans |
+| `adopt <pid> [--gpu] [--name] [--minutes]` | Govern a process that's already running |
+| `plan "<what>" --when ... --minutes N [--gpu %] [--vram GB] [--ram GB]` · `plan --done [--project p]` | Announce or remove planned work |
+| `config [show \| set <key> <value> \| unset <key> \| presets \| path]` | Every key is in `config show` |
+| `protocol` | The pause/checkpoint helper |
+| `setup` · `uninstall` · `daemon [--stop]` · `mcp` · `version` | Install, remove, run or stop the guard, MCP server |
+
+**Files** in the state folder: `firefighter.toml` (your settings), `state.json` (budgets, learned
+history, receipts, the hour-of-week occupancy), `STATUS.md` (a status snapshot rewritten every 15 s
+for agents that read files), `daemon.log`, `logs/<id>.log` (detached jobs, kept 7 days),
+`signals/` (pause and checkpoint files), `daemon.json` and `daemon.lock`.
 
 ## How it compares
 
@@ -172,7 +229,10 @@ evicted first under pressure.
 
 **Can agents cheat the market?** Prices are posted, not auctioned, so there's no bidding game. A bid
 of 10 costs double and buys at most 30 minutes of lead. Budgets belong to projects, so running more
-jobs doesn't buy more turns. Runtimes are checked against each command's history.
+jobs doesn't buy more turns. Runtimes are checked against each command's history. Agents can read
+the policy but not change it unless you set `guard.agents_can_configure`. An agent with shell
+access could still edit firefighter's files directly. firefighter is a referee for cooperative
+agents, not a security boundary.
 
 **Does it need an NVIDIA GPU?** No. It reads NVIDIA (nvidia-smi plus Windows GPU counters) and AMD
 (rocm-smi). On Apple silicon it schedules unified memory as RAM. Without a GPU it still schedules CPU
@@ -180,7 +240,9 @@ and RAM.
 
 ## Research
 
-The policy comes from a survey of about 40 repos and 30 papers. Among them: DRF (NSDI '11), Tiresias
+[docs/how-it-works.md](docs/how-it-works.md) maps every paper's idea to the code that uses it, with
+the numbers, and lists what isn't implemented and why. The policy comes from a survey of about 40
+repos and 30 papers. Among them: DRF (NSDI '11), Tiresias
 (NSDI '19), Themis (NSDI '20), Gavel (OSDI '20), Karma (OSDI '23), PerfIso (ATC '18), PilotFish
 (ATC '22), lottery and stride scheduling (OSDI '94), BOINC, KAI-Scheduler, AgentCgroup and AIOS. The
 full report with sources is in [docs/research.md](docs/research.md).

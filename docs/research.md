@@ -1,3 +1,10 @@
+> **Status (read first):** this is the research report written *before* firefighter was rebuilt in Go.
+> It describes an earlier single-machine Python prototype (bid + wait/10 ordering, `budgets.json`,
+> a `boost` command, 250 ms polling) and references private notes that aren't in this repo. Every
+> recommendation it ranks has since been implemented or deliberately skipped; the current mapping,
+> with the exact numbers the code uses, is [how-it-works.md](how-it-works.md). Where they differ,
+> the code and how-it-works.md win.
+
 # Put the human above the market, then price every bid
 
 Written 2026-11-03 for firefighter.py as of commit 9ccbed0. Builds on `the earlier Windows-mechanics notes` (2026-10-29), which covered the Windows mechanics: commit caps, memory and I/O priority, PDH GPU counters, sysmem fallback and the suspend-cascade incident. Those are referenced here, not repeated. Labels: **[S]** means the claim is backed by the linked source; **[I]** means it is my inference or a design choice and should be tested before it is trusted.
