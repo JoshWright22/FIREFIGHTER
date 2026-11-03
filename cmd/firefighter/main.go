@@ -35,6 +35,9 @@ const usage = `firefighter: your agents start the fires, you stay the headliner.
       --detach                   queue it and return a job id at once (then: firefighter wait <id>)
       --evict never|graceful|force   what may happen if the human needs resources back
       --spot                     leftovers only: cheapest, preempted first
+  firefighter quote [--gpu] --minutes N [--vram GB] [--ram GB]
+                                 the market: price now, start time and cost per bid, busy odds
+  firefighter bid <id> <1-10>    re-bid a waiting job after reading the market
   firefighter wait <id>          block until a job ends; prints its receipt and log tail
   firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
   firefighter extend <id> <min>  lengthen a running job's lease
@@ -68,6 +71,10 @@ func main() {
 		err = status(args)
 	case "extend":
 		err = extend(args)
+	case "quote":
+		err = quote(args)
+	case "bid":
+		err = rebid(args)
 	case "cancel":
 		err = act(args, "cancel")
 	case "adopt":
@@ -107,10 +114,10 @@ func main() {
 
 type runFlags struct {
 	gpu, spot, detach, quiet bool
-	minutes, vram, ram      float64
-	bid                     int
-	name, project, evict    string
-	id, log                 string
+	minutes, vram, ram       float64
+	bid                      int
+	name, project, evict     string
+	id, log                  string
 }
 
 func parseRun(args []string) (*runFlags, []string, error) {
@@ -220,11 +227,15 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	signal.Notify(interrupt, os.Interrupt)
 	defer signal.Stop(interrupt)
 
-	last := ""
+	last, lastMarket := "", time.Time{}
 	for v.State == "waiting" {
 		if line := fmt.Sprintf("#%d in line, on ~%s: %s", v.Position, v.ETA, v.Why); line != last && !quiet {
 			ui.Say(ui.Gold, "%s [%s] waiting in the wings %s", t.Name, ui.BandLabel(v.Band), line)
 			last = line
+		}
+		if v.Market != "" && !quiet && time.Since(lastMarket) > 5*time.Minute {
+			ui.Note("%s  (re-bid: firefighter bid %s <1-10>)", v.Market, t.ID)
+			lastMarket = time.Now()
 		}
 		select {
 		case <-interrupt:
@@ -417,6 +428,11 @@ func status(args []string) error {
 	p("  CPU %.1f/%.0f busy (%.1f human+other)  RAM %.1f/%.1f GB free  GPU %.0f%%  VRAM %.1f/%.1f GB",
 		m["cpu_busy"], m["cpus"], m["user_cpus"], m["ram_avail_gb"], m["ram_total_gb"], m["gpu_util"], m["vram_used_gb"], m["vram_total_gb"])
 	p("  policy: preset %s, order %s, pricing %s, budget %s", s.Policy["preset"], s.Policy["order"], s.Policy["pricing"], s.Policy["budget"])
+	for _, k := range []string{"gpu", "cpu"} {
+		if q, ok := s.Market[k]; ok {
+			p("  %s", ui.Paint(ui.Violet, q.Line()))
+		}
+	}
 	if s.ConfigErr != "" {
 		p("  %s", ui.Paint(ui.Ember, "config error: "+s.ConfigErr))
 	}
@@ -461,6 +477,53 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+func quote(args []string) error {
+	fs := flag.NewFlagSet("quote", flag.ContinueOnError)
+	gpu := fs.Bool("gpu", false, "needs the GPU")
+	minutes := fs.Float64("minutes", 30, "runtime estimate")
+	vram := fs.Float64("vram", 0, "VRAM GB")
+	ram := fs.Float64("ram", 0, "RAM GB")
+	asJSON := fs.Bool("json", false, "JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	cwd, _ := os.Getwd()
+	q, err := c.Quote(*gpu, *minutes, *vram, *ram, projectOf(cwd), hashCmd(append([]string{""}, fs.Args()...)[1:]))
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		b, _ := json.MarshalIndent(q, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	fmt.Println(q.Line())
+	return nil
+}
+
+func rebid(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: firefighter bid <id> <1-10>")
+	}
+	b, err := strconv.Atoi(args[1])
+	if err != nil || b < 1 || b > 10 {
+		return errors.New("bid must be 1-10")
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b)})
+	if err == nil {
+		ui.Say(ui.Gold, "%s: bid %d, now #%d, on ~%s", v.Name, b, v.Position, v.ETA)
+	}
+	return err
 }
 
 func extend(args []string) error {

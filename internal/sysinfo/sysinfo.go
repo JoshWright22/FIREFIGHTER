@@ -21,13 +21,13 @@ import (
 )
 
 type GPU struct {
-	Index    int     `json:"index"`
-	Name     string  `json:"name"`
-	Util     float64 `json:"util"`
-	VRAMGB   float64 `json:"vram_gb"`
-	UsedGB   float64 `json:"used_gb"`
-	Vendor   string  `json:"vendor"`
-	PerProc  bool    `json:"-"`
+	Index   int     `json:"index"`
+	Name    string  `json:"name"`
+	Util    float64 `json:"util"`
+	VRAMGB  float64 `json:"vram_gb"`
+	UsedGB  float64 `json:"used_gb"`
+	Vendor  string  `json:"vendor"`
+	PerProc bool    `json:"-"`
 }
 
 type ProcGPU struct {
@@ -266,7 +266,20 @@ func Alive(pid int) bool {
 		return false
 	}
 	ok, _ := process.PidExists(int32(pid))
-	return ok
+	if !ok {
+		return false
+	}
+	// A killed child that its parent hasn't reaped yet is a zombie: dead for every purpose here.
+	if p, err := process.NewProcess(int32(pid)); err == nil {
+		if st, err := p.Status(); err == nil {
+			for _, s := range st {
+				if s == process.Zombie {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // Usage of a set of pids: CPU seconds so far and resident RAM.

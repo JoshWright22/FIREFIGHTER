@@ -13,9 +13,9 @@ import (
 
 type platformReader struct{}
 
-func newPlatformReader() *platformReader             { return &platformReader{} }
-func (*platformReader) procGPU() map[int]ProcGPU    { return nil }
-func foregroundFullscreen() string                  { return "" }
+func newPlatformReader() *platformReader         { return &platformReader{} }
+func (*platformReader) procGPU() map[int]ProcGPU { return nil }
+func foregroundFullscreen() string               { return "" }
 
 // idleSeconds tries the desktop's idle monitor: GNOME/Mutter over D-Bus, then xprintidle (X11).
 // Headless servers report unknown (-1), which counts as "present".

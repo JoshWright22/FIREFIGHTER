@@ -43,9 +43,9 @@ func obj(props map[string]any, required ...string) map[string]any {
 	return m
 }
 
-func str(d string) map[string]any  { return map[string]any{"type": "string", "description": d} }
-func num(d string) map[string]any  { return map[string]any{"type": "number", "description": d} }
-func boo(d string) map[string]any  { return map[string]any{"type": "boolean", "description": d} }
+func str(d string) map[string]any { return map[string]any{"type": "string", "description": d} }
+func num(d string) map[string]any { return map[string]any{"type": "number", "description": d} }
+func boo(d string) map[string]any { return map[string]any{"type": "boolean", "description": d} }
 
 var tools = []tool{
 	{"firefighter_status", "What's using this shared machine right now: the human's state and reserve, running jobs and when each should end, the queue with start estimates, budgets, planned work. Check before heavy work.", obj(map[string]any{})},
@@ -64,6 +64,12 @@ var tools = []tool{
 	{"firefighter_wait", "Wait for a submitted job: returns its state, queue position and estimated start, or its receipt and log tail when done. Waits up to timeout_s seconds (default 50); call again if still running.", obj(map[string]any{
 		"id": str("Job id"), "timeout_s": num("Seconds to wait (max 55)"),
 	}, "id")},
+	{"firefighter_quote", "The market for this machine, no side effects: posted price now, what each bid level (1-10) buys (start time, cost in machine-minutes), the odds the GPU or CPU is busy in 15/30/60/120 min, the cheapest upcoming window, and advice. firefighter_submit and firefighter_wait already include it.", obj(map[string]any{
+		"gpu": boo("Needs the GPU"), "minutes": num("Runtime estimate"), "vram_gb": num("VRAM GB"), "ram_gb": num("RAM GB"), "project": str("Project (folder name)"),
+	}, "minutes")},
+	{"firefighter_bid", "Change the bid (1-10) of a waiting job after reading the market. Higher bids start sooner and cost more budget.", obj(map[string]any{
+		"id": str("Job id"), "bid": num("New bid 1-10"),
+	}, "id", "bid")},
 	{"firefighter_extend", "Extend a running job's lease by more minutes, so it isn't moved to the spot band or charged double.", obj(map[string]any{
 		"id": str("Job id"), "minutes": num("Extra minutes"),
 	}, "id", "minutes")},
@@ -208,7 +214,9 @@ func call(name string, a map[string]any) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return js(map[string]string{"id": id, "log": log, "next": "call firefighter_wait with this id"}), nil
+		v, _ := c.GetSoon(id)
+		return js(map[string]any{"id": id, "log": log, "state": v.State, "position": v.Position, "starts": v.ETA,
+			"market": v.Market, "next": "call firefighter_wait with this id; re-bid with firefighter_bid if the market says so"}), nil
 	case "firefighter_wait":
 		t := int(f(a, "timeout_s"))
 		if t <= 0 || t > 55 {
@@ -227,6 +235,12 @@ func call(name string, a map[string]any) (string, error) {
 			out += "\n--- log tail ---\n" + client.Tail(client.LogPath(id), 3000)
 		}
 		return out, nil
+	case "firefighter_quote":
+		q, err := c.Quote(b(a, "gpu"), f(a, "minutes"), f(a, "vram_gb"), f(a, "ram_gb"), s(a, "project"), "")
+		return js(q), err
+	case "firefighter_bid":
+		v, err := c.Act(s(a, "id"), "bid", daemon.Act{Minutes: f(a, "bid")})
+		return js(v), err
 	case "firefighter_extend":
 		v, err := c.Act(s(a, "id"), "extend", daemon.Act{Minutes: f(a, "minutes")})
 		return js(v), err

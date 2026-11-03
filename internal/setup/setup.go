@@ -30,14 +30,18 @@ always comes first. firefighter hands out turns. Follow this in every project:
   work), then prints a receipt. Don't start heavy work outside it, even when it waits.
 - Always pass ` + "`--minutes`" + `, your honest estimate. It's a lease: past 1.25x it drops to the spot
   band and is charged double unless you run ` + "`firefighter extend <id> <minutes>`" + `.
-- Bids spend your project's budget: 5 is list price, 10 costs double, 1 costs a fifth. Bid high only
-  when the human is waiting on the result.
+- firefighter is the market maker. Every answer it gives (the waiting line of ` + "`run`" + `,
+  ` + "`firefighter quote`" + `, the MCP tools) carries a "market" line: the price now, what each bid
+  buys (start time and cost), and the odds the GPU/CPU is busy over the next 2 hours. Take the bid it
+  calls best value unless the human is waiting on the result; re-bid a waiting job with
+  ` + "`firefighter bid <id> <1-10>`" + `. Bids spend your project's budget; quiet hours cost less.
 - Check ` + "`firefighter status`" + ` before heavy work: what's busy until when, the queue, your budget.
   Announce big work coming later: ` + "`firefighter plan \"<what>\" --when \"<when>\" --minutes N --gpu PCT --vram GB --ram GB`" + `.
 - When your job waits, tell the human its place and start time from the output; don't work around it.
 - Long GPU loops should honor the pause and checkpoint files (` + "`firefighter protocol`" + ` shows a
-  10-line helper). The MCP tools firefighter_status, firefighter_submit, firefighter_wait,
-  firefighter_extend, firefighter_plan and firefighter_config do the same as the CLI.
+  10-line helper). Heavy work started outside firefighter is adopted anyway, charged, and
+  preempted first. The MCP tools (firefighter_status, _quote, _submit, _wait, _bid, _extend,
+  _cancel, _plan, _config) do the same as the CLI.
 ` + end + "\n"
 
 type Step struct {

@@ -58,6 +58,14 @@ func helper(spec string) int {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		appendLine(file, fmt.Sprintf("end %d", time.Now().UnixNano()))
 		return 0
+	case "burn": // spin CPU for N seconds
+		secs, _ := strconv.Atoi(f[1])
+		end := time.Now().Add(time.Duration(secs) * time.Second)
+		x := 0
+		for time.Now().Before(end) {
+			x++
+		}
+		return x & 0
 	case "pausable":
 		secs, _ := strconv.Atoi(f[1])
 		file := strings.Join(f[2:], ":")
@@ -301,7 +309,7 @@ func TestGamePausesGPUJobAndResumes(t *testing.T) {
 	e := newEnv(t, map[string]any{"gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16}}})
 	e.ff("config", "set", "reserve.game_cool_seconds", "1")
 	log := filepath.Join(e.home, "pausable.txt")
-	id := e.detach("pausable:6:"+log, "--gpu", "--minutes", "1")
+	id := e.detach("pausable:30:"+log, "--gpu", "--minutes", "1")
 	eventually(t, "job running", 15*time.Second, func() bool { return exists(log) || strings.Contains(e.mustWaitState(id), "running") })
 	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16}}})
 	eventually(t, "cooperative pause", 15*time.Second, func() bool { return strings.Contains(readFile(log), "paused") })
@@ -464,8 +472,8 @@ func TestMCPServer(t *testing.T) {
 	}
 	in.Write([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n"))
 	list := call(2, "tools/list", map[string]any{})
-	if n := len(list["result"].(map[string]any)["tools"].([]any)); n != 7 {
-		t.Fatalf("want 7 tools, got %d", n)
+	if n := len(list["result"].(map[string]any)["tools"].([]any)); n != 9 {
+		t.Fatalf("want 9 tools, got %d", n)
 	}
 	st := call(3, "tools/call", map[string]any{"name": "firefighter_status", "arguments": map[string]any{}})
 	if st["result"].(map[string]any)["isError"] == true {
@@ -536,4 +544,72 @@ func TestDockerizeLabelsContainers(t *testing.T) {
 	if argv, name := dockerize([]string{"python", "x.py"}, "abc"); name != "" || len(argv) != 2 {
 		t.Fatal("non-docker command changed")
 	}
+}
+
+func TestMarketQuoteAndRebid(t *testing.T) {
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16}}})
+	e.ff("config", "set", "gpu.max_jobs", "1")
+	hold := e.detach("pausable:20:"+filepath.Join(e.home, "hold.txt"), "--gpu", "--minutes", "1")
+	eventually(t, "holder running", 15*time.Second, func() bool {
+		r, _ := e.status()["running"].([]any)
+		return len(r) == 1
+	})
+	out, code := e.ff("quote", "--gpu", "--minutes", "10", "--json")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	var q struct {
+		Price float64
+		Busy  map[string]float64
+		Menu  []struct {
+			Bid      int
+			StartsIn float64 `json:"starts_in_min"`
+			Cost     float64
+		}
+		Advice string
+	}
+	if err := json.Unmarshal([]byte(out[strings.Index(out, "{"):]), &q); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(q.Menu) != 5 || q.Busy["15m"] == 0 || q.Advice == "" {
+		t.Fatalf("quote incomplete: %+v", q)
+	}
+	if q.Menu[4].StartsIn > q.Menu[0].StartsIn || q.Menu[4].Cost <= q.Menu[0].Cost {
+		t.Fatalf("bid 10 must start no later and cost more than bid 1: %+v", q.Menu)
+	}
+	id := e.detach("exit:0", "--gpu", "--minutes", "5", "--bid", "1")
+	time.Sleep(time.Second)
+	if out, code := e.ff("bid", id, "9"); code != 0 || !strings.Contains(out, "bid 9") {
+		t.Fatalf("rebid: %d %s", code, out)
+	}
+	w, _ := e.ff("wait", id, "--timeout", "1")
+	if !strings.Contains(w, "market gpu") {
+		t.Fatalf("waiting job must carry the market line:\n%s", w)
+	}
+	e.ff("cancel", hold)
+}
+
+func TestRogueHeavyProcessIsAdopted(t *testing.T) {
+	e := newEnv(t, nil)
+	self, _ := os.Executable()
+	e.ff("config", "set", "guard.agent_parents", "["+strings.TrimSuffix(filepath.Base(self), ".exe")+"]")
+	e.ff("config", "set", "guard.heavy_seconds", "2")
+	e.ff("config", "set", "guard.heavy_cpus", "0.5")
+	e.status()
+	// Started straight from the test (an "agent"), not through firefighter, and burning CPU.
+	c := exec.Command(self)
+	c.Env = append(os.Environ(), "FF_HELPER=burn:25")
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Process.Kill()
+	eventually(t, "adoption", 40*time.Second, func() bool {
+		r, _ := e.status()["running"].([]any)
+		for _, x := range r {
+			if strings.Contains(fmt.Sprint(x), "unmanaged") && strings.Contains(fmt.Sprint(x), "band:3") {
+				return true
+			}
+		}
+		return false
+	})
 }

@@ -39,11 +39,11 @@ type Config struct {
 	} `toml:"pricing"`
 
 	Budget struct {
-		Policy          string             `toml:"policy"` // karma | daily | none
-		DailyMinutes    float64            `toml:"daily_minutes"` // machine-minutes: all of the GPU (or of any one resource) for a minute
-		BankDays        float64            `toml:"bank_days"` // karma: unused allowance saved up to this many days
-		Projects        map[string]float64 `toml:"projects"`  // per-project daily minutes
-		Weights         map[string]float64 `toml:"weights"`   // per-project share weight (default 1)
+		Policy       string             `toml:"policy"`        // karma | daily | none
+		DailyMinutes float64            `toml:"daily_minutes"` // machine-minutes: all of the GPU (or of any one resource) for a minute
+		BankDays     float64            `toml:"bank_days"`     // karma: unused allowance saved up to this many days
+		Projects     map[string]float64 `toml:"projects"`      // per-project daily minutes
+		Weights      map[string]float64 `toml:"weights"`       // per-project share weight (default 1)
 	} `toml:"budget"`
 
 	GPU struct {
@@ -78,6 +78,14 @@ type Config struct {
 		MinRuntimeMinutes float64 `toml:"min_runtime_minutes"` // no job-vs-job preemption before this
 		OverrunFactor     float64 `toml:"overrun_factor"`      // past lease x this -> spot band, double charge
 	} `toml:"ladder"`
+
+	Guard struct { // fallbacks for agents that skip firefighter, by accident or on purpose
+		AutoAdopt    bool     `toml:"auto_adopt"`    // govern heavy processes agents started outside firefighter
+		AgentParents []string `toml:"agent_parents"` // process names whose descendants count as agent work
+		HeavyCPUs    float64  `toml:"heavy_cpus"`    // sustained CPU use that counts as heavy
+		HeavyRAMGB   float64  `toml:"heavy_ram_gb"`
+		HeavySeconds float64  `toml:"heavy_seconds"` // how long before it's adopted
+	} `toml:"guard"`
 
 	Harvester struct { // band 4: something that only runs when nothing else wants the GPU (Salad, BOINC, ...)
 		Start       string  `toml:"start"`
@@ -123,6 +131,11 @@ func Defaults() Config {
 	c.Ladder.MinRuntimeMinutes = 10
 	c.Ladder.OverrunFactor = 1.25
 	c.Harvester.IdleSeconds = 180
+	c.Guard.AutoAdopt = true
+	c.Guard.AgentParents = []string{"claude", "codex", "gemini", "cursor", "aider", "goose", "opencode", "windsurf", "cline", "t3"}
+	c.Guard.HeavyCPUs = 2
+	c.Guard.HeavyRAMGB = 4
+	c.Guard.HeavySeconds = 60
 	return c
 }
 

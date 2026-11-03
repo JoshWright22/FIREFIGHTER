@@ -11,7 +11,7 @@ import (
 
 type platformReader struct{}
 
-func newPlatformReader() *platformReader          { return &platformReader{} }
+func newPlatformReader() *platformReader         { return &platformReader{} }
 func (*platformReader) procGPU() map[int]ProcGPU { return nil }
 func foregroundFullscreen() string               { return "" }
 

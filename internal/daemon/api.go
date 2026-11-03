@@ -67,6 +67,7 @@ func (d *Daemon) routes() http.Handler {
 		reply(w, d.status())
 	})
 	mux.HandleFunc("POST /v1/tickets", d.create)
+	mux.HandleFunc("GET /v1/quote", d.quoteHandler)
 	mux.HandleFunc("GET /v1/tickets/{id}", d.get)
 	mux.HandleFunc("POST /v1/tickets/{id}/{verb}", d.act)
 	mux.HandleFunc("POST /v1/plans", d.plan)
@@ -116,6 +117,16 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if t.Name == "" {
 		t.Name = t.Project
 	}
+	open := 0
+	for _, o := range d.jobs {
+		if o.Project == t.Project && o.State != "done" {
+			open++
+		}
+	}
+	if open >= maxOpenPerProject && !req.Running {
+		fail(w, http.StatusTooManyRequests, fmt.Sprintf("project %s already has %d jobs queued or running; wait for some to finish", t.Project, open))
+		return
+	}
 	if t.Bid == 0 {
 		t.Bid = 5
 	}
@@ -123,7 +134,35 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		t.Evict = "graceful"
 	}
 	t.Created = now
-	h := d.st.History[histKey(&t)]
+	d.fillNeeds(&t)
+	a := d.account(t.Project, now)
+	t.Band = policy.BandFor(&t, a.Left(d.cfg, d.cfg.Allowance(t.Project)) > 0)
+	t.State = "waiting"
+	if req.Running {
+		t.State, t.Started = "running", now
+	}
+	j := &job{Ticket: &t, pids: map[int]bool{}, applied: map[int]string{}}
+	if t.PID > 0 {
+		j.pids[t.PID] = true
+		_ = sysinfo.Background(t.PID)
+	}
+	if req.Running {
+		d.lockPrice(j, now)
+	}
+	d.jobs[t.ID] = j
+	logf("%s [%s] %s: %s, band %d, bid %d, %.0f min declared (%.0f predicted), need %.1f GB RAM %.1f GB VRAM",
+		t.Name, t.Project, t.ID, map[bool]string{true: "GPU", false: "CPU"}[t.GPU], t.Band, t.Bid, t.Minutes, t.PredMinutes, t.NeedRAM, t.NeedVRAM)
+	d.admit(now)
+	reply(w, d.view(j))
+}
+
+const maxOpenPerProject = 20 // queue-flood guard
+
+func histKey(t *policy.Ticket) string { return t.Project + "|" + t.CmdHash }
+
+// fillNeeds sets admission needs and the predicted runtime from declarations and learned history.
+func (d *Daemon) fillNeeds(t *policy.Ticket) {
+	h := d.st.History[histKey(t)]
 	if h == nil {
 		h = &History{}
 	}
@@ -138,25 +177,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 			t.NeedVRAM = d.cfg.GPU.DefaultVRAMGB
 		}
 	}
-	a := d.account(t.Project, now)
-	t.Band = policy.BandFor(&t, a.Left(d.cfg, d.cfg.Allowance(t.Project)) > 0)
-	t.State = "waiting"
-	if req.Running {
-		t.State, t.Started = "running", now
-	}
-	j := &job{Ticket: &t, pids: map[int]bool{}, applied: map[int]string{}}
-	if t.PID > 0 {
-		j.pids[t.PID] = true
-		_ = sysinfo.Background(t.PID)
-	}
-	d.jobs[t.ID] = j
-	logf("%s [%s] %s: %s, band %d, bid %d, %.0f min declared (%.0f predicted), need %.1f GB RAM %.1f GB VRAM",
-		t.Name, t.Project, t.ID, map[bool]string{true: "GPU", false: "CPU"}[t.GPU], t.Band, t.Bid, t.Minutes, t.PredMinutes, t.NeedRAM, t.NeedVRAM)
-	d.admit(now)
-	reply(w, d.view(j))
 }
-
-func histKey(t *policy.Ticket) string { return t.Project + "|" + t.CmdHash }
 
 // get returns a ticket. ?wait=N long-polls up to N seconds for a change of state from ?state=.
 func (d *Daemon) get(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +244,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		logf("%s: started pid %d after %.1f min", j.Name, a.PID, now.Sub(j.Created).Minutes())
 	case "container":
 		j.container = a.Container
+	case "bid": // re-bid while waiting, after reading the market
+		if j.State == "waiting" {
+			j.Bid = max(1, min(10, int(a.Minutes)))
+			logf("%s: re-bid %d", j.Name, j.Bid)
+		}
 	case "extend":
 		j.extended += a.Minutes
 		if j.overrun {
@@ -304,23 +330,25 @@ func round1(f float64) float64 { return math.Round(f*10) / 10 }
 // ---- views --------------------------------------------------------------------------------------
 
 type View struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name,omitempty"`
-	Project  string   `json:"project,omitempty"`
-	State    string   `json:"state"` // waiting | granted | running | done
-	Band     int      `json:"band,omitempty"`
-	Position int      `json:"position,omitempty"` // in its line (GPU or CPU), 1 = next
-	ETA      string   `json:"eta,omitempty"`      // when it should start (waiting) or end (running)
-	Why      string   `json:"why,omitempty"`      // what it's waiting for, or why it's paused
-	Paused   bool     `json:"paused,omitempty"`
-	Checkpt  bool     `json:"checkpoint,omitempty"`
-	Price    float64  `json:"price,omitempty"`  // machine-minute price multiplier of its bid
-	Budget   float64  `json:"budget_left"`      // project's machine-minutes left
-	Pred     float64  `json:"predicted_minutes,omitempty"`
-	Receipt  *Receipt `json:"receipt,omitempty"`
-	PauseF   string   `json:"pause_file,omitempty"`
-	PausedF  string   `json:"paused_file,omitempty"`
-	CheckF   string   `json:"checkpoint_file,omitempty"`
+	ID       string        `json:"id"`
+	Name     string        `json:"name,omitempty"`
+	Project  string        `json:"project,omitempty"`
+	State    string        `json:"state"` // waiting | granted | running | done
+	Band     int           `json:"band,omitempty"`
+	Position int           `json:"position,omitempty"` // in its line (GPU or CPU), 1 = next
+	ETA      string        `json:"eta,omitempty"`      // when it should start (waiting) or end (running)
+	Why      string        `json:"why,omitempty"`      // what it's waiting for, or why it's paused
+	Paused   bool          `json:"paused,omitempty"`
+	Checkpt  bool          `json:"checkpoint,omitempty"`
+	Price    float64       `json:"price,omitempty"` // machine-minute price multiplier of its bid
+	Budget   float64       `json:"budget_left"`     // project's machine-minutes left
+	Pred     float64       `json:"predicted_minutes,omitempty"`
+	Receipt  *Receipt      `json:"receipt,omitempty"`
+	Quote    *policy.Quote `json:"quote,omitempty"`
+	Market   string        `json:"market,omitempty"` // the quote in one line
+	PauseF   string        `json:"pause_file,omitempty"`
+	PausedF  string        `json:"paused_file,omitempty"`
+	CheckF   string        `json:"checkpoint_file,omitempty"`
 }
 
 func (d *Daemon) view(j *job) View {
@@ -334,6 +362,8 @@ func (d *Daemon) view(j *job) View {
 	case "waiting":
 		pos, eta, why := d.queueSpot(j, now)
 		v.Position, v.ETA, v.Why = pos, eta.Format("15:04"), why
+		q := d.quote(*j.Ticket, now)
+		v.Quote, v.Market = &q, q.Line()
 	case "running":
 		v.ETA = j.Started.Add(time.Duration((j.PredMinutes + j.extended) * float64(time.Minute))).Format("15:04")
 	}
@@ -410,21 +440,22 @@ func (d *Daemon) busyOutside() []string {
 
 // Status is the whole picture, for `firefighter status`, MCP and STATUS.md.
 type Status struct {
-	Time      time.Time            `json:"time"`
-	User      string               `json:"user"`
-	UserWhy   string               `json:"user_why,omitempty"`
-	Reserve   map[string]float64   `json:"reserve"`
-	Machine   map[string]float64   `json:"machine"`
-	GPUs      []sysinfo.GPU        `json:"gpus"`
-	Running   []View               `json:"running"`
-	Waiting   []View               `json:"waiting"`
-	Budgets   map[string]float64   `json:"budgets"`
-	Plans     []*Plan              `json:"plans"`
-	Foreign   map[string]float64   `json:"other_gpu_users"`
-	Docker    []sysinfo.Container  `json:"containers"`
-	Policy    map[string]string    `json:"policy"`
-	ConfigErr string               `json:"config_error,omitempty"`
-	Recent    []*Receipt           `json:"recent"`
+	Time      time.Time               `json:"time"`
+	User      string                  `json:"user"`
+	UserWhy   string                  `json:"user_why,omitempty"`
+	Reserve   map[string]float64      `json:"reserve"`
+	Machine   map[string]float64      `json:"machine"`
+	GPUs      []sysinfo.GPU           `json:"gpus"`
+	Running   []View                  `json:"running"`
+	Waiting   []View                  `json:"waiting"`
+	Budgets   map[string]float64      `json:"budgets"`
+	Plans     []*Plan                 `json:"plans"`
+	Foreign   map[string]float64      `json:"other_gpu_users"`
+	Docker    []sysinfo.Container     `json:"containers"`
+	Policy    map[string]string       `json:"policy"`
+	ConfigErr string                  `json:"config_error,omitempty"`
+	Recent    []*Receipt              `json:"recent"`
+	Market    map[string]policy.Quote `json:"market"` // posted prices and odds for a typical 30-minute job
 }
 
 func (d *Daemon) status() Status {
@@ -439,6 +470,12 @@ func (d *Daemon) status() Status {
 		Policy: map[string]string{"preset": d.cfg.Preset, "order": d.cfg.Order.Policy, "pricing": d.cfg.Pricing.Policy, "budget": d.cfg.Budget.Policy}}
 	if d.user == "game" {
 		s.UserWhy = d.gameWhy
+	}
+	s.Market = map[string]policy.Quote{}
+	for _, gpu := range []bool{true, false} {
+		p := policy.Ticket{Project: "any", GPU: gpu, Minutes: 30}
+		d.fillNeeds(&p)
+		s.Market[map[bool]string{true: "gpu", false: "cpu"}[gpu]] = d.quote(p, now)
 	}
 	for _, j := range d.running() {
 		s.Running = append(s.Running, d.view(j))

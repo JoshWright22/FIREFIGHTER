@@ -44,6 +44,9 @@ type job struct {
 	container  string
 	receipt    *Receipt
 	extended   float64
+	price      float64 // locked at grant: bid price x congestion x surcharge
+	adopted    bool    // auto-adopted: heavy work an agent started outside firefighter
+	termAt     time.Time
 }
 
 type Daemon struct {
@@ -73,11 +76,14 @@ type Daemon struct {
 		on        bool
 		quietFrom time.Time
 	}
-	saveAt   time.Time
-	statusAt time.Time
-	started  time.Time
-	Token    string
-	Port     int
+	scanner   *sysinfo.Scanner
+	rogueAt   time.Time
+	rogueSeen map[int]time.Time
+	saveAt    time.Time
+	statusAt  time.Time
+	started   time.Time
+	Token     string
+	Port      int
 }
 
 func New() *Daemon {
@@ -164,7 +170,9 @@ func (d *Daemon) step(snap sysinfo.Snapshot, now time.Time, dt time.Duration) {
 	c := d.cfg
 	d.snap = snap
 	d.measureJobs(now, dt)
+	d.observeOccupancy(now, dt)
 	d.senseUser(now)
+	d.adoptRogues(now)
 	d.res.Update(c, d.user, d.busyUser, now)
 	d.enforceCPU()
 	d.ladder(now)
@@ -279,7 +287,10 @@ func (d *Daemon) measureJobs(now time.Time, dt time.Duration) {
 				vram *= 3 // ESX-style idle tax: holding VRAM without computing
 			}
 		}
-		price := policy.Price(c, j.Bid)
+		price := j.price
+		if price <= 0 {
+			price = policy.Price(c, j.Bid)
+		}
 		if j.overrun {
 			price *= 2
 		}
@@ -478,9 +489,16 @@ func (d *Daemon) ladder(now time.Time) {
 		}
 	}
 
-	// Checkpoint grace over: kill.
+	// Checkpoint grace over: SIGTERM where there is one (10 s to exit), then kill.
 	for _, j := range d.running() {
-		if !j.checkpoint.IsZero() && now.Sub(j.checkpoint) > dur(c.Ladder.GraceSeconds) {
+		if j.checkpoint.IsZero() || now.Sub(j.checkpoint) <= dur(c.Ladder.GraceSeconds) {
+			continue
+		}
+		if runtime.GOOS != "windows" && j.termAt.IsZero() && j.PID > 0 {
+			j.termAt = now
+			_ = sysinfo.Terminate(j.PID)
+			logf("%s: grace over, SIGTERM", j.Name)
+		} else if runtime.GOOS == "windows" || now.Sub(j.termAt) > 10*time.Second {
 			d.killJob(j)
 		}
 	}
@@ -534,9 +552,6 @@ func (d *Daemon) requestCheckpoint(j *job, now time.Time, why string) {
 		d.killJob(j)
 		return
 	}
-	if runtime.GOOS != "windows" && j.PID > 0 {
-		_ = sysinfo.Terminate(j.PID)
-	}
 	logf("%s: checkpoint and exit requested (%s); %.0fs grace", j.Name, why, d.cfg.Ladder.GraceSeconds)
 	d.broadcast()
 }
@@ -577,7 +592,11 @@ func (d *Daemon) reap(now time.Time) {
 		} else if j.State == "waiting" && clientGone {
 			d.finish(id, -1, "cancelled", "")
 		} else if j.State == "running" && clientGone && jobGone {
-			d.finish(id, -1, "lost", "")
+			outcome := "lost"
+			if j.adopted {
+				outcome = "ended"
+			}
+			d.finish(id, -1, outcome, "")
 		} else if j.State == "granted" && now.Sub(j.granted) > 2*time.Minute {
 			j.State = "waiting"
 		}
@@ -634,6 +653,7 @@ func (d *Daemon) admit(now time.Time) {
 		gpuBlocked = true
 	}
 	changed := false
+	headWaitsOnVRAM := false
 	for _, t := range d.waiting() {
 		j := d.jobs[t.ID]
 		if t.GPU {
@@ -641,7 +661,14 @@ func (d *Daemon) admit(now time.Time) {
 				continue
 			}
 			if vt > 0 && t.NeedVRAM > vram {
-				gpuBlocked = true // head of the GPU line waits; nobody jumps it
+				if !headWaitsOnVRAM {
+					headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
+				}
+				continue
+			}
+			// EASY-style backfill: behind a head that waits on VRAM, only a short job that fits
+			// now may start, so the head is delayed by at most ~10 minutes.
+			if headWaitsOnVRAM && t.PredMinutes > 10 {
 				continue
 			}
 		}
@@ -657,6 +684,7 @@ func (d *Daemon) admit(now time.Time) {
 			gpuRunning++
 		}
 		j.State, j.granted = "granted", now
+		d.lockPrice(j, now)
 		changed = true
 	}
 	if changed {

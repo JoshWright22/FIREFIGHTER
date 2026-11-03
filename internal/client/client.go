@@ -11,7 +11,10 @@ import (
 	"os/exec"
 	"time"
 
+	"net/url"
+
 	"github.com/JoshWright22/firefighter/internal/daemon"
+	"github.com/JoshWright22/firefighter/internal/policy"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
 )
 
@@ -129,6 +132,12 @@ func (c *Client) Act(id, verb string, a daemon.Act) (daemon.View, error) {
 func (c *Client) Status() (daemon.Status, error) {
 	var s daemon.Status
 	return s, c.do("GET", "/v1/status", nil, &s)
+}
+
+// Quote asks the market maker what a job would cost and when it would start at each bid.
+func (c *Client) Quote(gpu bool, minutes, vram, ram float64, project, cmd string) (policy.Quote, error) {
+	var q policy.Quote
+	return q, c.do("GET", fmt.Sprintf("/v1/quote?gpu=%t&minutes=%g&vram=%g&ram=%g&project=%s&cmd=%s", gpu, minutes, vram, ram, url.QueryEscape(project), cmd), nil, &q)
 }
 
 func (c *Client) Plan(p daemon.Plan) (daemon.Plan, error) {

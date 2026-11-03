@@ -56,6 +56,8 @@ type saved struct {
 	History  map[string]*History        `json:"history"`
 	Receipts map[string]*Receipt        `json:"receipts"`
 	Plans    []*Plan                    `json:"plans"`
+	// Occupancy is how taken the GPU usually is, per hour of the week (0-1), for quotes.
+	Occupancy []float64 `json:"occupancy"`
 }
 
 func statePath() string { return filepath.Join(config.Home(), "state.json") }

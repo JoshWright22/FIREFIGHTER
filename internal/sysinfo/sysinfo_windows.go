@@ -95,9 +95,9 @@ func foregroundFullscreen() string {
 // platformReader holds a PDH query on the GPU Engine and GPU Process Memory counters: the only
 // system-wide per-process GPU numbers under WDDM (nvidia-smi reports N/A there).
 type platformReader struct {
-	query       uintptr
-	util, vram  uintptr
-	ok          bool
+	query      uintptr
+	util, vram uintptr
+	ok         bool
 }
 
 func newPlatformReader() *platformReader {
