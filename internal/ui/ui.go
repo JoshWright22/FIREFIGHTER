@@ -55,7 +55,7 @@ func PrintBanner() {
 	for _, line := range strings.Split(Banner, "\n") {
 		fmt.Fprintln(os.Stderr, Paint(Hot, line))
 	}
-	fmt.Fprintln(os.Stderr, Paint(Ash, "  your agents start the fires. you stay the headliner."))
+	fmt.Fprintln(os.Stderr, Paint(Ash, "  your agents won't set your GPU on fire."))
 }
 
 // Mark starts every firefighter line.

@@ -31,7 +31,7 @@ import (
 
 var version = "dev"
 
-const usage = `firefighter: your agents start the fires, you stay the headliner.
+const usage = `firefighter: your agents won't set your GPU on fire.
 
   firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
                                  wait for a turn, run the command here, print a receipt

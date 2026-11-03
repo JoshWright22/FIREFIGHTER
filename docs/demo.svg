@@ -54,5 +54,5 @@
   <g class="l l11"><text x="22" y="356"><tspan class="y">   nanoGPT train: resumed</tspan><tspan class="g"> · reserve gives back 1 CPU / 15 s</tspan></text></g>
   <g class="l l12"><text x="22" y="388"><tspan class="k">◆ nanoGPT train: curtain call, ok (exit 0) in 37.2 min</tspan><tspan class="g"> (declared 40), charged 31.4</tspan></text></g>
   <g class="l l13"><text x="22" y="412"><tspan class="k">◆ evals: spotlight's yours</tspan><tspan class="g"> (lease 15 min, price locked x0.9)</tspan></text></g>
-  <g class="l l14"><text x="22" y="444"><tspan class="g">   your agents start the fires. you stay the headliner.</tspan></text></g>
+  <g class="l l14"><text x="22" y="444"><tspan class="g">   your agents won't set your GPU on fire.</tspan></text></g>
 </svg>
