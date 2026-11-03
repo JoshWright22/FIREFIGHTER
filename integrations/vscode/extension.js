@@ -65,7 +65,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('firefighter.cancel', async () => {
       const id = await vscode.window.showInputBox({ prompt: 'Job id to cancel' })
-      if (id) vscode.window.showInformationMessage((await run(['cancel', id])).trim() || `cancelled ${id}`)
+      if (id) vscode.window.showInformationMessage((await run(['cancel', id, '--force'])).trim() || `cancelled ${id}`)
     }))
   listen()
 }

@@ -234,15 +234,32 @@ func dockerImageAt(args []string) int {
 	withValue := map[string]bool{"--name": true, "-e": true, "--env": true, "-v": true, "--volume": true, "-p": true, "--publish": true,
 		"-w": true, "--workdir": true, "--gpus": true, "--label": true, "-l": true, "--network": true, "--entrypoint": true, "-u": true, "--user": true,
 		"--shm-size": true, "--memory": true, "-m": true, "--cpus": true, "--mount": true, "--env-file": true, "--platform": true}
+	// Options that never take a value; any other "--opt" without "=" takes the next argument (docker
+	// has many more valued options than flags, so this errs toward finding the real image).
+	flags := map[string]bool{"--detach": true, "--interactive": true, "--tty": true, "--rm": true, "--privileged": true,
+		"--init": true, "--read-only": true, "--publish-all": true, "--no-healthcheck": true, "--oom-kill-disable": true,
+		"--help": true, "--quiet": true, "--disable-content-trust": true}
+	_ = withValue
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if strings.HasPrefix(a, "-") {
-			if withValue[a] {
+		switch {
+		case a == "--":
+			if i+1 < len(args) {
+				return i + 1
+			}
+			return -1
+		case strings.HasPrefix(a, "--"):
+			if !strings.Contains(a, "=") && !flags[a] {
 				i++
 			}
-			continue
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			// short options: a cluster of flags (-it, -d, -P) or one valued option (-e X, -v X)
+			if strings.Trim(a[1:], "ditP") != "" && !strings.Contains(a, "=") && len(a) == 2 {
+				i++
+			}
+		default:
+			return i
 		}
-		return i
 	}
 	return -1
 }

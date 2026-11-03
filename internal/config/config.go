@@ -89,6 +89,11 @@ type Config struct {
 		// AgentsCanConfigure lets the firefighter_config MCP tool change settings. Off: agents can
 		// read the policy but only the human (CLI) changes it.
 		AgentsCanConfigure bool `toml:"agents_can_configure"`
+		// A caller counts as the human only when its process chain reaches one of HumanHosts (a
+		// terminal or the desktop) without passing an agent CLI or one of AgentHosts (runtimes and
+		// IDEs that host agents). Anything else is an unknown agent: its own session's work only.
+		HumanHosts []string `toml:"human_hosts"`
+		AgentHosts []string `toml:"agent_hosts"`
 		// KeepAlive: shared build servers a job may start that must outlive it (they're reused by the
 		// human's own builds), so they aren't killed with the job's leftover workers.
 		KeepAlive []string `toml:"keep_alive"`
@@ -152,6 +157,11 @@ func Defaults() Config {
 	c.Guard.HeavySeconds = 60
 	c.Guard.KeepAlive = []string{"vbcscompiler", "msbuild", "sccache", "adb", "gradle", "kotlin-daemon", "bazel", "buildkitd", "dotnet-build-server", "ccache"}
 	c.Guard.NewProjectMinutes = 120
+	c.Guard.HumanHosts = []string{"explorer", "windowsterminal", "openconsole", "wezterm-gui", "alacritty", "kitty", "ghostty",
+		"terminal", "iterm2", "gnome-terminal-server", "konsole", "xterm", "xfce4-terminal", "tilix", "foot", "terminator",
+		"sshd", "tmux: server", "tmux", "screen", "login"}
+	c.Guard.AgentHosts = []string{"node", "bun", "deno", "code", "code - insiders", "cursor", "windsurf", "devin", "electron",
+		"t3 code (beta)", "t3 code", "antigravity", "zed", "idea64", "pycharm64", "webstorm64", "rider64", "goland64", "clion64"}
 	return c
 }
 

@@ -80,6 +80,37 @@ func AgentAncestorPID(pid int, names []string) int {
 	return 0
 }
 
+// HumanSession says whether pid was started by the human: its parent chain, unbroken (no reused or
+// vanished parent), reaches a human host (terminal, desktop shell) before any agent CLI or agent
+// host (node, an IDE). An orphaned helper or a script under node isn't the human.
+func HumanSession(pid int, humans, agents, agentHosts []string) bool {
+	match := func(n string, list []string) bool {
+		for _, a := range list {
+			if a = strings.ToLower(a); n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
+				return true
+			}
+		}
+		return false
+	}
+	p, err := process.NewProcess(int32(pid))
+	for depth := 0; err == nil && p != nil && depth < 40; depth++ {
+		n, _ := p.Name()
+		n = strings.TrimSuffix(strings.ToLower(n), ".exe")
+		if depth > 0 && (match(n, agents) || match(n, agentHosts)) {
+			return false
+		}
+		if match(n, humans) {
+			return true
+		}
+		child := p
+		p, err = p.Parent()
+		if err != nil || p == nil || p.Pid <= 1 || youngerThan(p, child) {
+			return false // chain broken (orphaned, detached) or reached init: not provably the human
+		}
+	}
+	return false
+}
+
 func AgentAncestor(pid int, names []string) string {
 	p, err := process.NewProcess(int32(pid))
 	for depth := 0; err == nil && depth < 20; depth++ {

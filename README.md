@@ -306,9 +306,12 @@ tests both one-command installers.
 - It only acts on what a job's own client started (the caller is identified by its exact TCP
   connection, not by what it claims; only that client can start the job), on containers labeled
   for that job, and on processes adopted by you or, for its own session's work only, by an agent.
-  Ancestry and ownership checks ignore reused pids. "You" means a caller with no agent CLI above
-  it, so an agent that detaches a helper process, or one hosted inside an IDE (Cline, Copilot),
-  is treated as you: these are guardrails against accidents, not a boundary against a hostile agent.
+  Ancestry and ownership checks ignore reused pids. "You" means a caller whose unbroken process
+  chain reaches a terminal or your desktop with no agent CLI, script runtime (node) or IDE in
+  between (`guard.human_hosts`, `guard.agent_hosts`). Anything else, including detached helpers
+  and agents hosted in node or an IDE, is an agent session limited to its own work and its project;
+  from an IDE terminal, add `--force` to manage another project's job. These are guardrails against
+  accidents, not a boundary against a hostile agent with your shell.
 - `firefighter_submit` runs a command as you, outside an agent's own sandbox; its MCP annotations
   say so, so hosts can ask for approval as they do for a shell.
 - Releases are built by GitHub Actions with SHA-pinned actions, the Go toolchain from go.mod, a

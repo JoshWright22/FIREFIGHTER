@@ -1124,10 +1124,16 @@ func (d *Daemon) cardFor(want string) (int, float64) {
 	return best, bestLeft
 }
 
+// cardLeft is the VRAM a job of this vendor would find on its card, after the human's reserve.
+func (d *Daemon) cardLeft(want string) float64 {
+	_, left := d.cardFor(want)
+	return left - d.res.VRAMGB
+}
+
 func (d *Daemon) admit(now time.Time) {
 	c := d.cfg
 	ram, vram := d.headroom(now)
-	taken := map[int]float64{} // VRAM granted per card this tick
+
 	_, vt := d.snap.MaxFreeVRAM()
 	gpuRunning := 0
 	for _, j := range d.jobs {
@@ -1165,16 +1171,17 @@ func (d *Daemon) admit(now time.Time) {
 			if gpuBlocked || gpuRunning >= c.GPU.MaxJobs {
 				continue
 			}
-			card, left := d.cardFor(t.WantVendor)
-			left -= d.res.VRAMGB + taken[card]
+			card, left := d.cardFor(t.WantVendor) // already less the jobs granted this tick
+			left -= d.res.VRAMGB
 			// A learned need can't exceed what the card ever offers: its size, less the human's
-			// reserve, less the desktop's own baseline (at most 1.5 GB). A learned peak near the
+			// reserve, less the desktop's own baseline (at most 15% of the card, 1.5 GB minimum). A learned peak near the
 			// card's size is clamped to that, so it waits for the card at its emptiest instead of
 			// forever. A declared --vram is never shrunk, and an idle program holding VRAM still
 			// makes the job wait.
 			need := t.NeedVRAM
 			if card >= 0 && card < len(d.cardFloor) && need > t.VRAMGB {
-				most := d.snap.GPUs[card].VRAMGB - d.res.VRAMGB - math.Min(d.cardFloor[card], 1.5)
+				g := d.snap.GPUs[card]
+				most := g.VRAMGB - d.res.VRAMGB - math.Min(d.cardFloor[card], math.Max(1.5, 0.15*g.VRAMGB))
 				need = math.Max(t.VRAMGB, math.Min(need, math.Max(0.5, most)))
 			}
 			if vt > 0 && card >= 0 && need > left {
@@ -1207,7 +1214,6 @@ func (d *Daemon) admit(now time.Time) {
 		}
 		if t.GPU {
 			card, _ := d.cardFor(t.WantVendor)
-			taken[card] += t.NeedVRAM
 			vram -= t.NeedVRAM
 			gpuRunning++
 			j.backfilled = headWaitsOnVRAM

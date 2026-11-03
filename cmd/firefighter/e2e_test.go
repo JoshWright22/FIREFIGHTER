@@ -769,3 +769,31 @@ func TestMixedVendorsPinWithTheirOwnVariables(t *testing.T) {
 		t.Fatalf("job should be pinned to the AMD card with ROCm variables:\n%s", got)
 	}
 }
+
+// The image is found past valued options docker has that firefighter doesn't list, and flags and
+// short-flag clusters don't eat it; rewrites never touch the container's own arguments.
+func TestDockerImageAt(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--ipc", "host", "--gpus", "all", "pytorch:latest", "python", "--name", "x"}, "pytorch:latest"},
+		{[]string{"-it", "--rm", "--ulimit", "memlock=-1", "img"}, "img"},
+		{[]string{"-d", "-e", "A=1", "--device=/dev/kfd", "rocm/pytorch", "--gpus", "all"}, "rocm/pytorch"},
+		{[]string{"--group-add", "video", "-v", "/a:/b", "img:1"}, "img:1"},
+	}
+	for _, c := range cases {
+		if got := dockerImage(c.args); got != c.want {
+			t.Fatalf("%v: image %q, want %q", c.args, got, c.want)
+		}
+	}
+	two := 2
+	out := dockerGPU([]string{"docker", "run", "--ipc", "host", "--gpus", "all", "img", "--gpus", "all"}, &two, "nvidia")
+	if out[5] != "device=2" || out[8] != "all" {
+		t.Fatalf("narrow only docker's own --gpus: %v", out)
+	}
+	argv, name := dockerize([]string{"docker", "run", "--ipc", "host", "--name", "mine", "img", "--name", "inner"}, "abcd1234")
+	if name != "mine" {
+		t.Fatalf("the user's --name before the image is the container's name: %q %v", name, argv)
+	}
+}

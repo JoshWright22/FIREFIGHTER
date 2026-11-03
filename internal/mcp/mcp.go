@@ -78,15 +78,16 @@ func boo(d string) map[string]any { return map[string]any{"type": "boolean", "de
 
 var baseTools = []tool{
 	{"firefighter_submit", "Queue heavy work (GPU, or CPU over ~1 min) on this shared machine. Returns one line: job id, start estimate, cost, do: (next step). Then call firefighter_wait.", obj(map[string]any{
-		"command": str("Shell command"),
-		"cwd":     str("Absolute working directory"),
-		"minutes": num("High-end runtime guess; a lease, billed 2x past 1.25x"),
-		"gpu":     boo("Needs the GPU"),
-		"vram_gb": num("Peak VRAM GB, if known"),
-		"ram_gb":  num("Peak RAM GB, if known"),
-		"urgent":  boo("Only when the human waits on the result; 2x price"),
-		"spot":    boo("Leftover time only; 1/3 price, paused first"),
-		"name":    str("'<project> <what>'"),
+		"command":    str("Shell command"),
+		"cwd":        str("Absolute working directory"),
+		"minutes":    num("High-end runtime guess; a lease, billed 2x past 1.25x"),
+		"gpu":        boo("Needs the GPU"),
+		"vram_gb":    num("Peak VRAM GB, if known"),
+		"ram_gb":     num("Peak RAM GB, if known"),
+		"urgent":     boo("Only when the human waits on the result; 2x price"),
+		"spot":       boo("Leftover time only; 1/3 price, paused first"),
+		"gpu_vendor": str("GPUs the job can use: nvidia, amd, intel or any (default NVIDIA if present)"),
+		"name":       str("'<project> <what>'"),
 	}, "command", "cwd", "minutes")},
 	{"firefighter_wait", "Wait up to ~45 s on a job. One line, short if nothing changed; receipt and log tail when done.", obj(map[string]any{
 		"id": str("Job id"), "timeout_s": num("Seconds, max 50"),
@@ -288,6 +289,9 @@ func call(name string, a map[string]any) (string, any, error) {
 		}
 		if v := s(a, "name"); v != "" {
 			args = append(args, "--name", v)
+		}
+		if v := s(a, "gpu_vendor"); v != "" {
+			args = append(args, "--gpu-vendor", v)
 		}
 		shell := []string{"sh", "-c"}
 		if runtime.GOOS == "windows" {

@@ -154,10 +154,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	// Who is really asking: the process on the other end of this connection, not what it claims,
 	// and the agent session it belongs to. Looked up before taking the lock (it lists sockets).
 	caller := callerPID(r)
-	owner := 0
-	if caller > 1 {
-		owner = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
-	}
+	owner, human := d.sessionOf(caller)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := time.Now()
@@ -190,7 +187,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't a job this client started", t.PID))
 		return
 	}
-	if req.Running && req.Adopt && owner != 0 && !sysinfo.DescendantOf(t.PID, owner) {
+	if req.Running && req.Adopt && !human && !sysinfo.DescendantOf(t.PID, owner) {
 		// An agent may adopt work from its own session; any other process is the human's to adopt.
 		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't from this agent session; the human can adopt it from a terminal", t.PID))
 		return
@@ -391,11 +388,8 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	caller := callerPID(r)
-	callerAgent, callerAgentAt := 0, int64(0)
-	if caller > 1 {
-		callerAgent = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
-		callerAgentAt = sysinfo.Created(callerAgent)
-	}
+	callerAgent, callerHuman := d.sessionOf(caller)
+	callerAgentAt := sysinfo.Created(callerAgent)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id, verb := r.PathValue("id"), r.PathValue("verb")
@@ -409,9 +403,9 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	// the agent session that submitted it, or an agent in the same project. Other agents need
 	// --force. A guard against agents touching each other's work by accident, not a sandbox.
 	if verb == "cancel" || verb == "bid" || verb == "extend" || verb == "done" {
-		sameSession := callerAgent != 0 && callerAgent == j.ownerAgent && callerAgentAt == j.ownerCreated
-		human := caller > 1 && callerAgent == 0 // identified, with no agent above it
-		if !human && !sameSession && cleanText(a.Project, 100) != j.Project && !a.Force {
+		sameSession := callerAgent != 0 && (callerAgent == j.ownerAgent && callerAgentAt == j.ownerCreated ||
+			caller == j.ClientPID) // the job's own client always may (an unknown agent's own job)
+		if !callerHuman && !sameSession && cleanText(a.Project, 100) != j.Project && !a.Force {
 			fail(w, http.StatusForbidden, fmt.Sprintf("job %s belongs to another agent session (project %s); add --force if you mean it", id, j.Project))
 			return
 		}
@@ -645,14 +639,14 @@ func (d *Daemon) view(j *job) View {
 }
 
 func (d *Daemon) blocker(j *job) string {
-	ram, vram := d.headroom(time.Now())
+	ram, _ := d.headroom(time.Now())
 	switch {
 	case j.GPU && d.gpuHeld():
 		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:
 		return "spot band (over budget or --spot): runs on leftovers only"
-	case j.GPU && j.NeedVRAM > vram:
-		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", j.NeedVRAM, math.Max(0, vram))
+	case j.GPU && len(d.snap.GPUs) > 0 && j.NeedVRAM > d.cardLeft(j.WantVendor):
+		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", j.NeedVRAM, math.Max(0, d.cardLeft(j.WantVendor)))
 	case j.NeedRAM > ram:
 		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram))
 	case j.GPU && len(d.busyOutside()) > 0:
@@ -744,10 +738,7 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Project, p.What, p.When = cleanText(p.Project, 100), cleanText(p.What, 300), cleanText(p.When, 40)
-	planOwner := 0
-	if caller := callerPID(r); caller > 1 {
-		planOwner = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
-	}
+	planOwner, _ := d.sessionOf(callerPID(r))
 	planOwnerAt := sysinfo.Created(planOwner)
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -769,12 +760,8 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 
 func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 	caller := callerPID(r)
-	agent, agentAt := 0, int64(0)
-	if caller > 1 {
-		agent = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
-		agentAt = sysinfo.Created(agent)
-	}
-	human := caller > 1 && agent == 0
+	agent, human := d.sessionOf(caller)
+	agentAt := sysinfo.Created(agent)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id := r.PathValue("id")
@@ -782,7 +769,8 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 	for _, p := range d.st.Plans {
 		// The human removes any plan; an agent removes its own session's (or, after a restart
 		// forgot who added it, its project's).
-		mine := human || (p.owner != 0 && p.owner == agent && p.ownerAt == agentAt) || (p.owner == 0 && p.Project == id)
+		// Like jobs: the human, the session that announced it, or its project (by project name).
+		mine := human || (p.owner != 0 && p.owner == agent && p.ownerAt == agentAt) || p.Project == id
 		if (p.ID == id || p.Project == id) && mine {
 			continue
 		}
@@ -885,4 +873,25 @@ func callerPID(r *http.Request) int {
 func sameIP(a, b string) bool {
 	x, y := net.ParseIP(a), net.ParseIP(b)
 	return x != nil && y != nil && x.Equal(y)
+}
+
+// sessionOf names the agent session a caller belongs to: the nearest agent CLI above it, else (when
+// the caller isn't a provable human session) the nearest agent host such as node or an IDE (one
+// session per host process), else the caller itself. human: a terminal or the desktop started it,
+// with no agent in between.
+func (d *Daemon) sessionOf(caller int) (session int, human bool) {
+	if caller <= 1 {
+		return 0, false
+	}
+	g := d.cfg.Guard
+	if a := sysinfo.AgentAncestorPID(caller, g.AgentParents); a != 0 {
+		return a, false
+	}
+	if sysinfo.HumanSession(caller, g.HumanHosts, g.AgentParents, g.AgentHosts) {
+		return 0, true
+	}
+	if h := sysinfo.AgentAncestorPID(caller, g.AgentHosts); h != 0 {
+		return h, false
+	}
+	return caller, false
 }
