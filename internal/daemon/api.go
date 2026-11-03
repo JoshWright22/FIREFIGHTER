@@ -112,6 +112,12 @@ func (d *Daemon) routes() http.Handler {
 	mux.HandleFunc("POST /v1/plans", d.plan)
 	mux.HandleFunc("DELETE /v1/plans/{id}", d.unplan)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only local clients by name (defense in depth against DNS rebinding; the token already
+		// can't be sent by a page without a CORS preflight, which fails).
+		if h, _, err := net.SplitHostPort(r.Host); err != nil || (h != "127.0.0.1" && h != "localhost" && h != "::1") {
+			http.Error(w, "bad host", http.StatusForbidden)
+			return
+		}
 		if r.Header.Get("X-Firefighter-Token") != d.Token {
 			http.Error(w, "bad token", http.StatusForbidden)
 			return
@@ -132,6 +138,7 @@ func fail(w http.ResponseWriter, code int, msg string) { http.Error(w, msg, code
 type Request struct {
 	policy.Ticket
 	Running bool `json:"running"`
+	Adopt   bool `json:"adopt"` // `firefighter adopt`: a process firefighter didn't start (its tree isn't firefighter's to clean up)
 }
 
 func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +240,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		_ = sysinfo.Background(t.PID)
 		d.lockPrice(j, now)
 	}
+	j.adopted = req.Running && req.Adopt
 	d.jobs[t.ID] = j
 	logf("%s [%s] %s: %s, band %d, bid %d, %.0f min declared (%.0f predicted), need %.1f GB RAM %.1f GB VRAM",
 		t.Name, t.Project, t.ID, map[bool]string{true: "GPU", false: "CPU"}[t.GPU], t.Band, t.Bid, t.Minutes, t.PredMinutes, t.NeedRAM, t.NeedVRAM)
@@ -306,12 +314,15 @@ func (d *Daemon) get(w http.ResponseWriter, r *http.Request) {
 			reply(w, v)
 			return
 		}
+		timer := time.NewTimer(time.Until(deadline))
 		select {
 		case <-ch:
-		case <-time.After(time.Until(deadline)):
+		case <-timer.C:
 		case <-r.Context().Done():
+			timer.Stop()
 			return
 		}
+		timer.Stop()
 	}
 }
 
@@ -358,7 +369,9 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	if (verb == "cancel" || verb == "bid" || verb == "extend") && a.Project != "" && a.Project != j.Project && !a.Force {
+	// cancel/bid/extend must name the job's project (or --force); done is checked when a project is
+	// sent (clients from before this check don't send one when finishing their own job).
+	if ((verb == "cancel" || verb == "bid" || verb == "extend") || (verb == "done" && a.Project != "")) && a.Project != j.Project && !a.Force {
 		fail(w, http.StatusForbidden, fmt.Sprintf("job %s belongs to project %s, not %s; add --force if you mean it", id, j.Project, a.Project))
 		return
 	}
@@ -483,6 +496,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		h.PeakVRAM = math.Max(h.PeakVRAM*0.9, j.peakVRAM) // slowly forgets old peaks
 		h.PeakRAM = math.Max(h.PeakRAM*0.9, j.peakRAM)
 		h.Runs++
+		h.Last = now
 	}
 	if !j.suspended.IsZero() {
 		d.resume(j)

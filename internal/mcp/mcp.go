@@ -103,7 +103,7 @@ func Serve(version string) error {
 	}
 	var wg sync.WaitGroup
 	for {
-		line, err := in.ReadBytes('\n')
+		line, err := readLine(in, 8<<20)
 		if len(strings.TrimSpace(string(line))) > 0 {
 			var req rpc
 			if json.Unmarshal(line, &req) != nil {
@@ -443,5 +443,26 @@ func callerProject() string {
 		if filepath.Dir(d) == d {
 			return filepath.Base(wd)
 		}
+	}
+}
+
+// readLine reads one newline-terminated message, refusing ones over max bytes (they're skipped).
+func readLine(in *bufio.Reader, max int) ([]byte, error) {
+	var buf []byte
+	for {
+		chunk, err := in.ReadSlice('\n')
+		if len(buf)+len(chunk) <= max {
+			buf = append(buf, chunk...)
+		} else {
+			buf = buf[:0] // too big: drop it, keep reading to its end
+			max = -1
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if max < 0 {
+			return []byte{}, err
+		}
+		return buf, err
 	}
 }

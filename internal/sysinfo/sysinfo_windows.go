@@ -380,7 +380,7 @@ func PrepareChild(cmd *exec.Cmd, argv []string) {
 		if len(rest) > 1 {
 			q := make([]string, len(rest))
 			for i, a := range rest {
-				if strings.ContainsAny(a, " \t") && !strings.HasPrefix(a, `"`) {
+				if strings.ContainsAny(a, " \t&|<>^%()") && !strings.HasPrefix(a, `"`) {
 					a = `"` + a + `"`
 				}
 				q[i] = a
@@ -440,7 +440,7 @@ func ExeName(n string) string {
 
 // PrepareBackground starts a helper (docker, the harvester) with no window; Windows has no terminal
 // foreground to lose.
-func PrepareBackground(cmd *exec.Cmd) { PrepareChild(cmd, nil) }
+func PrepareBackground(cmd *exec.Cmd) { PrepareChild(cmd, cmd.Args) }
 
 var (
 	getSystemCpuSetInformation = kernel32.NewProc("GetSystemCpuSetInformation")

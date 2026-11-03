@@ -1228,6 +1228,24 @@ func docker(engine string, args ...string) {
 // ---- helpers ------------------------------------------------------------------------------------
 
 func (d *Daemon) prune(now time.Time) {
+	// Projects idle for a month and commands not run in three months are forgotten, so state.json
+	// can't grow forever. Projects with a configured budget are kept.
+	for name, a := range d.st.Accounts {
+		if _, set := d.cfg.Budget.Projects[name]; !set && !a.DecayAt.IsZero() && now.Sub(a.DecayAt) > 30*24*time.Hour {
+			open := false
+			for _, j := range d.jobs {
+				open = open || (j.Project == name && j.State != "done")
+			}
+			if !open {
+				delete(d.st.Accounts, name)
+			}
+		}
+	}
+	for k, h := range d.st.History {
+		if !h.Last.IsZero() && now.Sub(h.Last) > 90*24*time.Hour {
+			delete(d.st.History, k)
+		}
+	}
 	for id, r := range d.st.Receipts {
 		if now.Sub(r.Ended) > 48*time.Hour {
 			delete(d.st.Receipts, id)
@@ -1254,7 +1272,12 @@ func (d *Daemon) prune(now time.Time) {
 	}
 }
 
-func touch(p string) { _ = os.WriteFile(p, []byte(time.Now().Format(time.RFC3339)), 0o600) }
+func touch(p string) {
+	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(p) // a link planted in signals/ is replaced, never written through
+	}
+	_ = os.WriteFile(p, []byte(time.Now().Format(time.RFC3339)), 0o600)
+}
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 

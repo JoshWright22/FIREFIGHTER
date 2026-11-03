@@ -5,6 +5,7 @@
 package setup
 
 import (
+	"encoding/xml"
 	"regexp"
 
 	"github.com/BurntSushi/toml"
@@ -389,7 +390,7 @@ func autostart(exe string) error {
 <key>KeepAlive</key><true/>
 <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
-`, exe)
+`, xmlEscape(exe))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -422,7 +423,7 @@ func autostart(exe string) error {
 			return err
 		}
 		return os.WriteFile(filepath.Join(dir, "firefighter.desktop"),
-			[]byte(fmt.Sprintf("[Desktop Entry]\nType=Application\nName=firefighter\nExec=%s daemon\nX-GNOME-Autostart-enabled=true\n", exe)), 0o644)
+			[]byte(fmt.Sprintf("[Desktop Entry]\nType=Application\nName=firefighter\nExec=%s daemon\nX-GNOME-Autostart-enabled=true\n", desktopQuote(exe))), 0o644)
 	}
 }
 
@@ -441,4 +442,16 @@ func removeAutostart() error {
 		_ = os.Remove(filepath.Join(home(), ".config", "autostart", "firefighter.desktop"))
 	}
 	return nil
+}
+
+func xmlEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
+}
+
+// desktopQuote quotes a path for a .desktop Exec= line (spaces and reserved characters).
+func desktopQuote(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", `$`, `\$`)
+	return `"` + r.Replace(s) + `"`
 }

@@ -18,6 +18,7 @@ type History struct {
 	PeakVRAM float64   `json:"peak_vram_gb"`
 	PeakRAM  float64   `json:"peak_ram_gb"`
 	Runs     int       `json:"runs"`
+	Last     time.Time `json:"last,omitempty"` // last run, for pruning
 }
 
 // Receipt is what an agent gets back when its job ends.

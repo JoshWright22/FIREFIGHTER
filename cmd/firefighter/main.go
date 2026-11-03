@@ -391,7 +391,7 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	defer sysinfo.RestoreForeground()
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		_, _ = c.Act(t.ID, "done", daemon.Act{Exit: 127})
+		_, _ = c.Act(t.ID, "done", daemon.Act{Exit: 127, Project: t.Project})
 		return 127, false, err
 	}
 	release, _ := sysinfo.Contain(cmd.Process.Pid)
@@ -458,7 +458,7 @@ loop:
 	} else if werr != nil {
 		code = 1
 	}
-	v, err = c.Act(t.ID, "done", daemon.Act{Exit: code})
+	v, err = c.Act(t.ID, "done", daemon.Act{Exit: code, Project: t.Project})
 	if err != nil {
 		return code, false, nil
 	}
@@ -511,6 +511,9 @@ func wait(args []string) (int, error) {
 	}
 	if id == "" && fs.NArg() == 1 {
 		id = fs.Arg(0)
+	}
+	if id != "" && !validJobID(id) {
+		return 2, fmt.Errorf("%q isn't a firefighter job id (8 hex characters)", id)
 	}
 	if id == "" {
 		return 2, errors.New("usage: firefighter wait <id> [--timeout s]")
@@ -750,7 +753,7 @@ func adopt(args []string) error {
 	if *name == "" {
 		*name = sysinfo.Name(pid)
 	}
-	v, err := c.Create(daemon.Request{Running: true, Ticket: policy.Ticket{Project: projectOf(cwd), Name: *name, GPU: *gpu, Minutes: *minutes,
+	v, err := c.Create(daemon.Request{Running: true, Adopt: true, Ticket: policy.Ticket{Project: projectOf(cwd), Name: *name, GPU: *gpu, Minutes: *minutes,
 		PID: pid, ClientPID: os.Getpid(), Bid: 5, Evict: "graceful", CmdHash: hashCmd([]string{sysinfo.Name(pid)})}})
 	if err == nil {
 		ui.Say(ui.Hot, "adopted pid %d as %s (%s)", pid, v.ID, v.Name)
@@ -1028,4 +1031,16 @@ func dockerGPU(argv []string, dev *int, vendor string) []string {
 		}
 	}
 	return out
+}
+
+func validJobID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
