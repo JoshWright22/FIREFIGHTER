@@ -1,6 +1,7 @@
 package sysinfo
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -99,14 +100,51 @@ func HumanSession(pid int, humans, agents, agentHosts []string) bool {
 		if match(n, agents) || match(n, agentHosts) { // the caller itself too (node calling directly)
 			return false
 		}
-		if depth > 0 && match(n, humans) { // a host above the caller, never the caller's own name
-			return true
+		if depth > 0 && match(n, humans) && systemExe(p) {
+			// A real terminal (installed where agents can't write, so not a renamed copy) above
+			// the caller. Above it, still no agent: a terminal an agent launched isn't the human's.
+			return !agentAbove(p, agents, agentHosts, match)
 		}
 		child := p
 		p, err = p.Parent()
 		if err != nil || p == nil || p.Pid <= 1 || youngerThan(p, child) {
 			return false // chain broken (orphaned, detached) or reached init: not provably the human
 		}
+	}
+	return false
+}
+
+// systemExe says whether a process runs from where only an administrator installs programs, so its
+// name can be trusted (a copy of cmd.exe renamed WindowsTerminal.exe in a user folder can't).
+func systemExe(p *process.Process) bool {
+	exe, err := p.Exe()
+	if err != nil || exe == "" {
+		return false
+	}
+	e := strings.ToLower(filepath.ToSlash(exe))
+	for _, dir := range []string{"c:/program files/", "c:/program files (x86)/", "c:/windows/", "/usr/", "/bin/", "/sbin/",
+		"/opt/", "/applications/", "/system/", "/nix/store/", "/snap/"} {
+		if strings.HasPrefix(e, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// agentAbove reports an agent CLI or agent host anywhere above p.
+func agentAbove(p *process.Process, agents, agentHosts []string, match func(string, []string) bool) bool {
+	for depth := 0; p != nil && depth < 40; depth++ {
+		child := p
+		parent, err := p.Parent()
+		if err != nil || parent == nil || parent.Pid <= 1 || youngerThan(parent, child) {
+			return false
+		}
+		n, _ := parent.Name()
+		n = strings.TrimSuffix(strings.ToLower(n), ".exe")
+		if match(n, agents) || match(n, agentHosts) {
+			return true
+		}
+		p = parent
 	}
 	return false
 }

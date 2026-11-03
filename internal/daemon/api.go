@@ -179,7 +179,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
 		return
 	}
-	if req.Running && (caller == 0 || (caller < 0 && req.Adopt)) {
+	if caller == 0 || (req.Running && caller < 0 && req.Adopt) {
 		fail(w, http.StatusForbidden, "couldn't tell which process is asking; adopt from a normal terminal")
 		return
 	}
@@ -436,6 +436,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if caller == 0 {
+		fail(w, http.StatusForbidden, "couldn't tell which process is asking (half-closed or foreign connection)")
+		return
+	}
 	switch verb {
 	case "start":
 		if j.State != "granted" {
@@ -471,7 +475,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 		logf("%s: started pid %d after %.1f min", j.Name, a.PID, now.Sub(j.Created).Minutes())
 	case "container":
-		if a.Container == "" || (j.ClientPID > 1 && caller > 1 && caller != j.ClientPID) {
+		if a.Container == "" || (j.ClientPID > 1 && caller != j.ClientPID && caller >= 0) {
 			fail(w, http.StatusForbidden, "only the job's own client can name its container")
 			return
 		}
