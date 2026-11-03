@@ -19,7 +19,11 @@ jobs:
           go-version: stable
       - run: go vet ./...
       - name: unit tests
-        run: go test -count=1 -race ./internal/...
+        shell: bash
+        run: |
+          race=-race
+          [ "$RUNNER_OS-$RUNNER_ARCH" = "Windows-ARM64" ] && race=   # no race detector on windows/arm64
+          go test -count=1 $race ./internal/...
       - name: end-to-end tests (real daemon, scripted human and GPU)
         run: go test -count=1 -v -timeout 20m ./cmd/firefighter
       - name: cross-build every target
@@ -71,3 +75,16 @@ jobs:
           if (-not (Select-String -Quiet "firefighter run" "$HOME\.claude\CLAUDE.md")) { throw "rules missing" }
           schtasks /Query /TN firefighter
           firefighter uninstall
+
+  vscode:
+    name: VS Code extension packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - working-directory: integrations/vscode
+        run: |
+          node --check extension.js
+          npx --yes @vscode/vsce package --no-dependencies -o /tmp/firefighter-vscode.vsix

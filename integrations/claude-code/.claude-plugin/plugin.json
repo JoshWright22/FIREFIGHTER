@@ -1,0 +1,5 @@
+{
+  "name": "firefighter",
+  "version": "0.1.0",
+  "description": "Live GPU/CPU/RAM status from firefighter in the status line, a /firefighter command, and a guard that routes heavy Bash work through the shared-machine queue."
+}

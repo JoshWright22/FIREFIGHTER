@@ -1,0 +1,28 @@
+{
+  "name": "firefighter",
+  "displayName": "firefighter: GPU/CPU/RAM queue for AI agents",
+  "description": "See who is using your GPU, CPU and RAM, the agent job queue and the market, right in the status bar. Works in VS Code, Cursor and Windsurf.",
+  "version": "0.1.0",
+  "publisher": "JoshWright22",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": { "type": "git", "url": "https://github.com/JoshWright22/firefighter" },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other", "Machine Learning"],
+  "keywords": ["gpu", "ai agents", "claude code", "codex", "scheduler", "vram", "mcp"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "firefighter.status", "title": "firefighter: Show status" },
+      { "command": "firefighter.quote", "title": "firefighter: Quote a GPU job" },
+      { "command": "firefighter.cancel", "title": "firefighter: Cancel a job" }
+    ],
+    "configuration": {
+      "title": "firefighter",
+      "properties": {
+        "firefighter.path": { "type": "string", "default": "firefighter", "description": "Path to the firefighter binary." }
+      }
+    }
+  }
+}

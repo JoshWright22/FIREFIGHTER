@@ -690,3 +690,25 @@ func TestExit75Requeues(t *testing.T) {
 		t.Fatalf("exit 75 must requeue and the rerun must finish:\n%s", out)
 	}
 }
+
+func TestStatuslineAndEvents(t *testing.T) {
+	e := newEnv(t, nil)
+	if out, _ := e.ff("statusline"); !strings.Contains(out, "off") {
+		t.Fatalf("statusline must not start the daemon and must say off:\n%s", out)
+	}
+	e.status()
+	out, code := e.ff("statusline", "--json")
+	if code != 0 || !strings.Contains(out, `"text":"🔥`) || !strings.Contains(out, `"tooltip"`) {
+		t.Fatalf("statusline --json: %d\n%s", code, out)
+	}
+	c := e.cmd(nil, "events")
+	pipe, _ := c.StdoutPipe()
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Process.Kill()
+	line, err := bufio.NewReader(pipe).ReadString('\n')
+	if err != nil || !strings.Contains(line, `"type":"status"`) {
+		t.Fatalf("events: %v %q", err, line)
+	}
+}

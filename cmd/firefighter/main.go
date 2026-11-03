@@ -48,6 +48,8 @@ const usage = `firefighter: your agents start the fires, you stay the headliner.
   firefighter plan "<what>" --when "<when>" --minutes N [--gpu PCT] [--vram GB] [--ram GB] [--done]
   firefighter config [show | set <key> <value> | unset <key> | presets | path]
   firefighter protocol           the pause/checkpoint helper for long GPU loops
+  firefighter statusline [--json]  one line for a status bar (Claude Code, VS Code, tmux, T3 Code)
+  firefighter events             NDJSON stream of status changes, for editor plugins
   firefighter setup              start at logon + teach every agent CLI (MCP + global rules)
   firefighter uninstall          undo setup
   firefighter daemon [--stop]    the guard itself (setup and the CLI start it for you)
@@ -76,6 +78,10 @@ func main() {
 		err = extend(args)
 	case "quote":
 		err = quote(args)
+	case "statusline":
+		err = statusline(args)
+	case "events":
+		err = events(args)
 	case "bid":
 		err = rebid(args)
 	case "cancel":
@@ -166,10 +172,13 @@ func projectOf(dir string) string {
 // its arguments. Shell wrappers (sh -c, cmd /c) are looked through, and docker runs are named by
 // image, so unrelated commands in one project don't share a history.
 func hashCmd(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
 	if len(argv) >= 3 {
 		switch strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe") {
 		case "sh", "bash", "zsh", "cmd", "powershell", "pwsh":
-			if f := strings.Fields(argv[len(argv)-1]); len(f) > 0 {
+			if f := strings.Fields(argv[len(argv)-1]); len(f) > 0 { // the inner command
 				argv = f
 			}
 		}

@@ -197,6 +197,18 @@ history, receipts, the hour-of-week occupancy), `STATUS.md` (a status snapshot r
 for agents that read files), `daemon.log`, `logs/<id>.log` (detached jobs, kept 7 days),
 `signals/` (pause and checkpoint files), `daemon.json` and `daemon.lock`.
 
+## Editors and agent apps
+
+- **Claude Code, Codex, Gemini CLI, Cursor, T3 Code:** `setup` wires up MCP and the rules
+  automatically.
+- **Claude Code plugin:** a live status-line entry, `/firefighter`, and a guard that sends heavy Bash
+  commands back to the agent to rerun through the queue:
+  `/plugin install firefighter --marketplace JoshWright22/firefighter`
+- **VS Code, Cursor, Windsurf extension:** a live status bar item (the `.vsix` is on every release).
+- **Anything else:** `firefighter statusline` gives one line for any status bar (Claude Code's
+  `statusLine`, tmux, starship), and `firefighter events` streams NDJSON for editor plugins.
+  There's also a local HTTP API. See [docs/integrations.md](docs/integrations.md).
+
 ## How it compares
 
 | | firefighter | AgentLoom / Anvil / gpuq | pueue / task-spooler | KAI-Scheduler / Kueue / Slurm |
