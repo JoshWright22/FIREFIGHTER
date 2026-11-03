@@ -75,3 +75,6 @@ func Detach(cmd *exec.Cmd, _ bool) {
 }
 
 func ExeName(n string) string { return n }
+
+// Elevated says whether this process runs as root.
+func Elevated() bool { return os.Geteuid() == 0 }

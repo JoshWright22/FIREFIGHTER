@@ -371,6 +371,13 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		ui.Say(ui.Hot, "%s: spotlight's yours (lease %.0f min, budget left %.1f)", t.Name, t.Minutes, v.Budget)
 	}
 
+	if container == "firefighter-"+t.ID {
+		// A requeued attempt reuses the name: clear the previous attempt's stopped container.
+		rm := exec.Command(argv[0], "rm", "-f", container)
+		sysinfo.PrepareBackground(rm)
+		_ = rm.Run()
+	}
+	argv = dockerGPU(argv, v.Device, v.Vendor) // a docker --gpus job goes to the card it was admitted on
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(),
@@ -405,9 +412,14 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		}
 	}
 	if container != "" {
-		go func() { // the container appears a moment after docker run starts
-			time.Sleep(3 * time.Second)
-			_, _ = c.Act(t.ID, "container", daemon.Act{Container: container})
+		engine := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe")
+		go func() { // the container appears once its image is pulled: keep trying for 10 minutes
+			for i := 0; i < 200; i++ {
+				time.Sleep(3 * time.Second)
+				if _, err := c.Act(t.ID, "container", daemon.Act{Container: container, Engine: engine}); err == nil {
+					return
+				}
+			}
 		}()
 	}
 
@@ -430,6 +442,7 @@ loop:
 			if _, err := c.Get(t.ID, "", 0); errors.Is(err, client.ErrNotFound) {
 				t2 := t
 				t2.PID = cmd.Process.Pid
+				t2.Device, t2.Vendor = v.Device, v.Vendor // back on the same card
 				_, _ = c.Create(daemon.Request{Ticket: t2, Running: true})
 			} else if err != nil {
 				if c2, err := client.Connect(); err == nil {
@@ -691,14 +704,22 @@ func extend(args []string) error {
 }
 
 func act(args []string, verb string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: firefighter %s <id>", verb)
+	force := hasFlag(args, "--force")
+	var ids []string
+	for _, a := range args {
+		if a != "--force" {
+			ids = append(ids, a)
+		}
 	}
+	if len(ids) != 1 {
+		return fmt.Errorf("usage: firefighter %s <id> [--force]", verb)
+	}
+	args = ids
 	c, err := client.Connect()
 	if err != nil {
 		return err
 	}
-	_, err = c.Act(args[0], verb, daemon.Act{Project: callerProject(), Force: hasFlag(args, "--force")})
+	_, err = c.Act(args[0], verb, daemon.Act{Project: callerProject(), Force: force})
 	return err
 }
 
@@ -730,7 +751,7 @@ func adopt(args []string) error {
 		*name = sysinfo.Name(pid)
 	}
 	v, err := c.Create(daemon.Request{Running: true, Ticket: policy.Ticket{Project: projectOf(cwd), Name: *name, GPU: *gpu, Minutes: *minutes,
-		PID: pid, ClientPID: pid, Bid: 5, Evict: "graceful", CmdHash: hashCmd([]string{sysinfo.Name(pid)})}})
+		PID: pid, ClientPID: os.Getpid(), Bid: 5, Evict: "graceful", CmdHash: hashCmd([]string{sysinfo.Name(pid)})}})
 	if err == nil {
 		ui.Say(ui.Hot, "adopted pid %d as %s (%s)", pid, v.ID, v.Name)
 	}
@@ -895,6 +916,11 @@ func daemonCmd(args []string) error {
 		ui.Note("the guard is already running")
 		return nil
 	}
+	if sysinfo.Elevated() && os.Getenv("FIREFIGHTER_ALLOW_ELEVATED") != "1" {
+		// Any agent of this user can read the token and write firefighter.toml: an elevated daemon
+		// would act on their behalf with admin/root rights. It starts unelevated at your next logon.
+		return errors.New("the guard won't run as administrator/root (it would lend those rights to every agent); it starts normally at your next logon, or run any firefighter command from a normal terminal. Containers/CI: FIREFIGHTER_ALLOW_ELEVATED=1")
+	}
 	unlock, err := daemon.Lock()
 	if err != nil {
 		return err
@@ -980,4 +1006,26 @@ func pinGPU(dev *int, vendor string) []string {
 		return []string{"ONEAPI_DEVICE_SELECTOR=level_zero:" + d}
 	}
 	return nil
+}
+
+// dockerGPU narrows `docker run --gpus all` (or a count) to the card the daemon placed the job on.
+func dockerGPU(argv []string, dev *int, vendor string) []string {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe")
+	if dev == nil || vendor != "nvidia" || (base != "docker" && base != "podman") || len(argv) < 2 || argv[1] != "run" {
+		return argv
+	}
+	out := append([]string{}, argv...)
+	want := fmt.Sprintf(`"device=%d"`, *dev)
+	for i, a := range out {
+		if a == "--" {
+			break
+		}
+		switch {
+		case a == "--gpus" && i+1 < len(out) && !strings.Contains(out[i+1], "device="):
+			out[i+1] = want
+		case strings.HasPrefix(a, "--gpus=") && !strings.Contains(a, "device="):
+			out[i] = "--gpus=" + want
+		}
+	}
+	return out
 }

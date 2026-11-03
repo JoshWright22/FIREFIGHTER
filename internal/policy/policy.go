@@ -39,6 +39,8 @@ type Ticket struct {
 	Started   time.Time `json:"started"`
 	PID       int       `json:"pid"`
 	ClientPID int       `json:"client_pid"`
+	Device    *int      `json:"gpu_device,omitempty"` // re-registration: the card it was placed on
+	Vendor    string    `json:"gpu_vendor,omitempty"`
 
 	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: max(declared, learned peak x margin)
 	NeedRAM     float64 `json:"need_ram_gb"`
@@ -60,6 +62,7 @@ type Account struct {
 	Day      string    `json:"day"` // daily budgets
 	UsedDay  float64   `json:"used_day"`
 	Fresh    bool      `json:"fresh"`
+	Created  time.Time `json:"created,omitempty"` // when the project first ran here
 }
 
 // Capacity of the machine, for DRF shares.

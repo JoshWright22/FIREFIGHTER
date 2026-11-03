@@ -23,7 +23,7 @@ func Detached(runArgs []string, cwd string) (id, log string, err error) {
 	}
 	id = daemon.NewID()
 	log = LogPath(id)
-	if err := os.MkdirAll(filepath.Dir(log), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(log), 0o700); err != nil {
 		return "", "", err
 	}
 	f, err := os.Create(log)

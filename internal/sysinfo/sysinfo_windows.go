@@ -495,3 +495,6 @@ func setCPUSets(pid int, cpus []int) error {
 	}
 	return nil
 }
+
+// Elevated says whether this process runs with an administrator token.
+func Elevated() bool { return windows.GetCurrentProcessToken().IsElevated() }

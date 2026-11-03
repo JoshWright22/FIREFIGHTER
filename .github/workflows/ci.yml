@@ -4,6 +4,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+# Hosted Windows runners run as an elevated admin; the guard refuses that by default.
+env:
+  FIREFIGHTER_ALLOW_ELEVATED: "1"
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -13,8 +18,8 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: stable
       - run: go vet ./...
@@ -42,8 +47,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: stable
       - name: build
@@ -80,11 +85,11 @@ jobs:
     name: VS Code extension packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
       - working-directory: integrations/vscode
         run: |
           node --check extension.js
-          npx --yes @vscode/vsce package --no-dependencies -o /tmp/firefighter-vscode.vsix
+          npx --yes @vscode/vsce@4.1.0 package --no-dependencies -o /tmp/firefighter-vscode.vsix

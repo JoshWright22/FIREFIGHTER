@@ -2,37 +2,67 @@ name: release
 on:
   push:
     tags: ["v*"]
+# Least privilege: only the jobs that publish get write access, and nothing that runs third-party
+# npm code holds a write token. Actions are pinned to commit SHAs.
 permissions:
-  contents: write
+  contents: read
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release and upload assets
+      id-token: write       # sign build provenance (Sigstore)
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: stable
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Signed provenance for every archive: `gh attestation verify <file> --repo JoshWright22/FIREFIGHTER`
+      # proves it was built by this workflow from this repo, independent of checksums.txt.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
   vscode:
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read        # builds with third-party npm code: no write token here
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
-      - name: package and attach the VS Code extension
+      - name: package the VS Code extension
         working-directory: integrations/vscode
         run: |
           npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
-          npx --yes @vscode/vsce package --no-dependencies -o firefighter-vscode.vsix
-          gh release upload "$GITHUB_REF_NAME" firefighter-vscode.vsix --clobber
+          npx --yes @vscode/vsce@4.1.0 package --no-dependencies -o firefighter-vscode.vsix
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vsix
+          path: integrations/vscode/firefighter-vscode.vsix
+  attach:
+    needs: vscode
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # upload one file; runs no third-party code
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vsix
+      - name: attach the extension to the release
+        run: gh release upload "$GITHUB_REF_NAME" firefighter-vscode.vsix --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

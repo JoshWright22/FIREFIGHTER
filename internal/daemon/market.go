@@ -291,7 +291,7 @@ func (d *Daemon) newAccount(project string, now time.Time) policy.Account {
 	for _, a := range d.st.Accounts {
 		used = append(used, a.Charged)
 	}
-	a := policy.Account{DecayAt: now, BucketAt: now, Bucket: d.cfg.Allowance(project)}
+	a := policy.Account{DecayAt: now, BucketAt: now, Bucket: d.cfg.Allowance(project), Created: now}
 	if len(used) > 0 {
 		// Later projects start from a pool all new projects share per day (guard.new_project_minutes)
 		// and earn the rest by refill: a hundred invented names get no more than one.

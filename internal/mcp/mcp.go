@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -288,6 +289,9 @@ func call(name string, a map[string]any) (string, any, error) {
 		}
 		deadline := time.Now().Add(time.Duration(t * float64(time.Second)))
 		id := s(a, "id")
+		if !jobID(id) {
+			return "", nil, fmt.Errorf("id must be a firefighter job id (8 hex characters)")
+		}
 		v, err := c.GetSoon(id)
 		first := v
 		var requeuedAt time.Time
@@ -321,16 +325,20 @@ func call(name string, a map[string]any) (string, any, error) {
 		return jobLine(v), v, nil
 	case "firefighter_job":
 		id := s(a, "id")
+		if !jobID(id) {
+			return "", nil, fmt.Errorf("id must be a firefighter job id (8 hex characters)")
+		}
 		var v daemon.View
+		me := callerProject()
 		switch s(a, "action") {
 		case "extend":
-			v, err = c.Act(id, "extend", daemon.Act{Minutes: f(a, "minutes")})
+			v, err = c.Act(id, "extend", daemon.Act{Minutes: f(a, "minutes"), Project: me})
 		case "urgent":
-			v, err = c.Act(id, "bid", daemon.Act{Minutes: 10})
+			v, err = c.Act(id, "bid", daemon.Act{Minutes: 10, Project: me})
 		case "normal":
-			v, err = c.Act(id, "bid", daemon.Act{Minutes: 5})
+			v, err = c.Act(id, "bid", daemon.Act{Minutes: 5, Project: me})
 		case "cancel":
-			v, err = c.Act(id, "cancel", daemon.Act{})
+			v, err = c.Act(id, "cancel", daemon.Act{Project: me})
 		default:
 			return "", nil, fmt.Errorf("action must be extend, urgent, normal or cancel")
 		}
@@ -389,8 +397,8 @@ func configCall(a map[string]any) (string, error) {
 		if !c.Guard.AgentsCanConfigure {
 			return "", fmt.Errorf("only the human changes firefighter's policy")
 		}
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(s(a, "key"))), "guard") {
-			return "", fmt.Errorf("guard settings are the human's only")
+		if !agentKey(s(a, "key")) {
+			return "", fmt.Errorf("agents may only change scheduling policy (preset, order.*, pricing.*, gpu.*); the rest is the human's")
 		}
 	}
 	switch act {
@@ -404,4 +412,36 @@ func configCall(a map[string]any) (string, error) {
 	}
 	c, err := config.Load()
 	return c.Show(), err
+}
+
+// agentKey: settings an agent may change when guard.agents_can_configure is on. Never guard.*
+// (the human's protections), harvester.* (shell commands the daemon runs), budget.* or reserve.*.
+func agentKey(k string) bool {
+	k = strings.ToLower(strings.TrimSpace(k))
+	return k == "preset" || strings.HasPrefix(k, "order.") || strings.HasPrefix(k, "pricing.") || strings.HasPrefix(k, "gpu.")
+}
+
+func jobID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// callerProject is the project of the directory the agent runs this MCP server in.
+func callerProject() string {
+	wd, _ := os.Getwd()
+	for d := wd; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return filepath.Base(d)
+		}
+		if filepath.Dir(d) == d {
+			return filepath.Base(wd)
+		}
+	}
 }

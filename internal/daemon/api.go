@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	psnet "github.com/shirou/gopsutil/v4/net"
 	"math"
 	"net"
 	"net/http"
@@ -48,7 +49,7 @@ func NewID() string {
 
 // Serve listens on localhost, publishes the endpoint, and runs the control loop.
 func (d *Daemon) Serve() error {
-	if err := os.MkdirAll(config.Home(), 0o755); err != nil {
+	if err := os.MkdirAll(config.Home(), 0o700); err != nil {
 		return err
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -175,11 +176,16 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		reply(w, d.view(old)) // re-registration after a daemon restart or a retry
 		return
 	}
+	t.Project, t.Name = cleanText(t.Project, 100), cleanText(t.Name, 120)
 	if t.Project == "" {
 		t.Project = "default"
 	}
 	if t.Name == "" {
 		t.Name = t.Project
+	}
+	// Who is really asking: the process on the other end of this connection, not what it claims.
+	if pid := callerPID(r); pid > 1 {
+		t.ClientPID = pid
 	}
 	open, total := 0, 0
 	for _, o := range d.jobs {
@@ -211,6 +217,14 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		t.State, t.Started = "running", now
 	}
 	j := newJob(&t)
+	if req.Running && t.Device != nil {
+		// Re-registration: put the job back on the card it was placed on.
+		for i, g := range d.snap.GPUs {
+			if g.Index == *t.Device && g.Vendor == t.Vendor {
+				j.device = i
+			}
+		}
+	}
 	if req.Running {
 		// Re-registration after a daemon restart: undo any suspend the old daemon left behind.
 		for p := range sysinfo.Members(t.PID, j.rootCreated, nil) {
@@ -311,6 +325,7 @@ type Act struct {
 	// A guard against agents touching each other's jobs by accident, not a security boundary.
 	Project string `json:"project,omitempty"`
 	Force   bool   `json:"force,omitempty"`
+	Engine  string `json:"engine,omitempty"` // container engine: docker | podman
 }
 
 // validID: ticket ids end up in file names, so only what NewID makes is accepted.
@@ -357,7 +372,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, fmt.Sprintf("pid %d isn't a running process", a.PID))
 			return
 		}
-		if j.ClientPID > 1 && !sysinfo.DescendantOf(a.PID, j.ClientPID) {
+		caller := callerPID(r)
+		if caller <= 1 {
+			caller = j.ClientPID
+		}
+		if caller <= 1 || !sysinfo.DescendantOf(a.PID, caller) {
 			// The job is a process its client started. Anything else (a game, a browser, another
 			// agent) must not be made idle-priority and killed with this job.
 			fail(w, http.StatusForbidden, fmt.Sprintf("pid %d wasn't started by this job's client", a.PID))
@@ -377,14 +396,14 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		if a.Container != "" && a.Container != j.container {
 			// Verified before the lock below would matter: only a container labeled for this job.
 			d.mu.Unlock()
-			ok := containerFor(a.Container, j.ID)
+			ok := containerFor(a.Engine, a.Container, j.ID)
 			d.mu.Lock()
 			if !ok {
 				fail(w, http.StatusForbidden, "container "+a.Container+" isn't labeled firefighter.job="+j.ID)
 				return
 			}
 		}
-		j.container = a.Container
+		j.container, j.engine = a.Container, a.Engine
 	case "bid": // re-bid while waiting, after reading the market
 		if a.Minutes < 1 || a.Minutes > 10 {
 			fail(w, 400, "bid must be 1-10")
@@ -479,7 +498,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		}
 		// A container started by `docker run` outlives its CLI when the client is interrupted.
 		if j.container != "" && outcome != "ok" && outcome != "failed" {
-			d.docker("kill", j.container)
+			d.docker(j.engine, "kill", j.container)
 		}
 	}
 	for _, f := range []string{PauseFile(id), PausedFile(id), CheckpointFile(id)} {
@@ -665,6 +684,7 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "plan: minutes 1-10080, gpu 0-100, sizes 0-4096 GB, short text")
 		return
 	}
+	p.Project, p.What, p.When = cleanText(p.Project, 100), cleanText(p.What, 300), cleanText(p.When, 40)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	mine := 0
@@ -716,18 +736,59 @@ func (d *Daemon) writeStatus() {
 	for _, p := range s.Plans {
 		fmt.Fprintf(&b, "- %s: %s, %s, ~%.0f min, GPU %.0f%%, %.1f GB VRAM, %.1f GB RAM\n", p.Project, p.What, p.When, p.Minutes, p.GPUPct, p.VRAMGB, p.RAMGB)
 	}
-	_ = os.WriteFile(filepath.Join(config.Home(), "STATUS.md"), []byte(b.String()), 0o644)
+	_ = os.WriteFile(filepath.Join(config.Home(), "STATUS.md"), []byte(b.String()), 0o600)
 }
 
 // containerFor says whether a container carries the label firefighter put on this job's docker run.
-func containerFor(name, id string) bool {
+func containerFor(engine, name, id string) bool {
 	if strings.HasPrefix(name, "-") {
 		return false
 	}
+	if engine != "podman" {
+		engine = "docker"
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := exec.CommandContext(ctx, "docker", "inspect", "-f", `{{index .Config.Labels "firefighter.job"}}`, name)
+	c := exec.CommandContext(ctx, engine, "inspect", "-f", `{{index .Config.Labels "firefighter.job"}}`, name)
 	sysinfo.PrepareBackground(c)
 	out, err := c.Output()
 	return err == nil && strings.TrimSpace(string(out)) == id
+}
+
+// cleanText drops control characters (newlines, terminal escapes) and trims to max runes: text one
+// agent sends is shown to other agents and printed in the human's terminal, so it must not forge
+// lines (a fake "do:") or carry escape sequences.
+func cleanText(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 {
+			r = ' '
+		}
+		if n >= max {
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// callerPID finds the local process on the other end of a request's TCP connection (0 if unknown).
+func callerPID(r *http.Request) int {
+	host, port, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || (host != "127.0.0.1" && host != "::1") {
+		return 0
+	}
+	p, _ := strconv.Atoi(port)
+	conns, err := psnet.Connections("tcp")
+	if err != nil {
+		return 0
+	}
+	for _, c := range conns {
+		if int(c.Laddr.Port) == p && c.Pid > 0 && c.Pid != int32(os.Getpid()) {
+			return int(c.Pid)
+		}
+	}
+	return 0
 }

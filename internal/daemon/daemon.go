@@ -53,6 +53,7 @@ type job struct {
 	adopted     bool      // auto-adopted: heavy work an agent started outside firefighter
 	backfilled  bool      // started ahead of a GPU head waiting on VRAM: can't extend its lease
 	device      int       // GPU index the job was placed on (-1: any/unknown)
+	engine      string    // container engine of j.container: docker | podman
 	ackBusy     time.Time // acked the pause but still computing on the GPU since then
 }
 
@@ -68,34 +69,36 @@ func newJob(t *policy.Ticket) *job {
 }
 
 type Daemon struct {
-	mu       sync.Mutex
-	cfg      config.Config
-	cfgMod   time.Time
-	cfgErr   string
-	st       saved
-	jobs     map[string]*job
-	reader   *sysinfo.Reader
-	snap     sysinfo.Snapshot
-	res      policy.ReserveCtl
-	user     string
-	gameWhy  string
-	gameTill time.Time
-	busyUser float64
-	utilEWMA float64 // GPU utilization smoothed over ~30 s: packing decisions ignore momentary dips
-	ramLow   time.Time
-	vramLow  time.Time
-	names    map[string]bool
-	namesAt  time.Time
-	foreign  map[string]float64   // non-job GPU users -> %
-	outSince map[string]time.Time // when each busy non-job GPU user was first seen busy
-	lastKill time.Time            // critical-RAM kills wait for the last one to free its memory
-	stopping atomic.Bool          // shutdown requested (once)
-	dockerQ  chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
-	graphics map[string]float64   // non-job 3D-engine users -> % (games, video)
-	others   []sysinfo.Container
-	notify   chan struct{}
-	rng      *rand.Rand
-	harvest  struct {
+	mu        sync.Mutex
+	cfg       config.Config
+	cfgMod    time.Time
+	cfgErr    string
+	st        saved
+	jobs      map[string]*job
+	reader    *sysinfo.Reader
+	snap      sysinfo.Snapshot
+	res       policy.ReserveCtl
+	user      string
+	gameWhy   string
+	gameTill  time.Time
+	busyUser  float64
+	utilEWMA  float64 // GPU utilization smoothed over ~30 s: packing decisions ignore momentary dips
+	ramLow    time.Time
+	vramLow   time.Time
+	names     map[string]bool
+	namesAt   time.Time
+	foreign   map[string]float64   // non-job GPU users -> %
+	outSince  map[string]time.Time // when each busy non-job GPU user was first seen busy
+	lastKill  time.Time            // critical-RAM kills wait for the last one to free its memory
+	stopping  atomic.Bool          // shutdown requested (once)
+	unknownAt map[bool]time.Time   // last grant of a never-seen command, per kind (GPU/CPU)
+	cardFloor []float64            // the least VRAM each card has had in use lately: the emptiest it gets
+	dockerQ   chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
+	graphics  map[string]float64   // non-job 3D-engine users -> % (games, video)
+	others    []sysinfo.Container
+	notify    chan struct{}
+	rng       *rand.Rand
+	harvest   struct {
 		on        bool
 		quietFrom time.Time
 	}
@@ -128,7 +131,7 @@ func New(version string) *Daemon {
 		stop:    make(chan struct{}),
 	}
 	d.reloadConfig()
-	_ = os.MkdirAll(signalDir(), 0o755)
+	_ = os.MkdirAll(signalDir(), 0o700)
 	// Pause files left by a daemon that died mid-game would freeze cooperative jobs: clear them.
 	if ents, err := os.ReadDir(signalDir()); err == nil {
 		for _, e := range ents {
@@ -146,7 +149,7 @@ func New(version string) *Daemon {
 	d.dockerQ = make(chan []string, 64)
 	go func() {
 		for args := range d.dockerQ {
-			docker(args...)
+			docker(args[0], args[1:]...)
 		}
 	}()
 	// The harvester's state isn't known after a restart: stop it; it restarts after the idle wait.
@@ -414,7 +417,8 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		j.peakVRAM = math.Max(j.peakVRAM, j.vramGB)
 	}
 	// Without per-process GPU counters (Linux nvidia-smi gives VRAM only), split the card's use.
-	if len(gpuJobs) > 0 {
+	// Where counters exist, a job at 0% really is idle: the card's load is someone else's (a game).
+	if len(gpuJobs) > 0 && !d.snap.ProcUtilKnown {
 		have := false
 		for _, j := range gpuJobs {
 			have = have || j.gpuUtil > 0
@@ -461,6 +465,26 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		jobCPU += j.cpuNow
 	}
 	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
+	if len(d.cardFloor) != len(d.snap.GPUs) {
+		d.cardFloor = make([]float64, len(d.snap.GPUs))
+		for i, g := range d.snap.GPUs {
+			d.cardFloor[i] = g.UsedGB
+		}
+	}
+	for i, g := range d.snap.GPUs {
+		jobUse := 0.0
+		for _, j := range d.running() {
+			if j.GPU && d.onCard(j, i) {
+				jobUse += j.vramGB
+			}
+		}
+		base := math.Max(0, g.UsedGB-jobUse) // what's in use that isn't firefighter's
+		if base < d.cardFloor[i] {
+			d.cardFloor[i] = base
+		} else if dt > 0 { // drifts up over ~6 h, so a long-gone low doesn't promise VRAM forever
+			d.cardFloor[i] += (base - d.cardFloor[i]) * math.Min(1, dt.Hours()/6)
+		}
+	}
 	d.foreign, d.graphics = map[string]float64{}, map[string]float64{}
 	for pid, g := range d.snap.ProcGPU {
 		// Where per-process utilization is measured, only real use counts (a browser holding VRAM
@@ -526,7 +550,17 @@ func (d *Daemon) account(project string, now time.Time) *policy.Account {
 		d.st.Accounts[project] = a
 	}
 	a.Decay(now, d.cfg.Order.HalfLifeHours)
+	before := a.Bucket
 	a.Refill(now, d.cfg, d.cfg.Allowance(project))
+	// A project in its first day refills from the pool all new projects share, so a stream of
+	// invented names can't each earn the full daily rate.
+	if !a.Created.IsZero() && now.Sub(a.Created) < 24*time.Hour && len(d.st.Accounts) > 1 {
+		if gain := a.Bucket - before; gain > 0 {
+			got := math.Min(gain, d.newcomers(now))
+			a.Bucket = before + got
+			d.st.Newcomers -= got
+		}
+	}
 	return a
 }
 
@@ -594,7 +628,7 @@ func (d *Daemon) enforceCPU() {
 		}
 		if j.container != "" && j.applied[-1] != key {
 			j.applied[-1] = key
-			d.docker("update", "--cpuset-cpus", fmt.Sprintf("%d-%d", n-allow, n-1), j.container)
+			d.docker(j.engine, "update", "--cpuset-cpus", fmt.Sprintf("%d-%d", n-allow, n-1), j.container)
 		}
 	}
 }
@@ -653,7 +687,8 @@ func (d *Daemon) ladder(now time.Time) {
 			logf("%s: no pause ack in %.0fs, suspended", j.Name, c.Ladder.PauseAckSeconds)
 		case hold && !j.pausedAt.IsZero() && j.suspended.IsZero() && j.checkpoint.IsZero() && acked:
 			// An ack is a promise, not proof: a job that acked but keeps computing is suspended.
-			j.ackBusy = since(j.ackBusy, j.gpuUtil >= 10, now)
+			// Only measurable with per-process counters; elsewhere the job's share is a guess.
+			j.ackBusy = since(j.ackBusy, d.snap.ProcUtilKnown && j.gpuUtil >= 10, now)
 			if !j.ackBusy.IsZero() && now.Sub(j.ackBusy) > dur(c.Ladder.PauseAckSeconds) {
 				j.suspended = now
 				d.suspend(j)
@@ -888,7 +923,7 @@ func (d *Daemon) killJob(j *job, now time.Time) {
 	}
 	logf("%s: killed (%s)", j.Name, j.reason)
 	if j.container != "" {
-		d.docker("kill", j.container)
+		d.docker(j.engine, "kill", j.container)
 	}
 	if !j.suspended.IsZero() {
 		d.resume(j) // a stopped process can't die cleanly on some systems
@@ -908,16 +943,20 @@ func (d *Daemon) each(j *job, f func(int) error) {
 
 func (d *Daemon) signalContainer(j *job, verb string) {
 	if j.container != "" {
-		d.docker(verb, j.container)
+		d.docker(j.engine, verb, j.container)
 	}
 }
 
-// docker queues a docker CLI call; calls run one at a time, in order.
-func (d *Daemon) docker(args ...string) {
+// docker queues a container CLI call (engine first: docker or podman); calls run one at a time,
+// in order.
+func (d *Daemon) docker(engine string, args ...string) {
+	if engine != "podman" {
+		engine = "docker"
+	}
 	select {
-	case d.dockerQ <- args:
+	case d.dockerQ <- append([]string{engine}, args...):
 	default:
-		logf("docker queue full; dropped: docker %s", strings.Join(args, " "))
+		logf("container queue full; dropped: %s %s", engine, strings.Join(args, " "))
 	}
 }
 
@@ -1056,7 +1095,9 @@ func (d *Daemon) admit(now time.Time) {
 	}
 	changed := false
 	headWaitsOnVRAM, cpuHeadBlocked := false, false
-	unknownGranted := map[bool]bool{} // first-time commands (no learned peaks): one per kind per tick
+	if d.unknownAt == nil {
+		d.unknownAt = map[bool]time.Time{}
+	}
 	jobsOn := func(gpu bool) int {
 		n := 0
 		for _, o := range d.jobs {
@@ -1069,20 +1110,21 @@ func (d *Daemon) admit(now time.Time) {
 	for _, t := range d.waiting() {
 		j := d.jobs[t.ID]
 		overdue := now.Sub(t.Created).Minutes() >= c.Order.MaxWaitMinutes
-		if d.st.History[histKey(t)] == nil {
-			if unknownGranted[t.GPU] {
-				continue
-			}
+		if d.st.History[histKey(t)] == nil && now.Sub(d.unknownAt[t.GPU]) < 5*time.Second {
+			continue // first-time commands (no learned peaks) start 5 s apart, so their real use shows
 		}
 		if t.GPU {
 			if gpuBlocked || gpuRunning >= c.GPU.MaxJobs {
 				continue
 			}
-			// The card can't free more than it has with no firefighter job and no outside compute
-			// on it: a need above that (a learned peak near the card's size) then gets the card as
-			// empty as it gets, instead of waiting forever.
-			emptiest := jobsOn(true) == 0 && len(d.outSince) == 0
-			if vt > 0 && t.NeedVRAM > vram && !emptiest {
+			// A need can't exceed what the card ever offers: its size, less the human's reserve, less
+			// the least VRAM others have held lately. A learned peak near the card's size is clamped
+			// to that, so it waits for the emptiest the card gets instead of forever.
+			need := t.NeedVRAM
+			if card, _ := d.freestCard(); card >= 0 && card < len(d.cardFloor) {
+				need = math.Min(need, math.Max(0.5, d.snap.GPUs[card].VRAMGB-d.res.VRAMGB-d.cardFloor[card]))
+			}
+			if vt > 0 && need > vram {
 				headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
 				continue
 			}
@@ -1108,7 +1150,7 @@ func (d *Daemon) admit(now time.Time) {
 		}
 		ram -= t.NeedRAM
 		if d.st.History[histKey(t)] == nil {
-			unknownGranted[t.GPU] = true
+			d.unknownAt[t.GPU] = now
 		}
 		if t.GPU {
 			vram -= t.NeedVRAM
@@ -1175,11 +1217,11 @@ func shell(cmd string) {
 	go c.Wait()
 }
 
-func docker(args ...string) {
-	c := exec.Command("docker", args...)
+func docker(engine string, args ...string) {
+	c := exec.Command(engine, args...)
 	sysinfo.PrepareBackground(c)
 	if out, err := c.CombinedOutput(); err != nil {
-		logf("docker %s: %v %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		logf("%s %s: %v %s", engine, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 }
 
@@ -1212,7 +1254,7 @@ func (d *Daemon) prune(now time.Time) {
 	}
 }
 
-func touch(p string) { _ = os.WriteFile(p, []byte(time.Now().Format(time.RFC3339)), 0o644) }
+func touch(p string) { _ = os.WriteFile(p, []byte(time.Now().Format(time.RFC3339)), 0o600) }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
@@ -1234,7 +1276,7 @@ func logf(format string, a ...any) {
 	if fi, err := os.Stat(path); err == nil && fi.Size() > 10<<20 { // keep one 10 MB generation
 		_ = os.Rename(path, path+".1")
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

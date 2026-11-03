@@ -51,7 +51,8 @@
         "firefighter.path": {
           "type": "string",
           "default": "firefighter",
-          "description": "Path to the firefighter binary."
+          "description": "Path to the firefighter binary (machine setting: a workspace can't change which program runs).",
+          "scope": "machine"
         }
       }
     }
@@ -59,5 +60,14 @@
   "galleryBanner": {
     "color": "#d4147a",
     "theme": "dark"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": [
+        "firefighter.path"
+      ],
+      "description": "The binary path is only read from your own settings."
+    }
   }
 }
