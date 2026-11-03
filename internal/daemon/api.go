@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -192,6 +193,13 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't from this agent session; the human can adopt it from a terminal", t.PID))
 		return
 	}
+	if caller > 1 {
+		t.ClientPID = caller // the real caller, never the body's claim
+	}
+	if req.Running && (t.PID == os.Getpid() || (runtime.GOOS == "windows" && t.PID <= 4)) {
+		fail(w, 400, fmt.Sprintf("pid %d is firefighter itself or the system", t.PID))
+		return
+	}
 	if req.Running && t.ClientPID > 1 && (t.PID == t.ClientPID || sysinfo.DescendantOf(t.ClientPID, t.PID)) {
 		// Adopting the caller's own shell or agent would put it (and the caller) on idle priority
 		// and kill it with the job.
@@ -237,6 +245,20 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	t.Bid = max(1, min(10, t.Bid))
 	delete(d.st.Receipts, t.ID) // a new attempt under the same id (requeue) replaces the old receipt
 	t.Created = now
+	if v := strings.ToLower(t.WantVendor); t.GPU && v != "" && v != "any" {
+		if v != "nvidia" && v != "amd" && v != "intel" {
+			fail(w, 400, "gpu vendor must be nvidia, amd, intel or any")
+			return
+		}
+		have := false
+		for _, g := range d.snap.GPUs {
+			have = have || g.Vendor == v
+		}
+		if !have && len(d.snap.GPUs) > 0 {
+			fail(w, 400, fmt.Sprintf("this machine has no %s GPU; use --gpu-vendor any to take what's here", v))
+			return
+		}
+	}
 	d.fillNeeds(&t)
 	a := d.account(t.Project, now)
 	t.Band = policy.BandFor(&t, a.Left(d.cfg, d.cfg.Allowance(t.Project)) > 0)
@@ -770,7 +792,9 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 		// The human removes any plan; an agent removes its own session's (or, after a restart
 		// forgot who added it, its project's).
 		// Like jobs: the human, the session that announced it, or its project (by project name).
-		mine := human || (p.owner != 0 && p.owner == agent && p.ownerAt == agentAt) || p.Project == id
+		// A plan id after a restart forgot who added it: whoever names the id.
+		mine := human || (p.owner != 0 && p.owner == agent && p.ownerAt == agentAt) || p.Project == id ||
+			(p.ID == id && p.owner == 0)
 		if (p.ID == id || p.Project == id) && mine {
 			continue
 		}

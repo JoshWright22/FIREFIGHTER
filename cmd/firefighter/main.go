@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -156,6 +157,11 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	}
 	if r.urgent {
 		r.bid = 10
+	}
+	switch strings.ToLower(r.vendor) {
+	case "", "nvidia", "amd", "intel", "any":
+	default:
+		return r, nil, fmt.Errorf("--gpu-vendor must be nvidia, amd, intel or any (got %q)", r.vendor)
 	}
 	if r.evict != "never" && r.evict != "graceful" && r.evict != "force" {
 		return nil, nil, fmt.Errorf("--evict must be never, graceful or force")
@@ -403,7 +409,9 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 
 	if container == "firefighter-"+t.ID {
 		// A requeued attempt reuses the name: clear the previous attempt's stopped container.
-		rm := exec.Command(argv[0], "rm", "-f", container)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rm := exec.CommandContext(ctx, argv[0], "rm", "-f", container)
 		sysinfo.PrepareBackground(rm)
 		_ = rm.Run()
 	}
