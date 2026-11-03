@@ -310,7 +310,7 @@ tests both one-command installers.
   chain reaches a terminal window (Windows Terminal, iTerm, GNOME Terminal, ...; or sshd) with no
   agent CLI, script runtime (node) or IDE in between (`guard.human_hosts`, `guard.agent_hosts`).
   The desktop shell, a classic console started from it, tmux and screen don't count (an agent can
-  open those silently); from them, add `--force` for other projects' jobs. Anything else, including detached helpers
+  open those silently); from them, add `--force` for other projects' jobs and for `adopt`. Anything else, including detached helpers
   and agents hosted in node or an IDE, is an agent session limited to its own work and its project;
   from an IDE terminal, add `--force` to manage another project's job. These are guardrails against
   accidents, not a boundary against a hostile agent with your shell.

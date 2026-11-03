@@ -766,16 +766,26 @@ func (d *Daemon) ladder(now time.Time) {
 			}
 		}
 		slotsFull := d.gpuBusySlots() >= c.GPU.MaxJobs
-		if head != nil && head.NeedRAM <= ram {
+		card := -1
+		if head != nil {
+			card, _ = d.cardFor(head.WantVendor)
+		}
+		if head != nil && head.NeedRAM <= ram && (card >= 0 || len(d.snap.GPUs) == 0) {
+			// Only a spot job on the card the head would use can make room for it, and the head's
+			// need there is the clamped one.
+			need, left := d.needOn(head, card), vram
+			if card >= 0 {
+				left = d.cardLeft(head.WantVendor)
+			}
 			var spot *job
 			for _, j := range d.running() {
-				if j.GPU && j.Band == policy.BandSpot && j.checkpoint.IsZero() && j.Evict != "never" &&
+				if j.GPU && j.Band == policy.BandSpot && j.checkpoint.IsZero() && j.Evict != "never" && (card < 0 || d.onCard(j, card)) &&
 					j.leaseUsed(now).Minutes() >= c.Ladder.MinRuntimeMinutes && (spot == nil || j.vramGB > spot.vramGB) {
 					spot = j
 				}
 			}
-			fits := head.NeedVRAM <= vram
-			if spot != nil && (slotsFull || !fits) && head.NeedVRAM <= vram+spot.vramGB+0.5 {
+			fits := need <= left
+			if spot != nil && (slotsFull || !fits) && need <= left+spot.vramGB+0.5 {
 				d.requestCheckpoint(spot, now, "spot job yields to "+head.Name)
 			}
 		}

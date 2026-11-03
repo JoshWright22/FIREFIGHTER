@@ -778,6 +778,7 @@ func adopt(args []string) error {
 	gpu := fs.Bool("gpu", false, "uses the GPU")
 	name := fs.String("name", "", "name")
 	minutes := fs.Float64("minutes", 60, "expected minutes left")
+	force := fs.Bool("force", false, "adopt a process from outside this session (from tmux, screen or a plain console)")
 	var pidArg string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		pidArg, args = args[0], args[1:]
@@ -800,7 +801,7 @@ func adopt(args []string) error {
 	if *name == "" {
 		*name = sysinfo.Name(pid)
 	}
-	v, err := c.Create(daemon.Request{Running: true, Adopt: true, Ticket: policy.Ticket{Project: projectOf(cwd), Name: *name, GPU: *gpu, Minutes: *minutes,
+	v, err := c.Create(daemon.Request{Running: true, Adopt: true, Force: *force, Ticket: policy.Ticket{Project: projectOf(cwd), Name: *name, GPU: *gpu, Minutes: *minutes,
 		PID: pid, ClientPID: os.Getpid(), Bid: 5, Evict: "graceful", CmdHash: hashCmd([]string{sysinfo.Name(pid)})}})
 	if err == nil {
 		ui.Say(ui.Hot, "adopted pid %d as %s (%s)", pid, v.ID, v.Name)

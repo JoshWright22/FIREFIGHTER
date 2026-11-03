@@ -105,7 +105,7 @@ func threads(pid int) []int {
 
 // Background: nice 19, SCHED_IDLE and the idle I/O class, on every thread.
 func Background(pid int) error {
-	if pid <= 1 {
+	if pid <= 1 || pid == os.Getpid() {
 		return os.ErrInvalid
 	}
 	if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); err != nil {
@@ -122,7 +122,7 @@ func Background(pid int) error {
 
 // SetCPUs pins every thread of a process to the given CPUs.
 func SetCPUs(pid int, cpus []int) error {
-	if pid <= 1 {
+	if pid <= 1 || pid == os.Getpid() {
 		return os.ErrInvalid
 	}
 	var set unix.CPUSet

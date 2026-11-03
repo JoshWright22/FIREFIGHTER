@@ -143,7 +143,8 @@ func fail(w http.ResponseWriter, code int, msg string) { http.Error(w, msg, code
 type Request struct {
 	policy.Ticket
 	Running bool `json:"running"`
-	Adopt   bool `json:"adopt"` // `firefighter adopt`: a process firefighter didn't start (its tree isn't firefighter's to clean up)
+	Adopt   bool `json:"adopt"`           // `firefighter adopt`: a process firefighter didn't start (its tree isn't firefighter's to clean up)
+	Force   bool `json:"force,omitempty"` // adopt a process from outside the caller's session (the human in tmux/screen)
 }
 
 func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
@@ -192,9 +193,9 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't a job this client started", t.PID))
 		return
 	}
-	if req.Running && req.Adopt && !human && !sysinfo.DescendantOf(t.PID, owner) {
+	if req.Running && req.Adopt && !human && !req.Force && !sysinfo.DescendantOf(t.PID, owner) {
 		// An agent may adopt work from its own session; any other process is the human's to adopt.
-		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't from this agent session; the human can adopt it from a terminal", t.PID))
+		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't from this agent session; adopt it from a terminal window, or add --force", t.PID))
 		return
 	}
 	if caller > 1 {
@@ -328,16 +329,13 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 		if t.NeedVRAM == 0 {
 			t.NeedVRAM = d.cfg.GPU.DefaultVRAMGB
 		}
-		_, card := d.snap.MaxFreeVRAM()
-		if card == 0 {
+		if len(d.snap.GPUs) == 0 {
 			// No discrete GPU (Apple silicon, iGPU): VRAM is system RAM, so admit on RAM.
 			t.NeedRAM += t.NeedVRAM
 			t.NeedVRAM = 0
-		} else if most := card - d.cfg.Reserve.Away.VRAMGB; t.NeedVRAM > most {
-			// A need the card can never free (a learned peak x margin near the card size) would
-			// block the GPU line forever: wait for the emptiest the card gets instead.
-			t.NeedVRAM = math.Max(0.5, most)
 		}
+		// No cap here: which card the job gets is decided at admission, where needOn clamps a
+		// learned need to what that card ever frees (a declared --vram is never shrunk).
 	}
 }
 
@@ -679,6 +677,8 @@ func (d *Daemon) blocker(j *job) string {
 		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:
 		return "spot band (over budget or --spot): runs on leftovers only"
+	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.WantVendor); return c < 0 }():
+		return "waiting for a " + j.WantVendor + " GPU (none is reporting right now)"
 	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.WantVendor):
 		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), math.Max(0, d.cardLeft(j.WantVendor)))
 	case j.NeedRAM > ram:

@@ -3,6 +3,7 @@
 package sysinfo
 
 import (
+	"os"
 	"regexp"
 	"strconv"
 	"syscall"
@@ -34,6 +35,9 @@ func idleSeconds() float64 {
 
 // Background: nice 19 and the background QoS band (throttled CPU, I/O and timers on Apple silicon).
 func Background(pid int) error {
+	if pid <= 1 || pid == os.Getpid() {
+		return os.ErrInvalid
+	}
 	if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, 19); err != nil {
 		return err
 	}

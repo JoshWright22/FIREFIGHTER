@@ -162,7 +162,8 @@ func Defaults() Config {
 	// those uses --force for other projects' jobs.
 	c.Guard.HumanHosts = []string{"windowsterminal", "openconsole", "wezterm-gui", "alacritty", "kitty", "ghostty",
 		"terminal", "iterm2", "gnome-terminal-server", "konsole", "xterm", "xfce4-terminal", "tilix", "foot", "terminator",
-		"sshd", "login"}
+		"sshd", "login", "kgx", "ptyxis", "ptyxis-agent", "mate-terminal", "lxterminal", "qterminal", "warp", "tabby",
+		"hyper", "rio", "contour", "terminology", "cool-retro-term"}
 	c.Guard.AgentHosts = []string{"node", "bun", "deno", "code", "code - insiders", "cursor", "windsurf", "devin", "electron",
 		"t3 code (beta)", "t3 code", "antigravity", "zed", "idea64", "pycharm64", "webstorm64", "rider64", "goland64", "clion64",
 		"kiro", "codium", "vscodium", "trae", "void", "positron", "fleet"}
