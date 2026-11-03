@@ -711,7 +711,7 @@ func TestStatuslineAndEvents(t *testing.T) {
 	}
 	e.status()
 	out, code := e.ff("statusline", "--json")
-	if code != 0 || !strings.Contains(out, `"text":"🔥`) || !strings.Contains(out, `"tooltip"`) {
+	if code != 0 || !strings.Contains(out, `"text":"◆`) || !strings.Contains(out, `"tooltip"`) {
 		t.Fatalf("statusline --json: %d\n%s", code, out)
 	}
 	c := e.cmd(nil, "events")

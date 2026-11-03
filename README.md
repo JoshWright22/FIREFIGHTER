@@ -2,10 +2,10 @@
 
 <p align="center">
   <a href="https://github.com/JoshWright22/firefighter/actions/workflows/ci.yml"><img src="https://github.com/JoshWright22/firefighter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/JoshWright22/firefighter/releases"><img src="https://img.shields.io/github/v/release/JoshWright22/firefighter?color=ff2d95&label=release" alt="release"></a>
-  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-ff6a00" alt="Windows, macOS, Linux">
-  <img src="https://img.shields.io/badge/MCP-server-9d4eff" alt="MCP server">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-ffc94a" alt="MIT"></a>
+  <a href="https://github.com/JoshWright22/firefighter/releases"><img src="https://img.shields.io/github/v/release/JoshWright22/firefighter?color=ad004f&label=release" alt="release"></a>
+  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0f0f0f" alt="Windows, macOS, Linux">
+  <img src="https://img.shields.io/badge/MCP-server-ad004f" alt="MCP server">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0f0f0f" alt="MIT"></a>
 </p>
 
 <h3 align="center">Your AI agents share the GPU. You stay the headliner.</h3>
@@ -113,10 +113,10 @@ firefighter extend <id> 15                                             # running
 docker all just work), passes its output and exit code through, and ends with a receipt:
 
 ```
-🔥 3f2a91c0 nanoGPT train waiting #2, starts ~14:05 (in 22m): GPU turn queue
+◆ 3f2a91c0 nanoGPT train waiting #2, starts ~14:05 (in 22m): GPU turn queue
    gpu 40m: start ~22m, cost ~42 of 212 (urgent ~6m ~84) (spot ~70m ~14) | busy 15/60/120m 92/35/12% | quiet 02:00 (usually 8% busy) | do: queue it at normal (starts ~22m); keep working meanwhile
-🔥 nanoGPT train: spotlight's yours (lease 40 min, budget left 212.0)
-🔥 nanoGPT train: curtain call, ok (exit 0) in 37.2 min (declared 40), waited 6.1, charged 31.4 machine-min, peak 3.1 GB RAM / 9.4 GB VRAM
+◆ nanoGPT train: spotlight's yours (lease 40 min, budget left 212.0)
+◆ nanoGPT train: curtain call, ok (exit 0) in 37.2 min (declared 40), waited 6.1, charged 31.4 machine-min, peak 3.1 GB RAM / 9.4 GB VRAM
 ```
 
 **MCP tools** (one-line text replies plus `structuredContent`): `firefighter_submit`,

@@ -112,7 +112,7 @@ func main() {
 		code = 2
 	}
 	if err != nil {
-		ui.Say(ui.Ember, "%v", err)
+		ui.Say(ui.Hot, "%v", err)
 		if code == 0 {
 			code = 1
 		}
@@ -246,7 +246,7 @@ func run(args []string) (int, error) {
 		return 2, err
 	}
 	if r.minutes <= 0 {
-		ui.Say(ui.Gold, "no --minutes given: assuming 30. Pass an honest estimate; it's your lease.")
+		ui.Say(ui.Ivory, "no --minutes given: assuming 30. Pass an honest estimate; it's your lease.")
 		r.minutes = 30
 	}
 	if r.detach {
@@ -281,7 +281,7 @@ func run(args []string) (int, error) {
 		if err != nil || !requeue {
 			return code, err
 		}
-		ui.Say(ui.Violet, "evicted to make room (checkpointed); back in line, attempt %d", attempt+1)
+		ui.Say(ui.Coral, "evicted to make room (checkpointed); back in line, attempt %d", attempt+1)
 	}
 }
 
@@ -312,7 +312,7 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	for v.State == "waiting" {
 		moved := lastStart < 0 || math.Abs(v.StartsIn-lastStart) > math.Max(5, 0.2*lastStart)
 		if !quiet && (v.Position != lastPos || moved) {
-			ui.Say(ui.Gold, "%s %s waiting #%d, starts ~%s (in %s): %s", t.ID, t.Name, v.Position, v.ETA, mins(v.StartsIn), v.Why)
+			ui.Say(ui.Ivory, "%s %s waiting #%d, starts ~%s (in %s): %s", t.ID, t.Name, v.Position, v.ETA, mins(v.StartsIn), v.Why)
 			lastPos, lastStart = v.Position, v.StartsIn
 			if v.Market != "" && time.Since(lastMarket) > 15*time.Minute {
 				ui.Note("%s", v.Market)
@@ -346,7 +346,7 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		return 1, true, nil // closed under us (daemon restart): get back in line
 	}
 	if !quiet {
-		ui.Say(ui.Pink, "%s: spotlight's yours (lease %.0f min, budget left %.1f)", t.Name, t.Minutes, v.Budget)
+		ui.Say(ui.Hot, "%s: spotlight's yours (lease %.0f min, budget left %.1f)", t.Name, t.Minutes, v.Budget)
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -414,9 +414,9 @@ loop:
 		return code, false, nil
 	}
 	if rec := v.Receipt; rec != nil && !quiet {
-		color := ui.Pink
+		color := ui.Hot
 		if rec.Outcome != "ok" {
-			color = ui.Ember
+			color = ui.Hot
 		}
 		ui.Say(color, "%s: curtain call, %s (exit %d) in %.1f min (declared %.0f), waited %.1f, charged %.1f machine-min, peak %.1f GB RAM / %.1f GB VRAM",
 			t.Name, rec.Outcome, rec.Exit, time.Since(start).Minutes(), rec.Declared, rec.Waited, rec.Charged, rec.PeakRAM, rec.PeakVRAM)
@@ -530,7 +530,7 @@ func status(args []string) error {
 		return nil
 	}
 	p := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
-	p("%s  human: %s %s", ui.Gradient("firefighter"), ui.UserLabel(s.User), s.UserWhy)
+	p("%s  human: %s %s", ui.Bold(ui.Paint(ui.Hot, "firefighter")), ui.UserLabel(s.User), s.UserWhy)
 	p("  reserve for the human: %.0f CPUs, %.0f%% RAM, %.1f GB VRAM", s.Reserve["cpus"], s.Reserve["ram_pct"], s.Reserve["vram_gb"])
 	m := s.Machine
 	p("  CPU %.1f/%.0f busy (%.1f human+other)  RAM %.1f/%.1f GB free  GPU %.0f%%  VRAM %.1f/%.1f GB",
@@ -538,13 +538,13 @@ func status(args []string) error {
 	p("  policy: preset %s, order %s, pricing %s, budget %s", s.Policy["preset"], s.Policy["order"], s.Policy["pricing"], s.Policy["budget"])
 	for _, k := range []string{"gpu", "cpu"} {
 		if q, ok := s.Market[k]; ok {
-			p("  %s", ui.Paint(ui.Violet, q.Line()))
+			p("  %s", ui.Paint(ui.Coral, q.Line()))
 		}
 	}
 	if s.ConfigErr != "" {
-		p("  %s", ui.Paint(ui.Ember, "config error: "+s.ConfigErr))
+		p("  %s", ui.Paint(ui.Hot, "config error: "+s.ConfigErr))
 	}
-	p("\n%s", ui.Paint(ui.Pink, "on stage"))
+	p("\n%s", ui.Paint(ui.Hot, "on stage"))
 	for _, v := range s.Running {
 		note := v.Why
 		if v.Paused {
@@ -552,12 +552,12 @@ func status(args []string) error {
 		}
 		p("  %-8s %-34s %-14s until ~%s %s", v.ID, trunc(v.Name, 34), trunc(v.Project, 14), v.ETA, note)
 	}
-	p("\n%s", ui.Paint(ui.Gold, "in the wings"))
+	p("\n%s", ui.Paint(ui.Ivory, "in the wings"))
 	for _, v := range s.Waiting {
 		p("  %-8s #%d %-31s %-14s on ~%s %s", v.ID, v.Position, trunc(v.Name, 31), trunc(v.Project, 14), v.ETA, v.Why)
 	}
 	if len(s.Foreign) > 0 || len(s.Docker) > 0 {
-		p("\n%s", ui.Paint(ui.Violet, "other load (counted as the human's)"))
+		p("\n%s", ui.Paint(ui.Coral, "other load (counted as the human's)"))
 		for n, u := range s.Foreign {
 			p("  %-30s GPU %.0f%%", n, u)
 		}
@@ -566,7 +566,7 @@ func status(args []string) error {
 		}
 	}
 	if len(s.Budgets) > 0 {
-		p("\n%s", ui.Paint(ui.Flame, "budgets (machine-minutes left)"))
+		p("\n%s", ui.Paint(ui.Coral, "budgets (machine-minutes left)"))
 		for k, b := range s.Budgets {
 			p("  %-24s %.1f", k, b)
 		}
@@ -630,7 +630,7 @@ func rebid(args []string) error {
 	}
 	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b)})
 	if err == nil {
-		ui.Say(ui.Gold, "%s: bid %d, now #%d, on ~%s", v.Name, b, v.Position, v.ETA)
+		ui.Say(ui.Ivory, "%s: bid %d, now #%d, on ~%s", v.Name, b, v.Position, v.ETA)
 	}
 	return err
 }
@@ -649,7 +649,7 @@ func extend(args []string) error {
 	}
 	v, err := c.Act(args[0], "extend", daemon.Act{Minutes: m})
 	if err == nil {
-		ui.Say(ui.Pink, "%s: encore, lease now ends ~%s", v.Name, v.ETA)
+		ui.Say(ui.Hot, "%s: encore, lease now ends ~%s", v.Name, v.ETA)
 	}
 	return err
 }
@@ -696,7 +696,7 @@ func adopt(args []string) error {
 	v, err := c.Create(daemon.Request{Running: true, Ticket: policy.Ticket{Project: projectOf(cwd), Name: *name, GPU: *gpu, Minutes: *minutes,
 		PID: pid, ClientPID: pid, Bid: 5, Evict: "graceful", CmdHash: hashCmd([]string{sysinfo.Name(pid)})}})
 	if err == nil {
-		ui.Say(ui.Pink, "adopted pid %d as %s (%s)", pid, v.ID, v.Name)
+		ui.Say(ui.Hot, "adopted pid %d as %s (%s)", pid, v.ID, v.Name)
 	}
 	return err
 }
@@ -737,7 +737,7 @@ func plan(args []string) error {
 	}
 	p, err := c.Plan(daemon.Plan{Project: *project, What: what, When: *when, Minutes: *minutes, GPUPct: *gpu, VRAMGB: *vram, RAMGB: *ram})
 	if err == nil {
-		ui.Say(ui.Gold, "announced %s: %s (%s); remove with `firefighter plan --done`", p.ID, p.What, p.When)
+		ui.Say(ui.Ivory, "announced %s: %s (%s); remove with `firefighter plan --done`", p.ID, p.What, p.When)
 	}
 	return err
 }
@@ -756,7 +756,7 @@ func configCmd(args []string) error {
 		if err := config.Set(args[1], args[2]); err != nil {
 			return err
 		}
-		ui.Say(ui.Pink, "%s = %s (the guard picks it up within a second)", args[1], args[2])
+		ui.Say(ui.Hot, "%s = %s (the guard picks it up within a second)", args[1], args[2])
 	case "unset":
 		if len(args) != 2 {
 			return errors.New("usage: firefighter config unset <dotted.key>")
@@ -791,15 +791,15 @@ func install(args []string) error {
 	for _, s := range setup.Install(exe) {
 		if s.Err != nil {
 			failed++
-			ui.Say(ui.Ember, "%s: %v", s.What, s.Err)
+			ui.Say(ui.Hot, "%s: %v", s.What, s.Err)
 		} else {
-			ui.Say(ui.Pink, "%s", s.What)
+			ui.Say(ui.Hot, "%s", s.What)
 		}
 	}
 	if _, err := client.Connect(); err != nil {
-		ui.Say(ui.Ember, "guard: %v", err)
+		ui.Say(ui.Hot, "guard: %v", err)
 	} else {
-		ui.Say(ui.Pink, "guard running")
+		ui.Say(ui.Hot, "guard running")
 	}
 	ui.Note("new agent sessions will queue heavy work through firefighter. Try: firefighter status")
 	if failed > 0 {
@@ -814,7 +814,7 @@ func uninstall(args []string) error {
 	}
 	for _, s := range setup.Uninstall() {
 		if s.Err != nil {
-			ui.Say(ui.Ember, "%s: %v", s.What, s.Err)
+			ui.Say(ui.Hot, "%s: %v", s.What, s.Err)
 		} else {
 			ui.Say(ui.Ash, "%s", s.What)
 		}

@@ -14,45 +14,55 @@
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"firefighter","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","offers":{"@type":"Offer","price":"0"},"description":"Local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents sharing one computer, with an MCP server. The human at the keyboard always comes first.","codeRepository":"https://github.com/JoshWright22/firefighter","license":"https://opensource.org/licenses/MIT"}
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0b0612; --panel:#140b20; --ink:#f3e9ff; --dim:#b9a8cc; --pink:#ff2d95; --flame:#ff6a00; --gold:#ffc94a; --violet:#9d4eff; }
+  :root { --ink:#0f0f0f; --fg:#fdfdfd; --dim:#a39a91; --line:#262323; --crimson:#ad004f; --hot:#ff4f8f; --ivory:#f3e6cf; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:17px/1.6 "Segoe UI","Helvetica Neue",Arial,sans-serif; overflow-x:hidden; }
-  .beams { position:fixed; inset:0; pointer-events:none; z-index:0; }
-  .beam { position:absolute; top:-10vh; width:44vw; height:120vh; filter:blur(40px); opacity:.22; clip-path:polygon(46% 0,54% 0,100% 100%,0 100%); }
-  .b1 { left:-8vw; background:linear-gradient(var(--pink),transparent 70%); transform:rotate(-16deg); animation:sway 9s ease-in-out infinite; }
-  .b2 { right:-6vw; background:linear-gradient(var(--violet),transparent 70%); transform:rotate(15deg); animation:sway 11s ease-in-out infinite reverse; }
-  @keyframes sway { 50% { transform:rotate(4deg); } }
-  main { position:relative; z-index:1; max-width:1080px; margin:0 auto; padding:56px 24px 80px; }
-  header { display:flex; align-items:center; gap:18px; }
-  header img { width:84px; }
-  h1 { font-size:clamp(48px,8vw,88px); margin:0; font-weight:800; background:linear-gradient(90deg,var(--pink),var(--flame) 55%,var(--gold)); -webkit-background-clip:text; color:transparent; filter:drop-shadow(0 0 22px rgba(255,45,149,.45)); }
-  .lead { font-size:clamp(24px,3.4vw,36px); font-weight:650; margin:22px 0 8px; }
-  .lead b { color:var(--gold); }
-  .sub { color:var(--dim); max-width:760px; }
-  .install { margin:32px 0; display:grid; gap:12px; }
-  .cmd { background:var(--panel); border:1px solid rgba(157,78,255,.45); border-radius:12px; padding:14px 18px; font:15px/1.4 "Cascadia Code",Consolas,monospace; display:flex; gap:14px; align-items:center; box-shadow:0 0 40px rgba(157,78,255,.15); }
-  .cmd span { color:var(--pink); min-width:120px; font-family:"Segoe UI",Arial,sans-serif; font-weight:600; }
-  .cmd code { color:var(--ink); overflow-x:auto; white-space:nowrap; }
-  .demo { width:100%; border-radius:16px; margin:12px 0 40px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px; }
-  .card { background:linear-gradient(180deg,rgba(255,45,149,.07),rgba(157,78,255,.05)); border:1px solid rgba(255,45,149,.25); border-radius:16px; padding:20px 22px; }
-  .card h3 { margin:0 0 6px; color:var(--gold); font-size:19px; }
+  body { margin:0; background:var(--ink); color:var(--fg); font:17px/1.6 Inter,system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  code { font-family:"JetBrains Mono",ui-monospace,monospace; }
+  .poster { position:relative; height:min(62vh,560px,60vw); background:var(--crimson); overflow:hidden; }
+  .stack { position:absolute; left:-2vw; top:-4vw; font:clamp(64px,10.5vw,152px)/.88 Anton,Impact,sans-serif; text-transform:uppercase; white-space:nowrap; color:var(--ink); }
+  .stack div { animation:drift 28s linear infinite alternate; }
+  .stack div:nth-child(odd) { color:transparent; -webkit-text-stroke:2px var(--ink); animation-direction:alternate-reverse; }
+  .stack div:nth-child(even) { margin-left:-0.9em; }
+  .stack div.lit { color:var(--ivory); margin-left:4vw; animation:none; }
+  .stack div.lit span { color:var(--ink); }
+  @keyframes drift { to { translate:-12vw 0; } }
+  @media (prefers-reduced-motion:reduce) { .stack div { animation:none; } }
+  main { max-width:1080px; margin:0 auto; padding:0 24px 80px; }
+  .label { font:400 12px "JetBrains Mono",monospace; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); }
+  .label b { color:var(--hot); font-weight:400; margin-right:12px; }
+  section { border-top:1px solid var(--line); padding:44px 0 8px; margin-top:44px; }
+  h1 { margin:56px 0 0; font:800 clamp(36px,5.6vw,64px)/1.02 Inter,sans-serif; letter-spacing:-.04em; text-transform:uppercase; }
+  h1 em { font-style:normal; color:var(--hot); }
+  .sub { color:#cfc8c0; max-width:760px; margin:18px 0 0; }
+  .agents { display:flex; flex-wrap:wrap; gap:8px; margin-top:22px; }
+  .chip { font:400 13px "JetBrains Mono",monospace; padding:6px 12px; border:1px solid #3a3535; }
+  .install { margin:28px 0 0; display:grid; gap:10px; }
+  .cmd { border:1px solid var(--line); border-left:4px solid var(--crimson); padding:14px 18px; display:flex; gap:16px; align-items:baseline; background:#141313; }
+  .cmd span { font:700 12px "JetBrains Mono",monospace; letter-spacing:.12em; text-transform:uppercase; color:var(--hot); min-width:130px; }
+  .cmd code { font-size:14.5px; color:var(--fg); overflow-x:auto; white-space:nowrap; }
+  .demo { width:100%; display:block; margin:28px 0 0; }
+  h2 { margin:10px 0 22px; font:800 30px/1.1 Inter,sans-serif; letter-spacing:-.03em; text-transform:uppercase; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); border-top:1px solid var(--line); border-left:1px solid var(--line); }
+  .card { border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:22px 24px; }
+  .card h3 { margin:8px 0 6px; font:800 19px Inter,sans-serif; letter-spacing:-.02em; }
   .card p { margin:0; color:var(--dim); font-size:15.5px; }
-  h2 { margin:56px 0 16px; font-size:30px; }
-  .agents { display:flex; flex-wrap:wrap; gap:10px; margin-top:20px; }
-  .chip { padding:6px 14px; border-radius:999px; border:1px solid rgba(255,45,149,.5); background:rgba(255,45,149,.08); font-size:15px; }
-  a { color:var(--gold); }
-  .cta { display:inline-block; margin-top:28px; padding:13px 26px; border-radius:999px; background:linear-gradient(90deg,var(--pink),var(--flame)); color:#160b1f; font-weight:800; text-decoration:none; box-shadow:0 0 30px rgba(255,45,149,.45); }
-  footer { margin-top:64px; color:var(--dim); font-size:14px; text-align:center; }
+  a { color:var(--ivory); text-underline-offset:3px; }
+  .cta { display:inline-block; margin-top:32px; padding:14px 26px; background:var(--crimson); color:var(--ivory); font:800 14px "JetBrains Mono",monospace; letter-spacing:.12em; text-transform:uppercase; text-decoration:none; }
+  .cta:hover { background:var(--hot); color:var(--ink); }
+  footer { margin-top:64px; padding-top:20px; border-top:1px solid var(--line); color:var(--dim); font:400 12px "JetBrains Mono",monospace; letter-spacing:.12em; text-transform:uppercase; }
 </style>
 </head>
 <body>
-<div class="beams"><div class="beam b1"></div><div class="beam b2"></div></div>
+<div class="poster" aria-hidden="true"><div class="stack">
+  <div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div>
+  <div class="lit">FIREFIGHTER <span>FIREFIGHTER FIREFIGHTER</span></div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div>
+</div></div>
 <main>
-  <header><img src="icon.svg" alt="firefighter icon"><h1>firefighter</h1></header>
-  <p class="lead">Your AI agents share the GPU.<br>You stay the <b>headliner</b>.</p>
-  <p class="sub">A local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents sharing one computer. One command installs it on Windows, macOS or Linux. After that, every agent session queues its heavy work, sees what the others are doing, and gets out of the way when you need the machine.</p>
+  <h1>Your AI agents share the GPU.<br>You stay the <em>headliner</em>.</h1>
+  <p class="sub"><b>firefighter</b> is a local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents sharing one computer. One command installs it on Windows, macOS or Linux. After that, every agent session queues its heavy work, sees what the others are doing, and gets out of the way when you need the machine.</p>
   <div class="agents"><span class="chip">Claude Code</span><span class="chip">Codex</span><span class="chip">Gemini CLI</span><span class="chip">Cursor</span><span class="chip">T3 Code</span><span class="chip">any MCP client</span></div>
 
   <div class="install">
@@ -62,19 +72,24 @@
 
   <img class="demo" src="demo.svg" alt="Demo: three agents queue for one GPU; the human starts a game and training pauses; everyone finishes">
 
-  <div class="grid">
-    <div class="card"><h3>🎤 You come first</h3><p>Keyboard, fullscreen, games, Docker, Kubernetes and your own apps all count as your load. A dynamic reserve of CPUs, RAM and VRAM grows within half a second when you need it.</p></div>
-    <div class="card"><h3>🎟️ Turns, not fights</h3><p>Projects that have used the least go first, with a 45-minute cap on any wait. GPU jobs are admitted only when their learned VRAM need fits.</p></div>
-    <div class="card"><h3>💹 A market maker</h3><p>Spot, normal and urgent tiers at posted prices. Every reply ends with one line: when each tier would start, what it costs, the odds the GPU is busy over the next 2 hours, and a recommended action that never says "outbid". About 60 tokens, nothing to game.</p></div>
-    <div class="card"><h3>🛡️ Rogue-agent guard</h3><p>Heavy work an agent starts outside the queue is adopted, put on idle priority, charged, and preempted first. Flood limits and runtime checks are on by default.</p></div>
-    <div class="card"><h3>⏸️ Polite preemption</h3><p>Shrink the job's CPU set, then a cooperative pause, a bounded suspend, and checkpoint-and-requeue. Jobs are killed only when RAM is critical.</p></div>
-    <div class="card"><h3>🔌 Set and forget</h3><p>Starts at logon, registers its MCP server with your agent CLIs, and adds the rules to their global instructions automatically.</p></div>
-  </div>
+  <section>
+    <div class="label"><b>01</b>What it does</div>
+    <h2>Turns, not fights</h2>
+    <div class="grid">
+      <div class="card"><div class="label">You come first</div><h3>A reserve that follows you</h3><p>Keyboard, fullscreen, games, Docker, Kubernetes and your own apps all count as your load. A dynamic reserve of CPUs, RAM and VRAM grows within half a second when you need it.</p></div>
+      <div class="card"><div class="label">Fair queue</div><h3>Least-served goes first</h3><p>Projects that have used the least go first, with a 45-minute cap on any wait. GPU jobs are admitted only when their learned VRAM need fits.</p></div>
+      <div class="card"><div class="label">Market maker</div><h3>Posted prices, one line</h3><p>Spot, normal and urgent tiers. Every reply ends with when each tier would start, what it costs, the odds the GPU is busy over the next 2 hours, and a <code>do:</code> that never says "outbid". About 60 tokens.</p></div>
+      <div class="card"><div class="label">Rogue-agent guard</div><h3>Skip the line, pay for it</h3><p>Heavy work an agent starts outside the queue is adopted, put on idle priority, billed 1.5x, and preempted first. Flood limits are on by default.</p></div>
+      <div class="card"><div class="label">Preemption</div><h3>Polite, then firm</h3><p>Shrink the job's CPU set, then a cooperative pause, a bounded suspend, and checkpoint-and-requeue. Jobs are killed only when RAM is critical.</p></div>
+      <div class="card"><div class="label">Set and forget</div><h3>Every agent knows</h3><p>Starts at logon, registers its MCP server with your agent CLIs, and adds the rules to their global instructions automatically.</p></div>
+    </div>
+  </section>
 
-  <h2>Built on the research</h2>
-  <p class="sub">Dominant Resource Fairness · Tiresias least-attained-service · Karma credits · PerfIso idle-core buffers · Themis leases · lottery &amp; stride scheduling · BOINC idle detection · KAI-Scheduler minimum runtime · PilotFish GPU harvesting. <a href="https://github.com/JoshWright22/firefighter/blob/main/docs/research.md">Read the report →</a></p>
-
-  <a class="cta" href="https://github.com/JoshWright22/firefighter">Get firefighter on GitHub</a>
+  <section>
+    <div class="label"><b>02</b>Built on the research</div>
+    <p class="sub">Dominant Resource Fairness · Tiresias least-attained-service · Karma credits · PerfIso idle-core buffers · Themis leases · lottery &amp; stride scheduling · BOINC idle detection · KAI-Scheduler minimum runtime · PilotFish GPU harvesting. <a href="https://github.com/JoshWright22/firefighter/blob/main/docs/research.md">Read the report</a></p>
+    <a class="cta" href="https://github.com/JoshWright22/firefighter">Get firefighter on GitHub</a>
+  </section>
   <footer>MIT licensed · your agents start the fires. you stay the headliner.</footer>
 </main>
 </body>

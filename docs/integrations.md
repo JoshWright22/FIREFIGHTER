@@ -15,7 +15,7 @@ up for them. That includes **T3 Code**, Conductor and the Claude desktop and IDE
 blocks on the daemon. Call it from any status bar:
 
 ```
-🔥 ⌨ 1 on stage · 2 waiting · GPU x1.40 · busy 1h 35%
+◆ ⌨ 1 on stage · 2 waiting · GPU x1.40 · busy 1h 35%
 ```
 
 - **Claude Code** (`~/.claude/settings.json`):

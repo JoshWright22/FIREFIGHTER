@@ -36,7 +36,7 @@ func lineOf(s daemon.Status) Line {
 		l.NextStart = s.Waiting[0].ETA
 	}
 	icon := map[string]string{"game": "🎮", "active": "⌨", "present": "👀", "away": "💤"}[s.User]
-	l.Text = fmt.Sprintf("🔥 %s %d on stage · %d waiting · GPU x%.2f · busy 1h %.0f%%", icon, l.Running, l.Waiting, l.Price, 100*l.Busy60)
+	l.Text = fmt.Sprintf("◆ %s %d on stage · %d waiting · GPU x%.2f · busy 1h %.0f%%", icon, l.Running, l.Waiting, l.Price, 100*l.Busy60)
 	var tip []string
 	tip = append(tip, fmt.Sprintf("You: %s. Reserve %.0f CPUs, %.0f%% RAM, %.1f GB VRAM.", s.User, s.Reserve["cpus"], s.Reserve["ram_pct"], s.Reserve["vram_gb"]))
 	for _, v := range s.Running {
@@ -59,15 +59,15 @@ func statusline(args []string) error {
 	c, err := client.Connect0()
 	if err != nil {
 		if asJSON {
-			fmt.Println(`{"text":"🔥 off","user":"","tooltip":"firefighter isn't running: run firefighter status"}`)
+			fmt.Println(`{"text":"◆ off","user":"","tooltip":"firefighter isn't running: run firefighter status"}`)
 		} else {
-			fmt.Println("🔥 off")
+			fmt.Println("◆ off")
 		}
 		return nil
 	}
 	s, err := c.Status()
 	if err != nil {
-		fmt.Println("🔥 ?")
+		fmt.Println("◆ ?")
 		return nil
 	}
 	l := lineOf(s)

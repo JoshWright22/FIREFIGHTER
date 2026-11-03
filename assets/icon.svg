@@ -1,28 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="firefighter icon">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1d0f2e"/>
-      <stop offset="1" stop-color="#0b0612"/>
-    </linearGradient>
-    <linearGradient id="fire" x1="0" y1="1" x2="0" y2="0">
-      <stop offset="0" stop-color="#ff2d95"/>
-      <stop offset="0.55" stop-color="#ff6a00"/>
-      <stop offset="1" stop-color="#ffc94a"/>
-    </linearGradient>
-    <radialGradient id="spot" cx="0.5" cy="0" r="0.9">
-      <stop offset="0" stop-color="#9d4eff" stop-opacity="0.55"/>
-      <stop offset="1" stop-color="#9d4eff" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="7" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-  </defs>
-  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
-
-  <g filter="url(#glow)">
-    <path d="M128 222c-44 0-72-31-72-70 0-39 26-57 39-91 5 23 18 34 29 39-3-34 13-60 39-78-5 29 8 49 23 67 16 18 24 36 24 60 0 41-34 73-82 73z" fill="url(#fire)"/>
-    <path d="M130 222c-21 0-34-14-34-32 0-21 16-29 23-47 5 15 13 21 21 26 5 8 10 16 10 26 0 16-8 27-20 27z" fill="#0b0612" opacity="0.88"/>
-    <circle cx="129" cy="198" r="9" fill="#9d4eff"/>
-  </g>
+  <title>firefighter icon</title>
+  <rect width="256" height="256" fill="#ad004f"/>
+  <path d="M-33.6015625 28.0V-116.375H24.1484375V-88.23828125H-4.5625V-65.26953125H22.671875V-37.4609375H-4.5625V28.0ZM33.41796875 28.0V-116.375H91.16796875V-88.23828125H62.45703125V-65.26953125H89.69140625V-37.4609375H62.45703125V28.0ZM100.4375 28.0V-116.375H158.1875V-88.23828125H129.4765625V-65.26953125H156.7109375V-37.4609375H129.4765625V28.0ZM167.45703125 28.0V-116.375H225.20703125V-88.23828125H196.49609375V-65.26953125H223.73046875V-37.4609375H196.49609375V28.0ZM234.4765625 28.0V-116.375H292.2265625V-88.23828125H263.515625V-65.26953125H290.75V-37.4609375H263.515625V28.0Z" fill="none" stroke="#0f0f0f" stroke-width="2.6"/>
+  <path d="M67.37890625 178.0V33.625H125.12890625V61.76171875H96.41796875V84.73046875H123.65234375V112.5390625H96.41796875V178.0ZM134.3984375 178.0V33.625H192.1484375V61.76171875H163.4375V84.73046875H190.671875V112.5390625H163.4375V178.0Z" fill="#f3e6cf"/>
+  <path d="M-33.6015625 328.0V183.625H24.1484375V211.76171875H-4.5625V234.73046875H22.671875V262.5390625H-4.5625V328.0ZM33.41796875 328.0V183.625H91.16796875V211.76171875H62.45703125V234.73046875H89.69140625V262.5390625H62.45703125V328.0ZM100.4375 328.0V183.625H158.1875V211.76171875H129.4765625V234.73046875H156.7109375V262.5390625H129.4765625V328.0ZM167.45703125 328.0V183.625H225.20703125V211.76171875H196.49609375V234.73046875H223.73046875V262.5390625H196.49609375V328.0ZM234.4765625 328.0V183.625H292.2265625V211.76171875H263.515625V234.73046875H290.75V262.5390625H263.515625V328.0Z" fill="none" stroke="#0f0f0f" stroke-width="2.6"/>
 </svg>

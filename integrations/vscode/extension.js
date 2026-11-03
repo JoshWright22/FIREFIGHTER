@@ -11,7 +11,7 @@ function bin() {
 }
 
 function show(line) {
-  item.text = line.text.replace('🔥', '$(flame)')
+  item.text = line.text.replace('◆', '$(flame)')
   item.tooltip = new vscode.MarkdownString(line.tooltip.split('\n').map(l => l.replace(/[*_`]/g, '')).join('  \n'))
   item.backgroundColor = line.user === 'game' ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined
   item.show()

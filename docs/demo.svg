@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 470" role="img" aria-label="firefighter demo: three agents queue for the GPU, the human starts a game, the training job pauses, then everyone finishes">
   <style>
-    .bg { fill: #0f0818; }
+    .bg { fill: #0f0f0f; }
     text { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 14.5px; white-space: pre; }
-    .w { fill: #f3e9ff; } .g { fill: #8a7a9c; } .k { fill: #ff2d95; } .y { fill: #ffc94a; } .o { fill: #ff6a00; } .p { fill: #9d4eff; }
+    .w { fill: #fdfdfd; } .g { fill: #8c8379; } .k { fill: #ff4f8f; } .y { fill: #f3e6cf; } .o { fill: #ff4f8f; } .p { fill: #e28883; }
     .l { opacity: 0; }
     .l0 { animation: s0 17.0s infinite; }
     @keyframes s0 { 0%,0.00% { opacity: 0 } 1.50%,94% { opacity: 1 } 98%,100% { opacity: 0 } }
@@ -35,15 +35,15 @@
     .l14 { animation: s14 17.0s infinite; }
     @keyframes s14 { 0%,82.35% { opacity: 0 } 83.85%,94% { opacity: 1 } 98%,100% { opacity: 0 } }
   </style>
-  <rect class="bg" width="860" height="470" rx="16"/>
-  <rect x="0.5" y="0.5" width="859" height="469" rx="16" fill="none" stroke="#9d4eff" stroke-opacity="0.45"/>
-  <circle cx="24" cy="22" r="6" fill="#ff2d95"/><circle cx="44" cy="22" r="6" fill="#ffc94a"/><circle cx="64" cy="22" r="6" fill="#9d4eff"/>
+  <rect class="bg" width="860" height="470"/>
+  <rect width="860" height="6" fill="#ad004f"/>
+  
   <text x="380" y="27" class="g">3 agents · 1 GPU · 1 human</text>
 
   <g class="l l0"><text x="22" y="62"><tspan class="p">claude ›</tspan><tspan class="w"> firefighter run --gpu --minutes 40 --vram 10 -- python train.py</tspan></text></g>
-  <g class="l l1"><text x="22" y="86"><tspan class="k">🔥 nanoGPT train: spotlight's yours</tspan><tspan class="g"> (lease 40 min, budget left 212.0)</tspan></text></g>
+  <g class="l l1"><text x="22" y="86"><tspan class="k">◆ nanoGPT train: spotlight's yours</tspan><tspan class="g"> (lease 40 min, budget left 212.0)</tspan></text></g>
   <g class="l l2"><text x="22" y="118"><tspan class="p">codex  ›</tspan><tspan class="w"> firefighter run --gpu --minutes 15 -- python eval.py</tspan></text></g>
-  <g class="l l3"><text x="22" y="142"><tspan class="y">🔥 evals [main set] waiting in the wings #1, on ~14:06</tspan><tspan class="g">: GPU turn queue</tspan></text></g>
+  <g class="l l3"><text x="22" y="142"><tspan class="y">◆ evals [main set] waiting in the wings #1, on ~14:06</tspan><tspan class="g">: GPU turn queue</tspan></text></g>
   <g class="l l4"><text x="22" y="164"><tspan class="g">   market: x1.40 · busy 15m 80% · bid 3 ~22m cost 9 · bid 7 ~6m cost 21 · best: bid 3</tspan></text></g>
   <g class="l l5"><text x="22" y="196"><tspan class="p">gemini ›</tspan><tspan class="w"> python render.py   </tspan><tspan class="g"># skipped firefighter…</tspan></text></g>
   <g class="l l6"><text x="22" y="220"><tspan class="o">   adopted: python.exe (started by gemini) → spot band, charged, preempted first</tspan></text></g>
@@ -52,7 +52,7 @@
   <g class="l l9"><text x="22" y="300"><tspan class="y">   nanoGPT train: paused at a step boundary</tspan><tspan class="g"> (cooperative pause file)</tspan></text></g>
   <g class="l l10"><text x="22" y="332"><tspan class="w">     you  › </tspan><tspan class="g">quit the game</tspan></text></g>
   <g class="l l11"><text x="22" y="356"><tspan class="y">   nanoGPT train: resumed</tspan><tspan class="g"> · reserve gives back 1 CPU / 15 s</tspan></text></g>
-  <g class="l l12"><text x="22" y="388"><tspan class="k">🔥 nanoGPT train: curtain call, ok (exit 0) in 37.2 min</tspan><tspan class="g"> (declared 40), charged 31.4</tspan></text></g>
-  <g class="l l13"><text x="22" y="412"><tspan class="k">🔥 evals: spotlight's yours</tspan><tspan class="g"> (lease 15 min, price locked x0.9)</tspan></text></g>
+  <g class="l l12"><text x="22" y="388"><tspan class="k">◆ nanoGPT train: curtain call, ok (exit 0) in 37.2 min</tspan><tspan class="g"> (declared 40), charged 31.4</tspan></text></g>
+  <g class="l l13"><text x="22" y="412"><tspan class="k">◆ evals: spotlight's yours</tspan><tspan class="g"> (lease 15 min, price locked x0.9)</tspan></text></g>
   <g class="l l14"><text x="22" y="444"><tspan class="g">   your agents start the fires. you stay the headliner.</tspan></text></g>
 </svg>

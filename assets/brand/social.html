@@ -1,45 +1,29 @@
 <!doctype html>
-<!-- Source of assets/social-preview.png (1280x640). Render: py -3.12 assets/brand/render.py -->
+<!-- Source of assets/social-preview.png (1280x640). Build: py -3.12 assets/brand/build.py -->
 <html><head><meta charset="utf-8"><style>
-  * { box-sizing: border-box; margin: 0; }
-  body { width: 1280px; height: 640px; overflow: hidden; background: #0b0612; font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #f3e9ff; position: relative; }
-  .beam { position: absolute; top: -40px; width: 520px; height: 760px; opacity: .35; filter: blur(30px); transform-origin: top center; }
-  .b1 { left: -60px; background: linear-gradient(180deg, #ff2d95, transparent 70%); clip-path: polygon(45% 0, 55% 0, 100% 100%, 0 100%); transform: rotate(-18deg); }
-  .b2 { right: 120px; background: linear-gradient(180deg, #9d4eff, transparent 70%); clip-path: polygon(45% 0, 55% 0, 100% 100%, 0 100%); transform: rotate(16deg); }
-  .b3 { left: 420px; background: linear-gradient(180deg, #ffc94a, transparent 65%); clip-path: polygon(46% 0, 54% 0, 90% 100%, 10% 100%); opacity: .18; }
-  .floor { position: absolute; bottom: 0; left: 0; right: 0; height: 140px; background: linear-gradient(0deg, rgba(255,45,149,.18), transparent); }
-  .left { position: absolute; left: 72px; top: 92px; width: 600px; }
-  .row { display: flex; align-items: center; gap: 22px; }
-  .row img { width: 112px; height: 112px; }
-  h1 { font-size: 84px; font-weight: 800; letter-spacing: 1px; background: linear-gradient(90deg, #ff2d95, #ff6a00 55%, #ffc94a); -webkit-background-clip: text; color: transparent; filter: drop-shadow(0 0 18px rgba(255,45,149,.45)); }
-  .tag { margin-top: 26px; font-size: 34px; line-height: 1.25; font-weight: 600; }
-  .tag b { color: #ffc94a; }
-  .sub { margin-top: 18px; font-size: 21px; color: #b9a8cc; line-height: 1.4; }
-  .chips { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 10px; }
-  .chip { padding: 7px 14px; border-radius: 999px; font-size: 17px; border: 1px solid rgba(255,45,149,.5); background: rgba(255,45,149,.08); }
-  .term { position: absolute; right: 64px; top: 112px; width: 520px; border-radius: 16px; background: rgba(18,10,28,.92); border: 1px solid rgba(157,78,255,.45); box-shadow: 0 0 60px rgba(157,78,255,.25); font-family: "Cascadia Code", Consolas, monospace; font-size: 15.5px; line-height: 1.55; padding: 18px 20px 20px; white-space: pre; }
-  .dots { display: flex; gap: 7px; margin-bottom: 12px; }
-  .dots i { width: 11px; height: 11px; border-radius: 50%; display: block; }
-  .p { color: #9d4eff; } .y { color: #ffc94a; } .k { color: #ff2d95; } .g { color: #8a7a9c; } .o { color: #ff6a00; } .w { color: #f3e9ff; }
+  @font-face { font-family: Anton; src: url(fonts/Anton-Regular.ttf); }
+  @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono.ttf); font-weight: 100 800; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root { --ink: #0f0f0f; --crimson: #ad004f; --hot: #ff4f8f; --ivory: #f3e6cf; --ash: #8c8379; }
+  body { width: 1280px; height: 640px; overflow: hidden; position: relative; background: var(--crimson); color: var(--ink); }
+  .stack { position: absolute; left: -30px; top: -48px; font-family: Anton; font-size: 132px; line-height: .88; text-transform: uppercase; white-space: nowrap; }
+  .stack div:nth-child(odd) { color: transparent; -webkit-text-stroke: 2px var(--ink); }
+  .stack div.lit { color: var(--ivory); -webkit-text-stroke: 0; }
+  .card { position: absolute; right: 44px; bottom: 44px; width: 480px; background: var(--ink); color: var(--ivory); font-family: "JetBrains Mono"; }
+  .head { padding: 20px 24px 18px; border-bottom: 1px solid #2a2626; }
+  .label { font-size: 11px; letter-spacing: .16em; color: var(--ash); text-transform: uppercase; }
+  .label b { color: var(--hot); font-weight: 400; margin-right: 12px; }
+  .tag { margin-top: 10px; font-weight: 800; font-size: 19px; line-height: 1.35; letter-spacing: .02em; text-transform: uppercase; }
+  .term { padding: 16px 24px 20px; font-size: 13.5px; line-height: 1.75; white-space: pre; }
+  .c { color: var(--hot); } .g { color: var(--ash); }
 </style></head><body>
-  <div class="beam b1"></div><div class="beam b2"></div><div class="beam b3"></div><div class="floor"></div>
-  <div class="left">
-    <div class="row"><img src="../icon.svg"><h1>firefighter</h1></div>
-    <div class="tag">Your AI agents share the GPU.<br>You stay the <b>headliner</b>.</div>
-    <div class="sub">GPU, CPU &amp; RAM scheduler + market maker for coding agents on one PC. One command. Windows · macOS · Linux.</div>
-    <div class="chips"><span class="chip">Claude Code</span><span class="chip">Codex</span><span class="chip">Gemini CLI</span><span class="chip">Cursor</span><span class="chip">MCP server</span></div>
-  </div>
-  <div class="term">
-    <div class="dots"><i style="background:#ff2d95"></i><i style="background:#ffc94a"></i><i style="background:#9d4eff"></i></div>
-    <div><span class="p">$</span> <span class="w">firefighter status</span></div>
-    <div><span class="y">human:</span> <span class="k">on stage (game)</span> <span class="g">reserve 8 CPUs · 4 GB VRAM</span></div>
-    <div class="g">market gpu: price x1.40 · busy 15m 80% · 60m 35%</div>
-    <div class="g">  bid 3: ~22m cost 9.1 · bid 7: ~6m cost 21.3</div>
-    <div class="k">on stage</div>
-    <div class="w">  nanoGPT train   until ~14:05 <span class="o">paused for your game</span></div>
-    <div class="y">in the wings</div>
-    <div class="w">  #1 evals sweep  on ~14:06 <span class="g">GPU turn queue</span></div>
-    <div class="w">  #2 sd render    on ~14:31 <span class="g">needs 10 GB VRAM</span></div>
-    <div style="margin-top:8px"><span class="k">🔥</span> <span class="w">curtain call, ok in 37.2 min</span> <span class="g">(declared 40)</span></div>
+  <div class="stack"><div>firefighter firefighter firefighter</div><div>firefighter firefighter firefighter</div><div>firefighter firefighter firefighter</div><div class="lit">firefighter</div><div>firefighter firefighter firefighter</div><div>firefighter firefighter firefighter</div></div>
+  <div class="card">
+    <div class="head"><div class="label"><b>01</b>GPU · CPU · RAM for AI agents</div><div class="tag">Agents start fires.<br>You stay the headliner.</div></div>
+    <div class="term"><span class="g">$</span> firefighter status
+human: <span class="c">on stage (game)</span>  reserve 8 cpu
+gpu: nanoGPT train  <span class="c">paused for you</span>
+next: #1 evals sweep  ~14:06
+<span class="c">do:</span> wait; GPU frees in ~6m</div>
   </div>
 </body></html>

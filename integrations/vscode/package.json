@@ -6,23 +6,58 @@
   "publisher": "JoshWright22",
   "license": "MIT",
   "icon": "icon.png",
-  "repository": { "type": "git", "url": "https://github.com/JoshWright22/firefighter" },
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Other", "Machine Learning"],
-  "keywords": ["gpu", "ai agents", "claude code", "codex", "scheduler", "vram", "mcp"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JoshWright22/firefighter"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "gpu",
+    "ai agents",
+    "claude code",
+    "codex",
+    "scheduler",
+    "vram",
+    "mcp"
+  ],
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
-      { "command": "firefighter.status", "title": "firefighter: Show status" },
-      { "command": "firefighter.quote", "title": "firefighter: Quote a GPU job" },
-      { "command": "firefighter.cancel", "title": "firefighter: Cancel a job" }
+      {
+        "command": "firefighter.status",
+        "title": "firefighter: Show status"
+      },
+      {
+        "command": "firefighter.quote",
+        "title": "firefighter: Quote a GPU job"
+      },
+      {
+        "command": "firefighter.cancel",
+        "title": "firefighter: Cancel a job"
+      }
     ],
     "configuration": {
       "title": "firefighter",
       "properties": {
-        "firefighter.path": { "type": "string", "default": "firefighter", "description": "Path to the firefighter binary." }
+        "firefighter.path": {
+          "type": "string",
+          "default": "firefighter",
+          "description": "Path to the firefighter binary."
+        }
       }
     }
+  },
+  "galleryBanner": {
+    "color": "#ad004f",
+    "theme": "dark"
   }
 }
