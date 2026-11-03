@@ -1,0 +1,5 @@
+/dist/
+/firefighter
+/firefighter.exe
+*.test
+*.out
