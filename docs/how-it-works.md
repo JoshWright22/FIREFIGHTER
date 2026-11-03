@@ -61,7 +61,7 @@ Twice a second the daemon:
 | Kernel-level preemption (REEF, TGS, Orion) | Needs driver or framework hooks. WDDM's own time-slicing plus idle GPU priority covers the desktop case. |
 | PresentMon frame-time feedback for the reserve | Planned. Today the reserve follows input, fullscreen apps and 3D-engine use. |
 | VCG / combinatorial auctions | Overkill for one machine, and LLM bidders game visible auctions. Posted prices give the same information without the game. |
-| Gavel's LP-based heterogeneity policies | Nothing to optimize across GPU types on one PC. Multi-GPU packing uses the freest card. |
+| Gavel's LP-based heterogeneity policies | Not needed at one-PC scale. Each GPU job is admitted on the freest card (after the unclaimed needs of jobs already there) and pinned to it in its vendor's numbering; VRAM pressure is checked per card. |
 
 ## Market maker details
 

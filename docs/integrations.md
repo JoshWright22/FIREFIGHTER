@@ -4,9 +4,11 @@ firefighter works with any editor or agent app through four layers. Use whicheve
 
 ## 1. Agents: MCP + rules (automatic)
 
-`firefighter setup` registers the MCP server (`firefighter mcp`) with Claude Code, Codex, Gemini
-CLI and Cursor. It also writes the shared-machine rules into the global instructions of Claude
-Code, Codex and Gemini. Apps built on those agents inherit both, so there's nothing extra to set
+`firefighter setup` registers the MCP server (`firefighter mcp`) and writes the shared-machine
+rules into the global instructions of every agent it finds installed, each in its own format:
+Claude Code, Codex, Gemini CLI, Antigravity, Cursor (MCP only), Grok Build, OpenCode, Kimi CLI and
+Kimi Code, Pi, Muse Code, fx, Kiro, Windsurf/Devin, Copilot CLI, Amp, Qwen Code, Crush (rules),
+Cline, Goose and Droid (rules, via `~/.agents/AGENTS.md`). Apps built on those agents inherit both, so there's nothing extra to set
 up for them. That includes **T3 Code**, Conductor and the Claude desktop and IDE extensions.
 
 ## 2. Status line: `firefighter statusline`

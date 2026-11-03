@@ -1,6 +1,6 @@
 # firefighter
 
-> Local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, T3 Code) sharing one computer. Windows, macOS, Linux. One-command install. The human at the keyboard always comes first.
+> Local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Grok, OpenCode, Kimi, Antigravity, Copilot, Amp, Qwen, T3 Code and more) sharing one computer. Any mix of GPUs (NVIDIA, AMD, Intel), any CPU count. Windows, macOS, Linux; each PC on its own, no network. One-command install. The human at the keyboard always comes first.
 
 Use firefighter when several AI agents on one machine compete for a GPU, VRAM, CPU or RAM; when an agent needs to run training, evals, builds, renders or docker jobs without hurting the user's games or apps; or when you need an MCP server that queues GPU jobs.
 

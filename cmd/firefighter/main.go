@@ -932,8 +932,8 @@ func daemonCmd(args []string) error {
 const protocol = `# firefighter pause/checkpoint protocol for long GPU loops (Python; same idea in any language)
 #
 # The guard asks a job to pause while the human games, and to checkpoint and exit when the human
-# needs its RAM or VRAM back. Jobs that honor it are never suspended or killed mid-step; exit 75
-# after checkpointing and firefighter requeues the job automatically.
+# needs its RAM or VRAM back. Jobs that honor it (and stop using the GPU while paused) are never
+# suspended or killed mid-step; exit 75 after checkpointing and firefighter requeues the job.
 import os, sys, time
 
 def firefighter_step(save_checkpoint=None):
