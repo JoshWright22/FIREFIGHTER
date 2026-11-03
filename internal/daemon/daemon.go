@@ -947,11 +947,11 @@ func (d *Daemon) killJob(j *job, now time.Time) {
 		j.checkpoint = now
 	}
 	logf("%s: killed (%s)", j.Name, j.reason)
+	if !j.suspended.IsZero() {
+		d.resume(j) // a stopped process can't die cleanly on some systems (and a paused container is unpaused first)
+	}
 	if j.container != "" {
 		d.docker(j.engine, "kill", j.container)
-	}
-	if !j.suspended.IsZero() {
-		d.resume(j) // a stopped process can't die cleanly on some systems
 	}
 	d.each(j, sysinfo.Kill)
 	d.lastKill = now
