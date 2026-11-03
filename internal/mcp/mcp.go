@@ -107,7 +107,7 @@ func Serve(version string) error {
 			var req rpc
 			if json.Unmarshal(line, &req) != nil {
 				send(rpc{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcErr{-32700, "parse error"}})
-			} else if req.ID != nil {
+			} else if req.ID != nil && string(req.ID) != "null" {
 				wg.Add(1)
 				go func() { defer wg.Done(); send(handle(req, version)) }()
 			}

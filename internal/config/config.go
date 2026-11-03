@@ -132,6 +132,7 @@ func Defaults() Config {
 	c.Reserve.RAMShrinkSeconds = 60
 	c.Reserve.VRAMShrinkSeconds = 120
 	c.Reserve.GameCoolSeconds = 30
+	c.Reserve.ExclusiveApps = []string{"gamescope"} // Steam's game compositor on Linux
 	c.Reserve.IgnoreGPUApps = []string{"dwm.exe", "csrss.exe", "explorer.exe", "windowserver", "xorg", "gnome-shell", "kwin_wayland", "kwin_x11", "firefighter.exe", "firefighter"}
 	c.Ladder.PauseAckSeconds = 10
 	c.Ladder.SuspendMaxSeconds = 60

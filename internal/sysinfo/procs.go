@@ -76,6 +76,30 @@ func AgentAncestor(pid int, names []string) string {
 	return ""
 }
 
+// Ancestors lists pid's parents, nearest first (up to 30).
+func Ancestors(pid int) []int {
+	var out []int
+	p, err := process.NewProcess(int32(pid))
+	for depth := 0; err == nil && depth < 30; depth++ {
+		p, err = p.Parent()
+		if err != nil || p == nil || p.Pid <= 0 {
+			break
+		}
+		out = append(out, int(p.Pid))
+	}
+	return out
+}
+
+// DescendantOf says whether pid is a child (at any depth) of ancestor.
+func DescendantOf(pid, ancestor int) bool {
+	for _, a := range Ancestors(pid) {
+		if a == ancestor {
+			return true
+		}
+	}
+	return false
+}
+
 // Cwd of a process, "" if unknown.
 func Cwd(pid int) string {
 	p, err := process.NewProcess(int32(pid))

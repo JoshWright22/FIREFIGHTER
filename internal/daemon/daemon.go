@@ -89,6 +89,7 @@ type Daemon struct {
 	foreign  map[string]float64   // non-job GPU users -> %
 	outSince map[string]time.Time // when each busy non-job GPU user was first seen busy
 	lastKill time.Time            // critical-RAM kills wait for the last one to free its memory
+	stopping atomic.Bool          // shutdown requested (once)
 	dockerQ  chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
 	graphics map[string]float64   // non-job 3D-engine users -> % (games, video)
 	others   []sysinfo.Container
@@ -473,7 +474,12 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		}
 		u := g.Util
 		if u < 1 {
-			u = c.Reserve.ForeignGPUPct // unknown utilization, known VRAM: assume busy
+			// Unknown per-process load (Linux): holding VRAM isn't computing. Count it busy only
+			// while the card itself is busy beyond what firefighter's own jobs explain.
+			u = 1
+			if d.snap.GPUUtil() >= c.Reserve.ForeignGPUPct && !anyGPUJobRunning(d) {
+				u = d.snap.GPUUtil()
+			}
 		}
 		d.foreign[n] = math.Max(d.foreign[n], u)
 		if g.Util3D >= 1 {
@@ -493,6 +499,15 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 			d.outSince[n] = time.Now()
 		}
 	}
+}
+
+func anyGPUJobRunning(d *Daemon) bool {
+	for _, j := range d.running() {
+		if j.GPU {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Daemon) capacity() policy.Capacity {
@@ -1152,7 +1167,7 @@ func shell(cmd string) {
 		argv = []string{"cmd", "/c", cmd}
 	}
 	c := exec.Command(argv[0], argv[1:]...)
-	sysinfo.PrepareChild(c, argv)
+	sysinfo.PrepareBackground(c)
 	if err := c.Start(); err != nil {
 		logf("shell %q: %v", cmd, err)
 		return
@@ -1162,7 +1177,7 @@ func shell(cmd string) {
 
 func docker(args ...string) {
 	c := exec.Command("docker", args...)
-	sysinfo.PrepareChild(c, nil)
+	sysinfo.PrepareBackground(c)
 	if out, err := c.CombinedOutput(); err != nil {
 		logf("docker %s: %v %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

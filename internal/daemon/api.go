@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +24,7 @@ import (
 // Endpoint is how clients find the daemon: written to <home>/daemon.json.
 type Endpoint struct {
 	PID     int    `json:"pid"`
+	Created int64  `json:"created"` // the daemon's start time: a reused pid is never mistaken for it
 	Port    int    `json:"port"`
 	Token   string `json:"token"`
 	Version string `json:"version"`
@@ -60,7 +63,7 @@ func (d *Daemon) Serve() error {
 	d.step(d.reader.Read(), nil, nil, time.Now(), 0) // measure before the first ticket arrives
 	d.mu.Unlock()
 	go d.Run()
-	b, _ := json.Marshal(Endpoint{PID: os.Getpid(), Port: d.Port, Token: d.Token, Version: d.Version})
+	b, _ := json.Marshal(Endpoint{PID: os.Getpid(), Created: sysinfo.Created(os.Getpid()), Port: d.Port, Token: d.Token, Version: d.Version})
 	if err := writeAtomic(EndpointPath(), b, 0o600); err != nil {
 		return err
 	}
@@ -84,6 +87,9 @@ func (d *Daemon) routes() http.Handler {
 	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, map[string]bool{"ok": true})
 		logf("shutdown requested")
+		if !d.stopping.CompareAndSwap(false, true) {
+			return // already shutting down
+		}
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			d.mu.Lock()
@@ -154,6 +160,12 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Running && (t.PID <= 1 || !sysinfo.Alive(t.PID)) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
+		return
+	}
+	if req.Running && t.ClientPID > 1 && (t.PID == t.ClientPID || sysinfo.DescendantOf(t.ClientPID, t.PID)) {
+		// Adopting the caller's own shell or agent would put it (and the caller) on idle priority
+		// and kill it with the job.
+		fail(w, 400, fmt.Sprintf("pid %d runs the caller itself (its shell or agent); adopt the heavy child instead", t.PID))
 		return
 	}
 	if !req.Running {
@@ -345,6 +357,12 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, fmt.Sprintf("pid %d isn't a running process", a.PID))
 			return
 		}
+		if j.ClientPID > 1 && !sysinfo.DescendantOf(a.PID, j.ClientPID) {
+			// The job is a process its client started. Anything else (a game, a browser, another
+			// agent) must not be made idle-priority and killed with this job.
+			fail(w, http.StatusForbidden, fmt.Sprintf("pid %d wasn't started by this job's client", a.PID))
+			return
+		}
 		j.State, j.Started, j.PID = "running", now, a.PID
 		j.rootCreated = sysinfo.Created(a.PID)
 		j.pids = map[int]int64{a.PID: j.rootCreated}
@@ -356,6 +374,16 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 		logf("%s: started pid %d after %.1f min", j.Name, a.PID, now.Sub(j.Created).Minutes())
 	case "container":
+		if a.Container != "" && a.Container != j.container {
+			// Verified before the lock below would matter: only a container labeled for this job.
+			d.mu.Unlock()
+			ok := containerFor(a.Container, j.ID)
+			d.mu.Lock()
+			if !ok {
+				fail(w, http.StatusForbidden, "container "+a.Container+" isn't labeled firefighter.job="+j.ID)
+				return
+			}
+		}
 		j.container = a.Container
 	case "bid": // re-bid while waiting, after reading the market
 		if a.Minutes < 1 || a.Minutes > 10 {
@@ -375,8 +403,14 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "this job started early (backfill) on a short lease; it can't be extended. Requeue the rest with an honest --minutes")
 			return
 		}
-		// An extension pushes the lease out, but an overrun already charged at 2x stays that way.
+		if lim := d.cfg.Ladder.MaxLeaseMinutes; lim > 0 && j.Minutes+j.extended+a.Minutes > lim {
+			fail(w, http.StatusConflict, fmt.Sprintf("a lease can't pass %.0f minutes; requeue the rest", lim))
+			return
+		}
+		// An extension pushes the lease out at today's price (no keeping a 0.5x idle-hour price for
+		// a day), and an overrun already charged at 2x stays that way.
 		j.extended += a.Minutes
+		d.lockPrice(j, now)
 		logf("%s: lease extended by %.0f min", j.Name, a.Minutes)
 	case "done":
 		outcome := "ok"
@@ -681,4 +715,17 @@ func (d *Daemon) writeStatus() {
 		fmt.Fprintf(&b, "- %s: %s, %s, ~%.0f min, GPU %.0f%%, %.1f GB VRAM, %.1f GB RAM\n", p.Project, p.What, p.When, p.Minutes, p.GPUPct, p.VRAMGB, p.RAMGB)
 	}
 	_ = os.WriteFile(filepath.Join(config.Home(), "STATUS.md"), []byte(b.String()), 0o644)
+}
+
+// containerFor says whether a container carries the label firefighter put on this job's docker run.
+func containerFor(name, id string) bool {
+	if strings.HasPrefix(name, "-") {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := exec.CommandContext(ctx, "docker", "inspect", "-f", `{{index .Config.Labels "firefighter.job"}}`, name)
+	sysinfo.PrepareBackground(c)
+	out, err := c.Output()
+	return err == nil && strings.TrimSpace(string(out)) == id
 }

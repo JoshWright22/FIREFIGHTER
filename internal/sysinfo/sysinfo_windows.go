@@ -309,7 +309,20 @@ func PrepareChild(cmd *exec.Cmd, argv []string) {
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
 	if len(argv) >= 3 && strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe") == "cmd" && strings.EqualFold(argv[1], "/c") {
-		cmd.SysProcAttr.CmdLine = `cmd /s /c "` + strings.Join(argv[2:], " ") + `"`
+		// One argument is passed as typed. Several (their quotes already stripped by the caller's
+		// shell): re-quote the ones with spaces, so a path like C:\My Files survives.
+		rest := argv[2:]
+		if len(rest) > 1 {
+			q := make([]string, len(rest))
+			for i, a := range rest {
+				if strings.ContainsAny(a, " \t") && !strings.HasPrefix(a, `"`) {
+					a = `"` + a + `"`
+				}
+				q[i] = a
+			}
+			rest = q
+		}
+		cmd.SysProcAttr.CmdLine = `cmd /s /c "` + strings.Join(rest, " ") + `"`
 	}
 }
 
@@ -359,3 +372,7 @@ func ExeName(n string) string {
 	}
 	return n
 }
+
+// PrepareBackground starts a helper (docker, the harvester) with no window; Windows has no terminal
+// foreground to lose.
+func PrepareBackground(cmd *exec.Cmd) { PrepareChild(cmd, nil) }

@@ -188,11 +188,27 @@ func hashCmd(argv []string) string {
 			}
 		}
 	}
-	// The program and its first argument, by base name, so "python train.py" and
-	// "python ./train.py" (or a full path) are one command to learn from.
-	var parts []string
-	for _, a := range argv[:min(len(argv), 2)] {
-		parts = append(parts, strings.TrimSuffix(strings.ToLower(filepath.Base(filepath.Clean(a))), ".exe"))
+	// The program and the script or module it runs, by base name, so "python train.py" and
+	// "python ./train.py" (or a full path) are one command to learn from, and "python -m pytest" and
+	// "python -m torch.distributed.run train.py" are not.
+	base := func(a string) string {
+		return strings.TrimSuffix(strings.ToLower(filepath.Base(filepath.Clean(a))), ".exe")
+	}
+	parts := []string{base(argv[0])}
+	for i := 1; i < len(argv) && len(parts) < 4; i++ {
+		a := argv[i]
+		if a == "-m" && i+1 < len(argv) {
+			parts = append(parts, "-m", argv[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		parts = append(parts, base(a))
+		if len(parts) == 2 || (len(parts) > 2 && parts[1] == "-m") {
+			break
+		}
 	}
 	key := strings.Join(parts, " ")
 	if base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe"); (base == "docker" || base == "podman") && len(argv) > 1 && argv[1] == "run" {
@@ -865,7 +881,8 @@ func stopDaemon() error {
 		return nil
 	}
 	var ep daemon.Endpoint
-	if json.Unmarshal(b, &ep) != nil || ep.PID <= 1 || !sysinfo.Alive(ep.PID) || !strings.Contains(sysinfo.Name(ep.PID), "firefighter") {
+	if json.Unmarshal(b, &ep) != nil || ep.PID <= 1 || !sysinfo.Alive(ep.PID) || !strings.Contains(sysinfo.Name(ep.PID), "firefighter") ||
+		(ep.Created != 0 && !sysinfo.Same(ep.PID, ep.Created)) {
 		return nil
 	}
 	return sysinfo.Kill(ep.PID)

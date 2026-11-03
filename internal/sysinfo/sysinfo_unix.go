@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -27,10 +28,14 @@ func send(pid int, sig syscall.Signal) error {
 	return syscall.Kill(-pgid(pid), sig)
 }
 
-// pgid addresses the job's whole process group when the pid leads one, else just the pid.
+// pgid addresses the job's whole process group when firefighter made that group (the pid leads it
+// and its parent is a firefighter client); an adopted process that happens to lead a group (a
+// shell pipeline) is signaled alone, so its siblings aren't hit.
 func pgid(pid int) int {
 	if g, err := syscall.Getpgid(pid); err == nil && g == pid {
-		return pid
+		if a := Ancestors(pid); len(a) > 0 && strings.Contains(strings.ToLower(Name(a[0])), "firefighter") {
+			return pid
+		}
 	}
 	return -pid // negated again by the caller: a plain pid
 }
@@ -44,6 +49,12 @@ func PrepareChild(cmd *exec.Cmd, _ []string) {
 		cmd.SysProcAttr.Foreground = true
 		cmd.SysProcAttr.Ctty = 0
 	}
+}
+
+// PrepareBackground starts a helper (docker, the harvester) in its own group without ever taking
+// the terminal: the daemon may run in one, and losing it would stop the daemon on SIGTTOU.
+func PrepareBackground(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
 // RestoreForeground hands the terminal back to the client's group after a foreground child exits.

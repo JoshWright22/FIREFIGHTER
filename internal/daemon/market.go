@@ -169,12 +169,12 @@ func (d *Daemon) quote(probe policy.Ticket, now time.Time) policy.Quote {
 		}
 		q.Busy[strconv.Itoa(int(h))+"m"] = policy.BusyProb(h, busyUntil, hist, known, probe.GPU && planAt(h))
 	}
+	a := d.peek(probe.Project, now)
+	q.Budget = round1(math.Max(-1e9, math.Min(1e9, a.Left(c, c.Allowance(probe.Project)))))
 	if probe.GPU {
 		q.Quiet = policy.QuietWindow(now, d.st.Occupancy, d.st.OccSamples, planHours, probe.ID+probe.Project)
 	}
 
-	a := d.peek(probe.Project, now)
-	q.Budget = round1(math.Max(-1e9, math.Min(1e9, a.Left(c, c.Allowance(probe.Project)))))
 	if c.Budget.Policy == "karma" {
 		q.Refill = round1(c.Allowance(probe.Project) / 24)
 	}
@@ -200,7 +200,7 @@ func (d *Daemon) quote(probe policy.Ticket, now time.Time) policy.Quote {
 			p.Bid = policy.BidUrgent
 		}
 		if tier != "spot" {
-			p.Band = policy.BandFor(&p, true)
+			p.Band = policy.BandFor(&p, q.Budget > 0) // out of budget, it queues as spot whatever the tier
 		}
 		pos := policy.Rank(c, &p, waiting, d.st.Accounts, capy, now)
 		order := append(append(append([]*policy.Ticket{}, waiting[:pos]...), &p), waiting[pos:]...)
