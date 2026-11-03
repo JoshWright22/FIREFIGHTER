@@ -30,6 +30,36 @@ func TestBlockIsIdempotentAndRemovable(t *testing.T) {
 	}
 }
 
+func TestBrokenMarkersLeaveFileAlone(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "CLAUDE.md")
+	orig := "# Mine\n" + begin + "\nold rules\n\nmy own rules below a deleted end marker\n"
+	_ = os.WriteFile(p, []byte(orig), 0o644)
+	if err := upsertBlock(p, Instructions); err == nil {
+		t.Fatal("a begin marker without an end must be an error")
+	}
+	if b, _ := os.ReadFile(p); string(b) != orig {
+		t.Fatalf("file changed:\n%s", b)
+	}
+}
+
+func TestCodexTOMLIgnoresCommentedHeader(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	p := filepath.Join(dir, "config.toml")
+	orig := "# [mcp_servers.firefighter]\n[mcp_servers.other]\ncommand = \"y\"\n"
+	_ = os.WriteFile(p, []byte(orig), 0o644)
+	if err := codexTOML("/bin/ff", true); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "[mcp_servers.other]\ncommand = \"y\"") || !strings.Contains(string(b), "# [mcp_servers.firefighter]") {
+		t.Fatalf("other server damaged:\n%s", b)
+	}
+	if _, err := os.Stat(p + ".firefighter.bak"); err != nil {
+		t.Fatal("no backup written")
+	}
+}
+
 func TestJSONServersKeepsOtherKeys(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "settings.json")
 	_ = os.WriteFile(p, []byte(`{"theme":"dark","mcpServers":{"other":{"command":"x"}}}`), 0o644)

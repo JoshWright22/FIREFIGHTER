@@ -19,7 +19,7 @@ func (d *Daemon) observeOccupancy(now time.Time, dt time.Duration) {
 		d.st.Occupancy = make([]float64, 168)
 	}
 	busy := d.snap.GPUUtil() / 100
-	if d.user == "game" || len(d.busyOutside()) > 0 {
+	if d.gpuHeld() || len(d.busyOutside()) > 0 {
 		busy = 1
 	}
 	for _, j := range d.running() {
@@ -56,7 +56,7 @@ func (d *Daemon) line(gpu bool, exclude string, now time.Time) (running []policy
 		for range d.busyOutside() { // unmanaged GPU work: unknown end, assume 30 min
 			running = append(running, policy.Slot{ID: "outside", EndsIn: 30, Running: true})
 		}
-		if d.user == "game" && d.cfg.ReserveFor("game").PauseGPU {
+		if d.gpuHeld() {
 			running = append(running, policy.Slot{ID: "human", EndsIn: math.Max(15, time.Until(d.gameTill).Minutes()), Running: true})
 		}
 	}
@@ -155,7 +155,7 @@ func (d *Daemon) share(t *policy.Ticket) float64 {
 // fitsNow says whether RAM and VRAM headroom admit the job this moment.
 func (d *Daemon) fitsNow(t *policy.Ticket) bool {
 	ram, vram := d.headroom(time.Now())
-	vt, _ := d.snap.VRAMTotal()
+	_, vt := d.snap.MaxFreeVRAM()
 	if t.NeedRAM > ram {
 		return false
 	}

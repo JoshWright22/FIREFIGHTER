@@ -19,8 +19,9 @@ import (
 )
 
 type Client struct {
-	ep   daemon.Endpoint
-	http *http.Client
+	ep      daemon.Endpoint
+	http    *http.Client
+	version string
 }
 
 func read() (daemon.Endpoint, error) {
@@ -38,7 +39,11 @@ func Connect() (*Client, error) {
 	if ep, err := read(); err == nil {
 		c.ep = ep
 		if c.ping() == nil {
-			return c, nil
+			if c.version == Version || Version == "dev" || c.version == "dev" {
+				return c, nil
+			}
+			_ = c.Shutdown() // an older daemon from before an upgrade
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 	if err := StartDaemon(); err != nil {
@@ -73,10 +78,23 @@ func StartDaemon() error {
 	return err
 }
 
+// Version is this binary's version; a daemon of another version is restarted on connect, so an
+// upgrade never leaves a new CLI talking to an old daemon.
+var Version = "dev"
+
 func (c *Client) ping() error {
-	var out map[string]any
-	return c.do("GET", "/v1/ping", nil, &out)
+	var out struct {
+		Version string `json:"version"`
+	}
+	if err := c.do("GET", "/v1/ping", nil, &out); err != nil {
+		return err
+	}
+	c.version = out.Version
+	return nil
 }
+
+// Shutdown asks the daemon to save and exit.
+func (c *Client) Shutdown() error { return c.do("POST", "/v1/shutdown", nil, nil) }
 
 func (c *Client) do(method, path string, body, out any) error {
 	var r io.Reader

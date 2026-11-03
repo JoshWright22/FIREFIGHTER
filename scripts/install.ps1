@@ -8,9 +8,20 @@ $repo = 'JoshWright22/firefighter'
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\firefighter'
 New-Item -ItemType Directory -Force $dir | Out-Null
 $exe = Join-Path $dir 'firefighter.exe'
+Remove-Item "$exe.old" -Force -ErrorAction SilentlyContinue
+
+# Agent sessions keep firefighter.exe open (its MCP server), so an upgrade renames the running exe
+# (Windows allows that) instead of overwriting it, and stops the old daemon cleanly.
+function Install-Exe($src) {
+    if (Test-Path $exe) {
+        & $exe daemon --stop 2>$null
+        Move-Item $exe "$exe.old" -Force
+    }
+    Copy-Item $src $exe -Force
+}
 
 if ($env:FIREFIGHTER_LOCAL_BINARY) {
-    Copy-Item $env:FIREFIGHTER_LOCAL_BINARY $exe -Force
+    Install-Exe $env:FIREFIGHTER_LOCAL_BINARY
 } else {
     $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
     $name = "firefighter_windows_$arch.zip"
@@ -24,18 +35,21 @@ if ($env:FIREFIGHTER_LOCAL_BINARY) {
         $want = ((Get-Content "$tmp\checksums.txt") | Where-Object { $_ -match " $([regex]::Escape($name))$" }).Split(' ')[0]
         $got = (Get-FileHash "$tmp\$name" -Algorithm SHA256).Hash.ToLower()
         if ($want -ne $got) { throw "checksum mismatch for $name" }
-        if (Get-Process firefighter -ErrorAction SilentlyContinue) { & $exe daemon --stop 2>$null }
         Expand-Archive "$tmp\$name" -DestinationPath $tmp -Force
-        Copy-Item "$tmp\firefighter.exe" $exe -Force
+        Install-Exe "$tmp\firefighter.exe"
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     }
 }
 
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (($userPath -split ';') -notcontains $dir) {
-    [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ";$dir"), 'User')
+# Edit the raw user PATH (keeps %VAR% entries unexpanded) and write it back as REG_EXPAND_SZ.
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+$raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+if (($raw -split ';') -notcontains $dir) {
+    $new = if ($raw) { $raw.TrimEnd(';') + ";$dir" } else { $dir }
+    $key.SetValue('Path', $new, [Microsoft.Win32.RegistryValueKind]::ExpandString)
 }
+$key.Close()
 $env:Path = "$dir;$env:Path"
 & $exe setup
 if ($LASTEXITCODE -ne 0) { throw "firefighter setup failed" }

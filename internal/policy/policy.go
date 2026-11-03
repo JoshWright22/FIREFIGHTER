@@ -164,18 +164,8 @@ func Key(c config.Config, t *Ticket, a *Account, capy Capacity, weight float64) 
 		return a.Charged/weight - Lead(c, t.Bid)
 	case "stride":
 		return a.Pass/weight - Lead(c, t.Bid)
-	case "drf":
-		share := a.GPU
-		if capy.VRAMGB > 0 {
-			share = math.Max(share, a.VRAM/capy.VRAMGB)
-		}
-		if capy.RAMGB > 0 {
-			share = math.Max(share, a.RAM/capy.RAMGB)
-		}
-		if capy.CPUs > 0 {
-			share = math.Max(share, a.CPU/capy.CPUs)
-		}
-		return share / weight
+	case "drf": // per-resource use is already in machine-minutes (fractions of capacity)
+		return math.Max(math.Max(a.GPU, a.VRAM), math.Max(a.RAM, a.CPU)) / weight
 	case "srpt":
 		return t.PredMinutes
 	}

@@ -85,6 +85,9 @@ type Config struct {
 		HeavyCPUs    float64  `toml:"heavy_cpus"`    // sustained CPU use that counts as heavy
 		HeavyRAMGB   float64  `toml:"heavy_ram_gb"`
 		HeavySeconds float64  `toml:"heavy_seconds"` // how long before it's adopted
+		// AgentsCanConfigure lets the firefighter_config MCP tool change settings. Off: agents can
+		// read the policy but only the human (CLI) changes it.
+		AgentsCanConfigure bool `toml:"agents_can_configure"`
 	} `toml:"guard"`
 
 	Harvester struct { // band 4: something that only runs when nothing else wants the GPU (Salad, BOINC, ...)
@@ -132,7 +135,8 @@ func Defaults() Config {
 	c.Ladder.OverrunFactor = 1.25
 	c.Harvester.IdleSeconds = 180
 	c.Guard.AutoAdopt = true
-	c.Guard.AgentParents = []string{"claude", "codex", "gemini", "cursor", "aider", "goose", "opencode", "windsurf", "cline", "t3"}
+	// Agent CLIs only: IDEs (Cursor, Windsurf, VS Code) also host the human's own terminals.
+	c.Guard.AgentParents = []string{"claude", "codex", "gemini", "aider", "goose", "opencode", "cline"}
 	c.Guard.HeavyCPUs = 2
 	c.Guard.HeavyRAMGB = 4
 	c.Guard.HeavySeconds = 60

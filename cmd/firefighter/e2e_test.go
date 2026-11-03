@@ -58,6 +58,14 @@ func helper(spec string) int {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		appendLine(file, fmt.Sprintf("end %d", time.Now().UnixNano()))
 		return 0
+	case "once75": // checkpoint-and-exit the first time, succeed the second
+		marker := strings.Join(f[1:], ":")
+		if !exists(marker) {
+			_ = os.WriteFile(marker, nil, 0o644)
+			return 75
+		}
+		fmt.Println("second run")
+		return 0
 	case "burn": // spin CPU for N seconds
 		secs, _ := strconv.Atoi(f[1])
 		end := time.Now().Add(time.Duration(secs) * time.Second)
@@ -483,23 +491,31 @@ func TestMCPServer(t *testing.T) {
 	cmdline := "echo mcp-job"
 	sub := call(4, "tools/call", map[string]any{"name": "firefighter_submit", "arguments": map[string]any{"command": cmdline, "cwd": cwd, "minutes": 1}})
 	text := sub["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
-	var got map[string]string
+	var got map[string]any
 	if err := json.Unmarshal([]byte(text), &got); err != nil || got["id"] == "" {
 		t.Fatalf("submit: %s", text)
 	}
 	var waitText string
 	for i := 0; i < 4 && !strings.Contains(waitText, `"state": "done"`); i++ {
-		w := call(5+i, "tools/call", map[string]any{"name": "firefighter_wait", "arguments": map[string]any{"id": got["id"], "timeout_s": 25}})
+		w := call(5+i, "tools/call", map[string]any{"name": "firefighter_wait", "arguments": map[string]any{"id": got["id"], "timeout_s": 20}})
 		waitText = w["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 	}
 	if !strings.Contains(waitText, `"outcome": "ok"`) || !strings.Contains(waitText, "mcp-job") {
 		t.Fatalf("wait:\n%s", waitText)
 	}
-	cfg := call(20, "tools/call", map[string]any{"name": "firefighter_config", "arguments": map[string]any{"action": "set", "key": "order.policy", "value": "stride"}})
-	if cfg["result"].(map[string]any)["isError"] == true {
-		t.Fatalf("config tool: %v", cfg)
+	cfg := call(20, "tools/call", map[string]any{"name": "firefighter_config", "arguments": map[string]any{"action": "set", "key": "budget.daily_minutes", "value": "99999"}})
+	if cfg["result"].(map[string]any)["isError"] != true {
+		t.Fatalf("agents must not be able to raise budgets by default: %v", cfg)
 	}
-	bad := call(21, "nope", nil)
+	show := call(21, "tools/call", map[string]any{"name": "firefighter_config", "arguments": map[string]any{"action": "show"}})
+	if show["result"].(map[string]any)["isError"] == true {
+		t.Fatalf("agents must be able to read the policy: %v", show)
+	}
+	badBid := call(22, "tools/call", map[string]any{"name": "firefighter_submit", "arguments": map[string]any{"command": cmdline, "cwd": cwd, "minutes": 1, "bid": 7.5}})
+	if badBid["result"].(map[string]any)["isError"] != true {
+		t.Fatal("fractional bid must be rejected before spawning")
+	}
+	bad := call(23, "nope", nil)
 	if bad["error"] == nil {
 		t.Fatal("unknown method must error")
 	}
@@ -549,7 +565,7 @@ func TestDockerizeLabelsContainers(t *testing.T) {
 func TestMarketQuoteAndRebid(t *testing.T) {
 	e := newEnv(t, map[string]any{"gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16}}})
 	e.ff("config", "set", "gpu.max_jobs", "1")
-	hold := e.detach("pausable:20:"+filepath.Join(e.home, "hold.txt"), "--gpu", "--minutes", "1")
+	hold := e.detach("pausable:20:"+filepath.Join(e.home, "hold.txt"), "--gpu", "--minutes", "30")
 	eventually(t, "holder running", 15*time.Second, func() bool {
 		r, _ := e.status()["running"].([]any)
 		return len(r) == 1
@@ -612,4 +628,65 @@ func TestRogueHeavyProcessIsAdopted(t *testing.T) {
 		}
 		return false
 	})
+}
+
+func TestAPIRejectsBadPIDs(t *testing.T) {
+	e := newEnv(t, nil)
+	if out, code := e.ff("adopt", "0"); code == 0 {
+		t.Fatalf("adopt 0 must fail:\n%s", out)
+	}
+	if out, code := e.ff("adopt", "-1"); code == 0 {
+		t.Fatalf("adopt -1 must fail:\n%s", out)
+	}
+	// The daemon itself must survive and keep serving.
+	if st := e.status(); st["user"] == nil {
+		t.Fatal("daemon unhealthy after bad pids")
+	}
+}
+
+func TestOnlyOneDaemon(t *testing.T) {
+	e := newEnv(t, nil)
+	e.status() // starts one
+	out, code := e.ff("daemon")
+	if code == 0 || !strings.Contains(out, "already running") {
+		t.Fatalf("a second daemon must refuse to start: %d\n%s", code, out)
+	}
+}
+
+func TestDetachKeepsJobFlags(t *testing.T) {
+	e := newEnv(t, nil)
+	self, _ := os.Executable()
+	out, err := e.cmd([]string{"FF_HELPER=exit:0"}, "run", "--detach", "--minutes", "1", "--", self, "--detach").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	w, code := e.ff("wait", id, "--timeout", "30")
+	if code != 0 || !strings.Contains(w, `"outcome": "ok"`) {
+		t.Fatalf("detached job with its own --detach flag: %d\n%s", code, w)
+	}
+}
+
+func TestWindowsCmdQuoting(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cmd.exe quoting is Windows-only")
+	}
+	e := newEnv(t, nil)
+	out, code := e.ff("run", "--minutes", "1", "--", "cmd", "/c", `echo "a & b" & echo second`)
+	if code != 0 || !strings.Contains(out, `"a & b"`) || !strings.Contains(out, "second") {
+		t.Fatalf("cmd /c line mangled: %d\n%s", code, out)
+	}
+}
+
+func TestExit75Requeues(t *testing.T) {
+	e := newEnv(t, nil)
+	marker := filepath.Join(e.home, "once")
+	self, _ := os.Executable()
+	out, err := e.cmd([]string{"FF_HELPER=once75:" + marker}, "run", "--minutes", "1", "--", self).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "back in line") || !strings.Contains(string(out), "curtain call, ok") {
+		t.Fatalf("exit 75 must requeue and the rerun must finish:\n%s", out)
+	}
 }

@@ -8,8 +8,16 @@ REPO="JoshWright22/firefighter"
 BIN_DIR="${FIREFIGHTER_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN_DIR"
 
+# Replace by rename (a running binary can't be overwritten), after stopping the old daemon.
+put() {
+  [ -x "$BIN_DIR/firefighter" ] && "$BIN_DIR/firefighter" daemon --stop >/dev/null 2>&1 || true
+  cp "$1" "$BIN_DIR/.firefighter.new"
+  chmod +x "$BIN_DIR/.firefighter.new"
+  mv -f "$BIN_DIR/.firefighter.new" "$BIN_DIR/firefighter"
+}
+
 if [ -n "${FIREFIGHTER_LOCAL_BINARY:-}" ]; then
-  cp "$FIREFIGHTER_LOCAL_BINARY" "$BIN_DIR/firefighter"
+  put "$FIREFIGHTER_LOCAL_BINARY"
 else
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
   case "$(uname -m)" in
@@ -28,9 +36,8 @@ else
   if command -v sha256sum >/dev/null; then got=$(sha256sum "$tmp/$name" | cut -d' ' -f1); else got=$(shasum -a 256 "$tmp/$name" | cut -d' ' -f1); fi
   [ "$want" = "$got" ] || { echo "checksum mismatch for $name" >&2; exit 1; }
   tar -xzf "$tmp/$name" -C "$tmp"
-  mv "$tmp/firefighter" "$BIN_DIR/firefighter"
+  put "$tmp/firefighter"
 fi
-chmod +x "$BIN_DIR/firefighter"
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

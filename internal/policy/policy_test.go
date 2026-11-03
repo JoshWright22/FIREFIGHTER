@@ -103,8 +103,8 @@ func TestDRFUsesDominantShare(t *testing.T) {
 	c := config.Defaults()
 	c.Order.Policy = "drf"
 	capy := Capacity{CPUs: 16, RAMGB: 32, VRAMGB: 16}
-	// p1 used little GPU but lots of RAM (dominant 0.5); p2 used GPU 0.3.
-	accts := map[string]*Account{"p1": {GPU: 0.1, RAM: 16}, "p2": {GPU: 0.3}}
+	// p1 used little GPU but half the RAM for a minute (dominant 0.5); p2 used GPU 0.3.
+	accts := map[string]*Account{"p1": {GPU: 0.1, RAM: 0.5}, "p2": {GPU: 0.3}}
 	if got := Order(c, []*Ticket{tk("a", "p1", 5, 1), tk("b", "p2", 5, 1)}, accts, capy, t0, nil); ids(got) != "ba" {
 		t.Fatalf("drf: %s", ids(got))
 	}

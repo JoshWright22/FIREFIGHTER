@@ -5,6 +5,10 @@
 package setup
 
 import (
+	"regexp"
+
+	"github.com/BurntSushi/toml"
+
 	"encoding/json"
 	"fmt"
 	"os"
@@ -118,11 +122,16 @@ func upsertBlock(path, block string) error {
 		return err
 	}
 	s := string(b)
+	nb, ne := strings.Count(s, begin), strings.Count(s, end)
+	if nb > 1 || ne > 1 || nb != ne {
+		return fmt.Errorf("%s has %d begin and %d end firefighter markers; fix them by hand (left untouched)", path, nb, ne)
+	}
 	if i := strings.Index(s, begin); i >= 0 {
-		if j := strings.Index(s[i:], end); j >= 0 {
-			rest := strings.TrimPrefix(s[i+j+len(end):], "\n")
-			s = s[:i] + rest
+		j := strings.Index(s, end)
+		if j < i {
+			return fmt.Errorf("%s has the firefighter end marker before the begin marker (left untouched)", path)
 		}
+		s = s[:i] + strings.TrimPrefix(s[j+len(end):], "\n")
 	}
 	if block != "" {
 		if s != "" && !strings.HasSuffix(s, "\n\n") {
@@ -132,10 +141,30 @@ func upsertBlock(path, block string) error {
 	} else if s == "" && os.IsNotExist(err) {
 		return nil
 	}
+	return writeFile(path, []byte(s))
+}
+
+// writeFile replaces a config file safely: a one-time .firefighter.bak of the original, then a
+// temp file renamed over it, so a crash never leaves it truncated.
+func writeFile(path string, b []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(s), 0o644)
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+		bak := path + ".firefighter.bak"
+		if _, err := os.Stat(bak); os.IsNotExist(err) {
+			if old, err := os.ReadFile(path); err == nil {
+				_ = os.WriteFile(bak, old, mode)
+			}
+		}
+	}
+	tmp := path + ".firefighter.tmp"
+	if err := os.WriteFile(tmp, b, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // ---- MCP registration ---------------------------------------------------------------------------
@@ -212,39 +241,55 @@ func jsonServers(path, key, exe string, add bool) error {
 	}
 	m[key] = servers
 	out, _ := json.MarshalIndent(m, "", "  ")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, out, 0o644)
+	return writeFile(path, out)
 }
 
+var codexHeader = regexp.MustCompile(`^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*"?firefighter"?[ \t]*\][ \t]*(#.*)?$`)
+var anyHeader = regexp.MustCompile(`^[ \t]*\[`)
+
+// codexTOML adds or removes the [mcp_servers.firefighter] table in Codex's config.toml. It edits
+// whole lines only, then parses the result and refuses to write anything that isn't valid TOML
+// with exactly the intended change.
 func codexTOML(exe string, add bool) error {
 	path := filepath.Join(codexDir(), "config.toml")
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	s := string(b)
-	const head = "[mcp_servers.firefighter]"
-	if i := strings.Index(s, head); i >= 0 {
-		rest := s[i+len(head):]
-		j := strings.Index(rest, "\n[")
-		if j < 0 {
-			j = len(rest)
-		} else {
-			j++
-		}
-		s = s[:i] + rest[j:]
-	}
-	if add {
-		if s != "" && !strings.HasSuffix(s, "\n") {
-			s += "\n"
-		}
-		s += fmt.Sprintf("%s\ncommand = %q\nargs = [\"mcp\"]\n", head, exe)
-	} else if os.IsNotExist(err) {
+	if os.IsNotExist(err) && !add {
 		return nil
 	}
-	return os.WriteFile(path, []byte(s), 0o644)
+	var out []string
+	skipping := false
+	for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
+		switch {
+		case codexHeader.MatchString(line):
+			skipping = true
+			continue
+		case skipping && anyHeader.MatchString(line):
+			skipping = false
+		}
+		if !skipping {
+			out = append(out, line)
+		}
+	}
+	s := strings.TrimRight(strings.Join(out, "\n"), "\n")
+	if add {
+		if s != "" {
+			s += "\n\n"
+		}
+		s += fmt.Sprintf("[mcp_servers.firefighter]\ncommand = %q\nargs = [\"mcp\"]", exe)
+	}
+	s += "\n"
+	var check map[string]any
+	if _, err := toml.Decode(s, &check); err != nil {
+		return fmt.Errorf("%s: the edited file wouldn't parse, left untouched: %w", path, err)
+	}
+	servers, _ := check["mcp_servers"].(map[string]any)
+	if _, has := servers["firefighter"]; has != add {
+		return fmt.Errorf("%s: couldn't edit the firefighter entry cleanly, left untouched", path)
+	}
+	return writeFile(path, []byte(s))
 }
 
 // ---- start at logon -----------------------------------------------------------------------------
@@ -253,12 +298,25 @@ func autostart(exe string) error {
 	switch runtime.GOOS {
 	case "windows":
 		// conhost --headless runs the console program with no window at all.
+		// conhost --headless runs the console program with no window at all.
 		tr := fmt.Sprintf(`conhost.exe --headless "%s" daemon`, exe)
-		out, err := exec.Command("schtasks", "/Create", "/F", "/TN", "firefighter", "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", tr).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		user := os.Getenv("USERNAME")
+		if dom := os.Getenv("USERDOMAIN"); dom != "" && user != "" {
+			user = dom + `\` + user
 		}
-		return nil
+		args := []string{"/Create", "/F", "/TN", "firefighter", "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", tr}
+		if user != "" {
+			args = append(args, "/RU", user, "/IT")
+		}
+		out, err := exec.Command("schtasks", args...).CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		// Without rights to create logon tasks: the per-user Run key needs no admin.
+		if rerr := exec.Command("reg", "add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "firefighter", "/t", "REG_SZ", "/d", tr, "/f").Run(); rerr == nil {
+			return nil
+		}
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 	case "darwin":
 		dir := filepath.Join(home(), "Library", "LaunchAgents")
 		path := filepath.Join(dir, "dev.firefighter.plist")
@@ -284,7 +342,7 @@ func autostart(exe string) error {
 	default:
 		if exec.Command("systemctl", "--user", "show-environment").Run() == nil {
 			dir := filepath.Join(home(), ".config", "systemd", "user")
-			unit := fmt.Sprintf("[Unit]\nDescription=firefighter: shares this machine between AI agents, the human first\n\n[Service]\nExecStart=%s daemon\nRestart=on-failure\nNice=-5\n\n[Install]\nWantedBy=default.target\n", exe)
+			unit := fmt.Sprintf("[Unit]\nDescription=firefighter: shares this machine between AI agents, the human first\n\n[Service]\nExecStart=%s daemon\nExecStop=%s daemon --stop\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n", exe, exe)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return err
 			}
@@ -292,7 +350,10 @@ func autostart(exe string) error {
 				return err
 			}
 			_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-			return exec.Command("systemctl", "--user", "enable", "--now", "firefighter.service").Run()
+			if err := exec.Command("systemctl", "--user", "enable", "firefighter.service").Run(); err != nil {
+				return err
+			}
+			return exec.Command("systemctl", "--user", "restart", "firefighter.service").Run() // picks up a new binary
 		}
 		// No systemd user session (containers, WSL without systemd): XDG autostart; the CLI also
 		// starts the daemon on demand.
@@ -309,6 +370,7 @@ func removeAutostart() error {
 	switch runtime.GOOS {
 	case "windows":
 		_ = exec.Command("schtasks", "/Delete", "/F", "/TN", "firefighter").Run()
+		_ = exec.Command("reg", "delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "firefighter", "/f").Run()
 	case "darwin":
 		path := filepath.Join(home(), "Library", "LaunchAgents", "dev.firefighter.plist")
 		_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", os.Getuid()), path).Run()

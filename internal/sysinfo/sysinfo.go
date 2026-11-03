@@ -48,6 +48,16 @@ type Snapshot struct {
 	Foreground string  // process name of a fullscreen foreground window, "" if none
 }
 
+// MaxFreeVRAM is the most VRAM free on any single GPU (a job can't span cards), and that card's size.
+func (s Snapshot) MaxFreeVRAM() (free, total float64) {
+	for i, g := range s.GPUs {
+		if f := g.VRAMGB - g.UsedGB; i == 0 || f > free {
+			free, total = f, g.VRAMGB
+		}
+	}
+	return
+}
+
 func (s Snapshot) VRAMTotal() (total, used float64) {
 	for _, g := range s.GPUs {
 		total += g.VRAMGB
@@ -239,25 +249,58 @@ func num(s string) float64 {
 	return f
 }
 
-// Tree returns pid and every descendant.
-func Tree(pid int) []int {
-	out := []int{pid}
+// Created is a process's start time (ms since the epoch), 0 if it's gone. A pid plus its start
+// time names one process for good: Windows reuses pids quickly.
+func Created(pid int) int64 {
+	if pid <= 0 {
+		return 0
+	}
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {
+		return 0
+	}
+	t, _ := p.CreateTime()
+	return t
+}
+
+// Same reports whether pid is still the process that started at created.
+func Same(pid int, created int64) bool {
+	return pid > 1 && created != 0 && Alive(pid) && Created(pid) == created
+}
+
+// Members walks a job's process tree from its root and returns pid -> start time for every live
+// member. A child counts only if it started after its parent (a reused stale parent pid can't
+// pull in unrelated programs), and members seen before stay while they live, even after their
+// parent exits (orphaned workers still belong to the job).
+func Members(root int, rootCreated int64, known map[int]int64) map[int]int64 {
+	out := map[int]int64{}
+	for pid, c := range known {
+		if Same(pid, c) {
+			out[pid] = c
+		}
+	}
+	if !Same(root, rootCreated) {
 		return out
 	}
-	var walk func(*process.Process, int)
-	walk = func(p *process.Process, depth int) {
+	out[root] = rootCreated
+	var walk func(p *process.Process, created int64, depth int)
+	walk = func(p *process.Process, created int64, depth int) {
 		if depth > 12 {
 			return
 		}
 		kids, _ := p.Children()
 		for _, k := range kids {
-			out = append(out, int(k.Pid))
-			walk(k, depth+1)
+			kc, err := k.CreateTime()
+			if err != nil || kc < created {
+				continue
+			}
+			out[int(k.Pid)] = kc
+			walk(k, kc, depth+1)
 		}
 	}
-	walk(p, 0)
+	if p, err := process.NewProcess(int32(root)); err == nil {
+		walk(p, rootCreated, 0)
+	}
 	return out
 }
 

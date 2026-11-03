@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/JoshWright22/firefighter/internal/client"
 	"github.com/JoshWright22/firefighter/internal/config"
@@ -58,7 +59,7 @@ var tools = []tool{
 		"ram_gb":  num("Peak RAM in GB if known"),
 		"bid":     num("Urgency 1-10, default 5. Higher costs more budget: bid high only when the human waits on it"),
 		"name":    str("Short name: '<project> <what>'"),
-		"evict":   str("never | graceful (default: honors the checkpoint file) | force"),
+		"evict":   str("graceful (default: honors the checkpoint file) | force (may be killed at once)"),
 		"spot":    boo("Run only on leftovers; cheapest, preempted first"),
 	}, "command", "cwd", "minutes")},
 	{"firefighter_wait", "Wait for a submitted job: returns its state, queue position and estimated start, or its receipt and log tail when done. Waits up to timeout_s seconds (default 50); call again if still running.", obj(map[string]any{
@@ -185,6 +186,15 @@ func call(name string, a map[string]any) (string, error) {
 		if s(a, "command") == "" || f(a, "minutes") <= 0 {
 			return "", fmt.Errorf("command and minutes are required")
 		}
+		if bid := f(a, "bid"); bid != 0 && (bid < 1 || bid > 10 || bid != float64(int(bid))) {
+			return "", fmt.Errorf("bid must be a whole number 1-10")
+		}
+		if ev := s(a, "evict"); ev != "" && ev != "graceful" && ev != "force" {
+			return "", fmt.Errorf("evict must be graceful or force (never is for the human's CLI only)")
+		}
+		if fi, err := os.Stat(s(a, "cwd")); err != nil || !fi.IsDir() {
+			return "", fmt.Errorf("cwd %q isn't a folder", s(a, "cwd"))
+		}
 		args := []string{"--minutes", fmt.Sprint(f(a, "minutes"))}
 		if b(a, "gpu") {
 			args = append(args, "--gpu")
@@ -218,17 +228,27 @@ func call(name string, a map[string]any) (string, error) {
 		return js(map[string]any{"id": id, "log": log, "state": v.State, "position": v.Position, "starts": v.ETA,
 			"market": v.Market, "next": "call firefighter_wait with this id; re-bid with firefighter_bid if the market says so"}), nil
 	case "firefighter_wait":
-		t := int(f(a, "timeout_s"))
-		if t <= 0 || t > 55 {
-			t = 50
+		t := f(a, "timeout_s")
+		if t <= 0 || t > 50 {
+			t = 45 // stays under common 60 s tool timeouts
 		}
+		deadline := time.Now().Add(time.Duration(t * float64(time.Second)))
 		id := s(a, "id")
 		v, err := c.GetSoon(id)
-		for i := 0; err == nil && v.State != "done" && i < t/25+1; i++ {
-			v, err = c.Get(id, v.State, min(25, t))
+		for err == nil && (v.State != "done" || (v.Receipt != nil && v.Receipt.Requeue)) {
+			left := int(time.Until(deadline).Seconds())
+			if left < 1 {
+				break
+			}
+			if v.State == "done" { // evicted and requeued: the next attempt registers shortly
+				time.Sleep(500 * time.Millisecond)
+				v, err = c.GetSoon(id)
+				continue
+			}
+			v, err = c.Get(id, v.State, min(20, left))
 		}
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%v\n--- log tail ---\n%s", err, client.Tail(client.LogPath(id), 1500))
 		}
 		out := js(v)
 		if v.State == "done" {
@@ -263,7 +283,17 @@ func call(name string, a map[string]any) (string, error) {
 }
 
 func configTool(a map[string]any) (string, error) {
-	switch s(a, "action") {
+	act := s(a, "action")
+	if act == "set" || act == "unset" {
+		c, _ := config.Load()
+		if !c.Guard.AgentsCanConfigure {
+			return "", fmt.Errorf("agents can read the policy but not change it; ask the human to run `firefighter config set %s ...` (or allow agents: guard.agents_can_configure)", s(a, "key"))
+		}
+		if strings.HasPrefix(s(a, "key"), "guard.") {
+			return "", fmt.Errorf("guard.* settings are the human's only")
+		}
+	}
+	switch act {
 	case "set":
 		if err := config.Set(s(a, "key"), fmt.Sprint(a["value"])); err != nil {
 			return "", err

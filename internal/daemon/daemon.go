@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/config"
@@ -25,28 +26,42 @@ const tick = 500 * time.Millisecond
 
 type job struct {
 	*policy.Ticket
-	pids       map[int]bool
-	applied    map[int]string // pid -> cpu set applied
-	cpuPrev    float64
-	cpuNow     float64 // CPUs in use
-	ramGB      float64
-	vramGB     float64
-	gpuUtil    float64
-	peakVRAM   float64
-	peakRAM    float64
-	charged    float64
-	overrun    bool
-	granted    time.Time
-	pausedAt   time.Time // cooperative pause flag set
-	suspended  time.Time
-	checkpoint time.Time // checkpoint-and-exit requested
-	reason     string
-	container  string
-	receipt    *Receipt
-	extended   float64
-	price      float64 // locked at grant: bid price x congestion x surcharge
-	adopted    bool    // auto-adopted: heavy work an agent started outside firefighter
-	termAt     time.Time
+	rootCreated int64
+	pids        map[int]int64  // member pid -> start time (pid + start time = one process, for good)
+	applied     map[int]string // pid -> cpu set applied
+	cpuPrev     float64
+	cpuNow      float64 // CPUs in use
+	ramGB       float64
+	vramGB      float64
+	gpuUtil     float64
+	peakVRAM    float64
+	peakRAM     float64
+	charged     float64
+	overrun     bool
+	granted     time.Time
+	pausedAt    time.Time // cooperative pause flag set
+	pausedTotal time.Duration
+	suspended   time.Time
+	checkpoint  time.Time // checkpoint-and-exit requested
+	termAt      time.Time
+	killedAt    time.Time
+	reason      string
+	container   string
+	receipt     *Receipt
+	extended    float64
+	price       float64 // locked at grant: bid price x congestion x surcharge
+	adopted     bool    // auto-adopted: heavy work an agent started outside firefighter
+}
+
+func newJob(t *policy.Ticket) *job {
+	j := &job{Ticket: t, pids: map[int]int64{}, applied: map[int]string{}}
+	if t.PID > 1 {
+		j.rootCreated = sysinfo.Created(t.PID)
+		if j.rootCreated != 0 {
+			j.pids[t.PID] = j.rootCreated
+		}
+	}
+	return j
 }
 
 type Daemon struct {
@@ -76,17 +91,23 @@ type Daemon struct {
 		on        bool
 		quietFrom time.Time
 	}
+	// owned by the Run goroutine only
 	scanner   *sysinfo.Scanner
 	rogueAt   time.Time
 	rogueSeen map[int]time.Time
-	saveAt    time.Time
-	statusAt  time.Time
-	started   time.Time
-	Token     string
-	Port      int
+	dockerAt  time.Time
+	docking   atomic.Bool
+
+	saveAt   time.Time
+	statusAt time.Time
+	started  time.Time
+	Version  string
+	Token    string
+	Port     int
+	stop     chan struct{}
 }
 
-func New() *Daemon {
+func New(version string) *Daemon {
 	d := &Daemon{
 		jobs:    map[string]*job{},
 		reader:  sysinfo.NewReader(),
@@ -95,6 +116,8 @@ func New() *Daemon {
 		rng:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		started: time.Now(),
 		user:    "present",
+		Version: version,
+		stop:    make(chan struct{}),
 	}
 	d.reloadConfig()
 	_ = os.MkdirAll(signalDir(), 0o755)
@@ -137,17 +160,65 @@ func (d *Daemon) broadcast() {
 	d.notify = make(chan struct{})
 }
 
+// ---- the loop: slow probes outside the lock, decisions inside ---------------------------------------
+
+type root struct {
+	id        string
+	pid       int
+	created   int64
+	known     map[int]int64
+	container string
+}
+
+type measured struct {
+	members map[int]int64
+	cpuSec  float64
+	ramGB   float64
+}
+
 // Run is the control loop. It never returns.
 func (d *Daemon) Run() {
 	t := time.NewTicker(tick)
+	defer t.Stop()
 	last := time.Now()
-	for now := range t.C {
-		snap := d.reader.Read()
-		var others []sysinfo.Container
-		dockerDue := now.Sub(d.statusAt) > 14*time.Second
-		if dockerDue {
-			others = sysinfo.Containers()
+	for {
+		var now time.Time
+		select {
+		case now = <-t.C:
+		case <-d.stop:
+			return
 		}
+		snap := d.reader.Read()
+
+		d.mu.Lock()
+		var roots []root
+		for _, j := range d.jobs {
+			if j.State == "running" {
+				known := make(map[int]int64, len(j.pids))
+				for p, c := range j.pids {
+					known[p] = c
+				}
+				roots = append(roots, root{j.ID, j.PID, j.rootCreated, known, j.container})
+			}
+		}
+		cfg := d.cfg
+		d.mu.Unlock()
+
+		meas := map[string]measured{}
+		governed := map[int]bool{os.Getpid(): true}
+		for _, r := range roots {
+			m := sysinfo.Members(r.pid, r.created, r.known)
+			pids := make([]int, 0, len(m))
+			for p := range m {
+				pids = append(pids, p)
+				governed[p] = true
+			}
+			cpu, ram := sysinfo.Usage(pids)
+			meas[r.id] = measured{m, cpu, ram}
+		}
+		rogues := d.findRogues(now, cfg, snap, governed)
+		d.refreshDocker(now)
+
 		d.mu.Lock()
 		func() {
 			defer func() {
@@ -155,28 +226,42 @@ func (d *Daemon) Run() {
 					logf("loop panic: %v", r)
 				}
 			}()
-			if dockerDue {
-				d.others = others
-			}
-			d.step(snap, now, now.Sub(last))
+			d.step(snap, meas, rogues, now, now.Sub(last))
 		}()
 		d.mu.Unlock()
 		last = now
 	}
 }
 
-func (d *Daemon) step(snap sysinfo.Snapshot, now time.Time, dt time.Duration) {
+// refreshDocker reads `docker stats` in the background every 15 s; a hung Docker never stalls the loop.
+func (d *Daemon) refreshDocker(now time.Time) {
+	if d.docking.Load() || now.Sub(d.dockerAt) < 15*time.Second {
+		return
+	}
+	d.docking.Store(true)
+	d.dockerAt = now
+	go func() {
+		cs := sysinfo.Containers()
+		d.mu.Lock()
+		d.others = cs
+		d.mu.Unlock()
+		d.docking.Store(false)
+	}()
+}
+
+func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []rogue, now time.Time, dt time.Duration) {
 	d.reloadConfig()
 	c := d.cfg
 	d.snap = snap
-	d.measureJobs(now, dt)
+	d.applyMeasurements(meas, now, dt)
 	d.observeOccupancy(now, dt)
 	d.senseUser(now)
-	d.adoptRogues(now)
+	d.adoptRogues(rogues, now)
 	d.res.Update(c, d.user, d.busyUser, now)
 	d.enforceCPU()
 	d.ladder(now)
 	d.reap(now)
+	d.refreshBands(now)
 	d.admit(now)
 	d.harvester(now)
 	if now.Sub(d.saveAt) > 10*time.Second {
@@ -205,39 +290,34 @@ func (d *Daemon) running() []*job {
 	return out
 }
 
-func (d *Daemon) measureJobs(now time.Time, dt time.Duration) {
+func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt time.Duration) {
 	c := d.cfg
 	capy := d.capacity()
 	jobPIDs := map[int]bool{}
 	var gpuJobs []*job
 	for _, j := range d.running() {
-		if j.PID > 0 {
-			for _, p := range sysinfo.Tree(j.PID) {
-				if !j.pids[p] {
-					j.pids[p] = true
-					if err := sysinfo.Background(p); err != nil && p == j.PID {
-						logf("%s: background priority: %v", j.Name, err)
-					}
-				}
-			}
-			for p := range j.pids {
-				if p != j.PID && !sysinfo.Alive(p) {
-					delete(j.pids, p)
-					delete(j.applied, p)
-				}
-			}
+		m, ok := meas[j.ID]
+		if !ok {
+			continue // started after this tick's scan
 		}
-		var pids []int
-		for p := range j.pids {
-			pids = append(pids, p)
+		for p := range m.members {
+			if _, had := j.pids[p]; !had {
+				if err := sysinfo.Background(p); err != nil && p == j.PID {
+					logf("%s: background priority: %v", j.Name, err)
+				}
+			}
 			jobPIDs[p] = true
 		}
-		cpuSec, ram := sysinfo.Usage(pids)
-		if j.cpuPrev > 0 && dt > 0 {
-			j.cpuNow = math.Max(0, (cpuSec-j.cpuPrev)/dt.Seconds())
+		for p := range j.pids {
+			if _, ok := m.members[p]; !ok {
+				delete(j.applied, p)
+			}
 		}
-		j.cpuPrev = cpuSec
-		j.ramGB = ram
+		j.pids = m.members
+		if j.cpuPrev > 0 && dt > 0 {
+			j.cpuNow = math.Max(0, (m.cpuSec-j.cpuPrev)/dt.Seconds())
+		}
+		j.cpuPrev, j.ramGB = m.cpuSec, m.ramGB
 		if j.container != "" {
 			for _, o := range d.others {
 				if o.Name == j.container {
@@ -270,10 +350,11 @@ func (d *Daemon) measureJobs(now time.Time, dt time.Duration) {
 			}
 		}
 	}
-	// Charge (DRF-style machine-minutes, priced by the bid, idle VRAM taxed, overruns doubled).
+	// Charge machine-minutes (DRF: the dominant share), at the price locked at grant. Idle VRAM is
+	// taxed x3, overruns x2. Paused and suspended time is free.
 	m := dt.Minutes()
 	for _, j := range d.running() {
-		if !j.suspended.IsZero() || m <= 0 || m > 0.1 {
+		if !j.suspended.IsZero() || !j.pausedAt.IsZero() || m <= 0 || m > 0.1 {
 			continue
 		}
 		gpu := 0.0
@@ -307,14 +388,19 @@ func (d *Daemon) measureJobs(now time.Time, dt time.Duration) {
 	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
 	d.foreign, d.graphics = map[string]float64{}, map[string]float64{}
 	for pid, g := range d.snap.ProcGPU {
-		if jobPIDs[pid] || g.Util < 1 {
+		// Linux reports VRAM only: a non-job process holding over 1 GB counts as GPU work.
+		if jobPIDs[pid] || (g.Util < 1 && g.VRAMGB < 1) {
 			continue
 		}
 		n := sysinfo.Name(pid)
 		if n == "" || contains(c.Reserve.IgnoreGPUApps, n) {
 			continue
 		}
-		d.foreign[n] = math.Max(d.foreign[n], g.Util)
+		u := g.Util
+		if u < 1 {
+			u = c.Reserve.ForeignGPUPct // unknown utilization, known VRAM: assume busy
+		}
+		d.foreign[n] = math.Max(d.foreign[n], u)
 		if g.Util3D >= 1 {
 			d.graphics[n] = math.Max(d.graphics[n], g.Util3D)
 		}
@@ -322,7 +408,7 @@ func (d *Daemon) measureJobs(now time.Time, dt time.Duration) {
 }
 
 func (d *Daemon) capacity() policy.Capacity {
-	vt, _ := d.snap.VRAMTotal()
+	_, vt := d.snap.MaxFreeVRAM()
 	return policy.Capacity{CPUs: float64(max(1, d.snap.CPUs)), RAMGB: math.Max(1, d.snap.RAMTotalGB), VRAMGB: vt}
 }
 
@@ -374,6 +460,9 @@ func (d *Daemon) senseUser(now time.Time) {
 	}
 }
 
+// gpuHeld: the human's current state reserves the whole GPU (pause_gpu).
+func (d *Daemon) gpuHeld() bool { return d.cfg.ReserveFor(d.user).PauseGPU }
+
 // enforceCPU keeps jobs on the highest-numbered CPUs, leaving the reserve idle for the human
 // (PerfIso: a resized idle-core buffer protects latency where priority and rate caps don't).
 func (d *Daemon) enforceCPU() {
@@ -386,8 +475,8 @@ func (d *Daemon) enforceCPU() {
 	}
 	key := fmt.Sprint(allow)
 	for _, j := range d.running() {
-		for p := range j.pids {
-			if j.applied[p] == key {
+		for p, created := range j.pids {
+			if j.applied[p] == key || !sysinfo.Same(p, created) {
 				continue
 			}
 			if err := sysinfo.SetCPUs(p, cpus); err == nil {
@@ -403,49 +492,52 @@ func (d *Daemon) enforceCPU() {
 
 // ---- preemption ladder ---------------------------------------------------------------------------
 
+func dur(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
+
+// leaseUsed is how long a job has run, not counting time the guard held it paused.
+func (j *job) leaseUsed(now time.Time) time.Duration {
+	used := now.Sub(j.Started) - j.pausedTotal
+	if !j.pausedAt.IsZero() {
+		used -= now.Sub(j.pausedAt)
+	}
+	return used
+}
+
 func (d *Daemon) ladder(now time.Time) {
 	c := d.cfg
-	r := c.ReserveFor(d.user)
-	dur := func(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
 
 	// Overrun: past the lease x factor without an extension -> spot band, double charge.
 	for _, j := range d.running() {
 		lease := (j.Minutes + j.extended) * c.Ladder.OverrunFactor
-		if j.Minutes > 0 && !j.overrun && now.Sub(j.Started).Minutes() > lease {
+		if j.Minutes > 0 && !j.overrun && !j.adopted && j.leaseUsed(now).Minutes() > lease {
 			j.overrun, j.Band = true, policy.BandSpot
 			logf("%s: past its %.0f-minute lease; now spot (charged double, preempted first)", j.Name, j.Minutes+j.extended)
 		}
 	}
 
-	// Game or media in front: cooperative pause -> suspend (bounded) -> checkpoint for GPU jobs.
-	gpuHold := r.PauseGPU && d.user == "game"
+	// The human's state holds the GPU (game by default): cooperative pause -> suspend (bounded)
+	// -> checkpoint, for GPU jobs. Jobs marked evict=never stay suspended instead.
+	hold := d.gpuHeld()
 	for _, j := range d.running() {
-		if !j.GPU {
+		if !j.GPU || !j.killedAt.IsZero() {
 			continue
 		}
 		switch {
-		case gpuHold && j.pausedAt.IsZero():
-			j.pausedAt, j.reason = now, "you're gaming ("+d.gameWhy+")"
+		case hold && j.pausedAt.IsZero() && j.checkpoint.IsZero():
+			j.pausedAt, j.reason = now, "the human needs the GPU ("+d.why()+")"
 			touch(PauseFile(j.ID))
 			logf("%s: pause requested: %s", j.Name, j.reason)
-		case gpuHold && j.suspended.IsZero() && j.checkpoint.IsZero() && !exists(PausedFile(j.ID)) &&
+		case hold && !j.pausedAt.IsZero() && j.suspended.IsZero() && j.checkpoint.IsZero() && !exists(PausedFile(j.ID)) &&
 			now.Sub(j.pausedAt) > dur(c.Ladder.PauseAckSeconds):
 			j.suspended = now
 			d.each(j, sysinfo.Suspend)
 			d.signalContainer(j, "pause")
 			logf("%s: no pause ack in %.0fs, suspended", j.Name, c.Ladder.PauseAckSeconds)
-		case gpuHold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.Evict != "never" &&
+		case hold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.Evict != "never" &&
 			now.Sub(j.suspended) > dur(c.Ladder.SuspendMaxSeconds):
-			d.each(j, sysinfo.Resume)
-			j.suspended = time.Time{}
-			d.requestCheckpoint(j, now, "game still running after the suspend limit")
-		case !gpuHold && !j.pausedAt.IsZero():
-			_ = os.Remove(PauseFile(j.ID))
-			d.signalContainer(j, "unpause")
-			if !j.suspended.IsZero() {
-				d.each(j, sysinfo.Resume)
-			}
-			j.pausedAt, j.suspended, j.reason = time.Time{}, time.Time{}, ""
+			d.requestCheckpoint(j, now, "the human still needs the GPU after the suspend limit")
+		case !hold && !j.pausedAt.IsZero():
+			d.unpause(j, now)
 			logf("%s: resumed", j.Name)
 		}
 	}
@@ -453,55 +545,79 @@ func (d *Daemon) ladder(now time.Time) {
 	// RAM and VRAM pressure: under the reserve for PressureSeconds -> checkpoint one victim.
 	ramFloor := d.snap.RAMTotalGB * d.res.RAMPct / 100
 	ramShort := d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < ramFloor
-	vt, vu := d.snap.VRAMTotal()
-	vramShort := vt > 0 && vt-vu < d.res.VRAMGB
+	free, vt := d.snap.MaxFreeVRAM()
+	vramShort := vt > 0 && free < d.res.VRAMGB
 	d.ramLow = since(d.ramLow, ramShort, now)
 	d.vramLow = since(d.vramLow, vramShort, now)
 	if !d.ramLow.IsZero() && now.Sub(d.ramLow) > dur(c.Ladder.PressureSeconds) {
-		if v := d.victim(false, func(j *job) float64 { return j.ramGB }); v != nil {
-			d.requestCheckpoint(v, now, fmt.Sprintf("RAM below your %.0f%% reserve", d.res.RAMPct))
+		if v := d.victim(false, true, func(j *job) float64 { return j.ramGB }); v != nil {
+			d.requestCheckpoint(v, now, fmt.Sprintf("RAM below the human's %.0f%% reserve", d.res.RAMPct))
 		}
 	}
 	if !d.vramLow.IsZero() && now.Sub(d.vramLow) > dur(c.Ladder.PressureSeconds) {
-		if v := d.victim(true, func(j *job) float64 { return j.vramGB }); v != nil {
-			d.requestCheckpoint(v, now, fmt.Sprintf("VRAM below your %.1f GB reserve", d.res.VRAMGB))
+		if v := d.victim(true, true, func(j *job) float64 { return j.vramGB }); v != nil {
+			d.requestCheckpoint(v, now, fmt.Sprintf("VRAM below the human's %.1f GB reserve", d.res.VRAMGB))
 		}
 	}
-	// Critical RAM: kill at once (lmkd/earlyoom ordering: highest band, heaviest first).
+	// Critical RAM: kill at once, even mid-grace (lmkd/earlyoom order: highest band, heaviest first).
 	if d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < d.snap.RAMTotalGB*c.Ladder.KillBelowRAMPct/100 {
-		if v := d.victim(false, func(j *job) float64 { return j.ramGB }); v != nil {
+		if v := d.victim(false, false, func(j *job) float64 { return j.ramGB }); v != nil {
 			v.reason = "RAM critically low"
-			d.killJob(v)
+			d.killJob(v, now)
 		}
 	}
 
-	// A spot job holding the GPU gives way when an in-budget GPU job is waiting.
-	waitingGPU := false
-	for _, j := range d.jobs {
-		waitingGPU = waitingGPU || (j.State == "waiting" && j.GPU && j.Band < policy.BandSpot)
-	}
-	if waitingGPU {
-		for _, j := range d.running() {
-			if j.GPU && j.Band == policy.BandSpot && j.checkpoint.IsZero() && j.Evict != "never" {
-				d.requestCheckpoint(j, now, "spot job yields to an in-budget job")
-				break
+	// A spot GPU job yields to an in-budget GPU job only when that helps: the spot job has had its
+	// minimum runtime, and the waiting job is blocked by nothing but the GPU itself.
+	if !hold {
+		ram, _ := d.headroom(now)
+		for _, w := range d.jobs {
+			if w.State != "waiting" || !w.GPU || w.Band >= policy.BandSpot || w.NeedRAM > ram {
+				continue
 			}
+			for _, j := range d.running() {
+				if j.GPU && j.Band == policy.BandSpot && j.checkpoint.IsZero() && j.Evict != "never" &&
+					j.leaseUsed(now).Minutes() >= c.Ladder.MinRuntimeMinutes {
+					d.requestCheckpoint(j, now, "spot job yields to an in-budget job")
+					break
+				}
+			}
+			break
 		}
 	}
 
-	// Checkpoint grace over: SIGTERM where there is one (10 s to exit), then kill.
+	// Checkpoint grace over: SIGTERM where there is one (10 s to exit), then kill, once.
 	for _, j := range d.running() {
-		if j.checkpoint.IsZero() || now.Sub(j.checkpoint) <= dur(c.Ladder.GraceSeconds) {
+		if j.checkpoint.IsZero() || !j.killedAt.IsZero() || now.Sub(j.checkpoint) <= dur(c.Ladder.GraceSeconds) {
 			continue
 		}
-		if runtime.GOOS != "windows" && j.termAt.IsZero() && j.PID > 0 {
+		if runtime.GOOS != "windows" && j.termAt.IsZero() {
 			j.termAt = now
-			_ = sysinfo.Terminate(j.PID)
+			d.each(j, sysinfo.Terminate)
 			logf("%s: grace over, SIGTERM", j.Name)
 		} else if runtime.GOOS == "windows" || now.Sub(j.termAt) > 10*time.Second {
-			d.killJob(j)
+			d.killJob(j, now)
 		}
 	}
+}
+
+func (d *Daemon) why() string {
+	if d.user == "game" {
+		return d.gameWhy
+	}
+	return d.user
+}
+
+func (d *Daemon) unpause(j *job, now time.Time) {
+	_ = os.Remove(PauseFile(j.ID))
+	if !j.suspended.IsZero() {
+		d.each(j, sysinfo.Resume)
+		d.signalContainer(j, "unpause")
+	}
+	if !j.pausedAt.IsZero() {
+		j.pausedTotal += now.Sub(j.pausedAt)
+	}
+	j.pausedAt, j.suspended, j.reason = time.Time{}, time.Time{}, ""
 }
 
 func since(t time.Time, cond bool, now time.Time) time.Time {
@@ -514,13 +630,18 @@ func since(t time.Time, cond bool, now time.Time) time.Time {
 	return t
 }
 
-// victim picks the job to evict: one already being evicted counts (one at a time), else highest
-// band, never-evict jobs last, heaviest first.
-func (d *Daemon) victim(gpuOnly bool, weight func(*job) float64) *job {
+// victim picks the job to evict: highest band first, never-evict jobs last, heaviest first. With
+// oneAtATime, nothing is picked while another eviction is still in its grace period.
+func (d *Daemon) victim(gpuOnly, oneAtATime bool, weight func(*job) float64) *job {
 	var best *job
 	for _, j := range d.running() {
+		if !j.killedAt.IsZero() {
+			continue
+		}
 		if !j.checkpoint.IsZero() {
-			return nil
+			if oneAtATime {
+				return nil
+			}
 		}
 		if gpuOnly && !j.GPU {
 			continue
@@ -542,34 +663,50 @@ func better(a, b *job, w func(*job) float64) bool {
 	return w(a) > w(b)
 }
 
+// requestCheckpoint asks a job to save and exit; a suspended job is resumed first so it can.
 func (d *Daemon) requestCheckpoint(j *job, now time.Time, why string) {
-	if !j.checkpoint.IsZero() {
+	if !j.checkpoint.IsZero() || !j.killedAt.IsZero() {
 		return
+	}
+	if !j.suspended.IsZero() {
+		d.each(j, sysinfo.Resume)
+		d.signalContainer(j, "unpause")
+		j.suspended = time.Time{}
 	}
 	j.checkpoint, j.reason = now, why
 	touch(CheckpointFile(j.ID))
 	if j.Evict == "force" {
-		d.killJob(j)
+		d.killJob(j, now)
 		return
 	}
 	logf("%s: checkpoint and exit requested (%s); %.0fs grace", j.Name, why, d.cfg.Ladder.GraceSeconds)
 	d.broadcast()
 }
 
-func (d *Daemon) killJob(j *job) {
+func (d *Daemon) killJob(j *job, now time.Time) {
+	if !j.killedAt.IsZero() {
+		return
+	}
+	j.killedAt = now
+	if j.checkpoint.IsZero() {
+		j.checkpoint = now
+	}
 	logf("%s: killed (%s)", j.Name, j.reason)
 	if j.container != "" {
 		go docker("kill", j.container)
 	}
-	for p := range j.pids {
-		_ = sysinfo.Kill(p)
+	if !j.suspended.IsZero() {
+		d.each(j, sysinfo.Resume) // a stopped process can't die cleanly on some systems
 	}
-	j.checkpoint = time.Now().Add(-24 * time.Hour) // don't re-kill every tick
+	d.each(j, sysinfo.Kill)
 }
 
+// each applies f to every member still the same process it was when it joined the job.
 func (d *Daemon) each(j *job, f func(int) error) {
-	for p := range j.pids {
-		_ = f(p)
+	for p, created := range j.pids {
+		if sysinfo.Same(p, created) {
+			_ = f(p)
+		}
 	}
 }
 
@@ -579,26 +716,43 @@ func (d *Daemon) signalContainer(j *job, verb string) {
 	}
 }
 
-// reap closes tickets whose client and job are both gone.
+// reap closes tickets whose client is gone. A running job whose client died (killed agent,
+// closed terminal) is stopped too, so it can't hold the GPU with nobody waiting for it.
 func (d *Daemon) reap(now time.Time) {
 	for id, j := range d.jobs {
 		if j.State == "done" {
 			continue
 		}
-		clientGone := j.ClientPID > 0 && !sysinfo.Alive(j.ClientPID)
-		jobGone := j.PID <= 0 || !sysinfo.Alive(j.PID)
-		if j.State == "granted" && clientGone {
+		clientGone := j.ClientPID > 1 && !sysinfo.Alive(j.ClientPID)
+		jobGone := j.PID <= 1 || !sysinfo.Same(j.PID, j.rootCreated)
+		switch {
+		case j.State == "granted" && clientGone:
 			d.finish(id, -1, "lost", "")
-		} else if j.State == "waiting" && clientGone {
+		case j.State == "waiting" && clientGone:
 			d.finish(id, -1, "cancelled", "")
-		} else if j.State == "running" && clientGone && jobGone {
-			outcome := "lost"
-			if j.adopted {
-				outcome = "ended"
+		case j.State == "running" && j.adopted && jobGone:
+			d.finish(id, -1, "ended", "")
+		case j.State == "running" && !j.adopted && clientGone:
+			if !jobGone && j.killedAt.IsZero() {
+				j.reason = "its firefighter client exited"
+				d.killJob(j, now)
 			}
-			d.finish(id, -1, outcome, "")
-		} else if j.State == "granted" && now.Sub(j.granted) > 2*time.Minute {
+			d.finish(id, -1, "lost", "")
+		case j.State == "granted" && now.Sub(j.granted) > 2*time.Minute:
 			j.State = "waiting"
+		}
+	}
+}
+
+// refreshBands re-places waiting tickets as budgets drain and refill.
+func (d *Daemon) refreshBands(now time.Time) {
+	for _, j := range d.jobs {
+		if j.State != "waiting" || j.Spot {
+			continue
+		}
+		a := d.account(j.Project, now)
+		if b := policy.BandFor(j.Ticket, a.Left(d.cfg, d.cfg.Allowance(j.Project)) > 0); b != j.Band {
+			j.Band = b
 		}
 	}
 }
@@ -616,11 +770,11 @@ func (d *Daemon) waiting() []*policy.Ticket {
 }
 
 // headroom is what jobs may still take: available minus the reserve minus what recently started
-// jobs haven't grown into yet.
+// jobs haven't grown into yet. VRAM is per card: the freest GPU.
 func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 	ram = d.snap.RAMAvailGB - d.snap.RAMTotalGB*d.res.RAMPct/100
-	vt, vu := d.snap.VRAMTotal()
-	vram = vt - vu - d.res.VRAMGB
+	free, _ := d.snap.MaxFreeVRAM()
+	vram = free - d.res.VRAMGB
 	for _, j := range d.jobs {
 		if j.State == "granted" || (j.State == "running" && now.Sub(j.Started) < 90*time.Second) {
 			ram -= math.Max(0, j.NeedRAM-j.ramGB)
@@ -635,7 +789,7 @@ func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 func (d *Daemon) admit(now time.Time) {
 	c := d.cfg
 	ram, vram := d.headroom(now)
-	vt, _ := d.snap.VRAMTotal()
+	_, vt := d.snap.MaxFreeVRAM()
 	gpuRunning := 0
 	for _, j := range d.jobs {
 		if j.GPU && (j.State == "running" || j.State == "granted") {
@@ -648,12 +802,12 @@ func (d *Daemon) admit(now time.Time) {
 			gpuRunning++
 		}
 	}
-	gpuBlocked := c.ReserveFor(d.user).PauseGPU && d.user == "game"
+	gpuBlocked := d.gpuHeld()
 	if gpuRunning > 0 && d.snap.GPUUtil() >= c.GPU.PackBelowUtil {
 		gpuBlocked = true
 	}
 	changed := false
-	headWaitsOnVRAM := false
+	headWaitsOnVRAM, cpuHeadBlocked := false, false
 	for _, t := range d.waiting() {
 		j := d.jobs[t.ID]
 		if t.GPU {
@@ -661,9 +815,7 @@ func (d *Daemon) admit(now time.Time) {
 				continue
 			}
 			if vt > 0 && t.NeedVRAM > vram {
-				if !headWaitsOnVRAM {
-					headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
-				}
+				headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
 				continue
 			}
 			// EASY-style backfill: behind a head that waits on VRAM, only a short job that fits
@@ -671,10 +823,14 @@ func (d *Daemon) admit(now time.Time) {
 			if headWaitsOnVRAM && t.PredMinutes > 10 {
 				continue
 			}
+		} else if cpuHeadBlocked && t.PredMinutes > 10 {
+			continue // an overdue big CPU job is waiting for RAM: don't let long jobs eat it first
 		}
 		if t.NeedRAM > ram {
 			if t.GPU {
 				gpuBlocked = true
+			} else if now.Sub(t.Created).Minutes() >= c.Order.MaxWaitMinutes {
+				cpuHeadBlocked = true
 			}
 			continue
 		}
@@ -699,7 +855,7 @@ func (d *Daemon) harvester(now time.Time) {
 	if h.Start == "" {
 		return
 	}
-	busy := d.user == "game"
+	busy := d.gpuHeld()
 	for _, j := range d.jobs {
 		busy = busy || (j.GPU && j.State != "done")
 	}
@@ -726,13 +882,12 @@ func shell(cmd string) {
 	if cmd == "" {
 		return
 	}
-	var c *exec.Cmd
+	argv := []string{"sh", "-c", cmd}
 	if runtime.GOOS == "windows" {
-		c = exec.Command("cmd", "/c", cmd)
-	} else {
-		c = exec.Command("sh", "-c", cmd)
+		argv = []string{"cmd", "/c", cmd}
 	}
-	sysinfo.Detach(c, true)
+	c := exec.Command(argv[0], argv[1:]...)
+	sysinfo.PrepareChild(c, argv)
 	if err := c.Start(); err != nil {
 		logf("shell %q: %v", cmd, err)
 		return
@@ -742,7 +897,7 @@ func shell(cmd string) {
 
 func docker(args ...string) {
 	c := exec.Command("docker", args...)
-	sysinfo.Detach(c, false)
+	sysinfo.PrepareChild(c, nil)
 	if out, err := c.CombinedOutput(); err != nil {
 		logf("docker %s: %v %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -768,6 +923,13 @@ func (d *Daemon) prune(now time.Time) {
 		}
 	}
 	d.st.Plans = keep
+	if ents, err := os.ReadDir(filepath.Join(config.Home(), "logs")); err == nil {
+		for _, e := range ents {
+			if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > 7*24*time.Hour {
+				_ = os.Remove(filepath.Join(config.Home(), "logs", e.Name()))
+			}
+		}
+	}
 }
 
 func touch(p string) { _ = os.WriteFile(p, []byte(time.Now().Format(time.RFC3339)), 0o644) }
@@ -788,7 +950,11 @@ var logMu sync.Mutex
 func logf(format string, a ...any) {
 	logMu.Lock()
 	defer logMu.Unlock()
-	f, err := os.OpenFile(filepath.Join(config.Home(), "daemon.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	path := filepath.Join(config.Home(), "daemon.log")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 10<<20 { // keep one 10 MB generation
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
 	}

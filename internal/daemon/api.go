@@ -21,9 +21,18 @@ import (
 
 // Endpoint is how clients find the daemon: written to <home>/daemon.json.
 type Endpoint struct {
-	PID   int    `json:"pid"`
-	Port  int    `json:"port"`
-	Token string `json:"token"`
+	PID     int    `json:"pid"`
+	Port    int    `json:"port"`
+	Token   string `json:"token"`
+	Version string `json:"version"`
+}
+
+func writeAtomic(path string, b []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func EndpointPath() string { return filepath.Join(config.Home(), "daemon.json") }
@@ -48,19 +57,41 @@ func (d *Daemon) Serve() error {
 	d.Token, d.Port = hex.EncodeToString(tok), ln.Addr().(*net.TCPAddr).Port
 	logf("daemon up on 127.0.0.1:%d (pid %d)", d.Port, os.Getpid())
 	d.mu.Lock()
-	d.step(d.reader.Read(), time.Now(), 0) // measure before the first ticket arrives
+	d.step(d.reader.Read(), nil, nil, time.Now(), 0) // measure before the first ticket arrives
 	d.mu.Unlock()
 	go d.Run()
-	b, _ := json.Marshal(Endpoint{PID: os.Getpid(), Port: d.Port, Token: d.Token})
-	if err := os.WriteFile(EndpointPath(), b, 0o600); err != nil {
+	b, _ := json.Marshal(Endpoint{PID: os.Getpid(), Port: d.Port, Token: d.Token, Version: d.Version})
+	if err := writeAtomic(EndpointPath(), b, 0o600); err != nil {
 		return err
 	}
-	return http.Serve(ln, d.routes())
+	srv := &http.Server{Handler: d.routes(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-d.stop
+		_ = srv.Close()
+	}()
+	err = srv.Serve(ln)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }
 
 func (d *Daemon) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/ping", func(w http.ResponseWriter, r *http.Request) { reply(w, map[string]any{"ok": true, "pid": os.Getpid()}) })
+	mux.HandleFunc("GET /v1/ping", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, map[string]any{"ok": true, "pid": os.Getpid(), "version": d.Version})
+	})
+	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, map[string]bool{"ok": true})
+		logf("shutdown requested")
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			d.mu.Lock()
+			_ = d.st.write()
+			d.mu.Unlock()
+			close(d.stop)
+		}()
+	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -107,6 +138,13 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if t.ID == "" {
 		t.ID = NewID()
 	}
+	if req.Running && (t.PID <= 1 || !sysinfo.Alive(t.PID)) {
+		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
+		return
+	}
+	if !req.Running {
+		t.PID = 0 // only `start` sets the job's pid, after the turn is granted
+	}
 	if old, ok := d.jobs[t.ID]; ok && old.State != "done" {
 		reply(w, d.view(old)) // re-registration after a daemon restart or a retry
 		return
@@ -130,9 +168,11 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if t.Bid == 0 {
 		t.Bid = 5
 	}
-	if t.Evict == "" {
+	if t.Evict != "never" && t.Evict != "force" {
 		t.Evict = "graceful"
 	}
+	t.Bid = max(1, min(10, t.Bid))
+	delete(d.st.Receipts, t.ID) // a new attempt under the same id (requeue) replaces the old receipt
 	t.Created = now
 	d.fillNeeds(&t)
 	a := d.account(t.Project, now)
@@ -141,12 +181,9 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if req.Running {
 		t.State, t.Started = "running", now
 	}
-	j := &job{Ticket: &t, pids: map[int]bool{}, applied: map[int]string{}}
-	if t.PID > 0 {
-		j.pids[t.PID] = true
-		_ = sysinfo.Background(t.PID)
-	}
+	j := newJob(&t)
 	if req.Running {
+		_ = sysinfo.Background(t.PID)
 		d.lockPrice(j, now)
 	}
 	d.jobs[t.ID] = j
@@ -176,6 +213,16 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 		if t.NeedVRAM == 0 {
 			t.NeedVRAM = d.cfg.GPU.DefaultVRAMGB
 		}
+		_, card := d.snap.MaxFreeVRAM()
+		if card == 0 {
+			// No discrete GPU (Apple silicon, iGPU): VRAM is system RAM, so admit on RAM.
+			t.NeedRAM += t.NeedVRAM
+			t.NeedVRAM = 0
+		} else if most := card - d.cfg.Reserve.Away.VRAMGB; t.NeedVRAM > most {
+			// A need the card can never free (a learned peak x margin near the card size) would
+			// block the GPU line forever: wait for the emptiest the card gets instead.
+			t.NeedVRAM = math.Max(0.5, most)
+		}
 	}
 }
 
@@ -191,7 +238,7 @@ func (d *Daemon) get(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			rec := d.st.Receipts[id]
 			d.mu.Unlock()
-			if rec != nil {
+			if rec != nil && from == "" {
 				reply(w, View{ID: id, State: "done", Receipt: rec})
 				return
 			}
@@ -224,7 +271,12 @@ type Act struct {
 
 func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	var a Act
-	_ = json.NewDecoder(r.Body).Decode(&a)
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+			fail(w, 400, "bad body: "+err.Error())
+			return
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id, verb := r.PathValue("id"), r.PathValue("verb")
@@ -236,8 +288,20 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	switch verb {
 	case "start":
+		if j.State != "granted" && j.State != "waiting" {
+			fail(w, http.StatusConflict, "job "+id+" is "+j.State+", not granted")
+			return
+		}
+		if a.PID <= 1 || !sysinfo.Alive(a.PID) {
+			fail(w, 400, fmt.Sprintf("pid %d isn't a running process", a.PID))
+			return
+		}
 		j.State, j.Started, j.PID = "running", now, a.PID
-		j.pids[a.PID] = true
+		j.rootCreated = sysinfo.Created(a.PID)
+		j.pids = map[int]int64{a.PID: j.rootCreated}
+		if j.price == 0 {
+			d.lockPrice(j, now)
+		}
 		if err := sysinfo.Background(a.PID); err != nil {
 			logf("%s: background priority: %v", j.Name, err)
 		}
@@ -245,11 +309,19 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	case "container":
 		j.container = a.Container
 	case "bid": // re-bid while waiting, after reading the market
+		if a.Minutes < 1 || a.Minutes > 10 {
+			fail(w, 400, "bid must be 1-10")
+			return
+		}
 		if j.State == "waiting" {
 			j.Bid = max(1, min(10, int(a.Minutes)))
 			logf("%s: re-bid %d", j.Name, j.Bid)
 		}
 	case "extend":
+		if a.Minutes <= 0 || a.Minutes > 24*60 {
+			fail(w, 400, "extend by 1 to 1440 minutes")
+			return
+		}
 		j.extended += a.Minutes
 		if j.overrun {
 			j.overrun = false
@@ -262,14 +334,17 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		if a.Exit != 0 {
 			outcome = "failed"
 		}
-		if !j.checkpoint.IsZero() {
+		if !j.checkpoint.IsZero() || a.Exit == 75 { // 75 = checkpointed, requeue me (EX_TEMPFAIL)
 			outcome = "evicted"
+		}
+		if !j.killedAt.IsZero() && j.Evict == "force" {
+			outcome = "killed"
 		}
 		d.finish(id, a.Exit, outcome, a.Log)
 	case "cancel":
 		if j.State == "running" {
 			j.reason = "cancelled"
-			d.killJob(j)
+			d.killJob(j, now)
 		}
 		d.finish(id, -1, "cancelled", "")
 	default:
@@ -307,9 +382,16 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		h.PeakRAM = math.Max(h.PeakRAM*0.9, j.peakRAM)
 		h.Runs++
 	}
-	for p := range j.pids {
-		if !j.suspended.IsZero() {
-			_ = sysinfo.Resume(p)
+	if !j.suspended.IsZero() {
+		d.each(j, sysinfo.Resume)
+	}
+	// Workers that outlive their job (data loaders holding VRAM) would make the next GPU job run
+	// out of memory: a finished job's leftovers go with it. Adopted processes are left alone.
+	if !j.adopted && j.State == "running" {
+		for p, created := range j.pids {
+			if p != j.PID && sysinfo.Same(p, created) {
+				_ = sysinfo.Kill(p)
+			}
 		}
 	}
 	for _, f := range []string{PauseFile(id), PausedFile(id), CheckpointFile(id)} {
@@ -318,7 +400,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	waited := now.Sub(j.Created).Minutes() - ran
 	rec := &Receipt{ID: id, Project: j.Project, Name: j.Name, Exit: exit, Outcome: outcome, Minutes: round1(ran),
 		Declared: j.Minutes, Waited: round1(waited), Charged: round1(j.charged), PeakVRAM: round1(j.peakVRAM),
-		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted" && j.Evict != "force"}
+		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted"}
 	j.receipt = rec
 	j.State = "done"
 	d.st.Receipts[id] = rec
@@ -409,11 +491,10 @@ func (d *Daemon) queueSpot(j *job, now time.Time) (int, time.Time, string) {
 }
 
 func (d *Daemon) blocker(j *job) string {
-	c := d.cfg
 	ram, vram := d.headroom(time.Now())
 	switch {
-	case j.GPU && c.ReserveFor(d.user).PauseGPU && d.user == "game":
-		return "the human is gaming (" + d.gameWhy + ")"
+	case j.GPU && d.gpuHeld():
+		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:
 		return "spot band (over budget or --spot): runs on leftovers only"
 	case j.GPU && j.NeedVRAM > vram:

@@ -12,8 +12,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/client"
@@ -54,6 +56,7 @@ const usage = `firefighter: your agents start the fires, you stay the headliner.
 `
 
 func main() {
+	client.Version = version
 	if len(os.Args) < 2 {
 		ui.PrintBanner()
 		fmt.Fprint(os.Stderr, "\n"+usage)
@@ -86,9 +89,9 @@ func main() {
 	case "protocol":
 		fmt.Print(protocol)
 	case "setup", "install":
-		err = install()
+		err = install(args)
 	case "uninstall":
-		err = uninstall()
+		err = uninstall(args)
 	case "daemon":
 		err = daemonCmd(args)
 	case "mcp":
@@ -159,11 +162,68 @@ func projectOf(dir string) string {
 	}
 }
 
+// hashCmd names a command for learning its runtime and peaks: the program and its script, not
+// its arguments. Shell wrappers (sh -c, cmd /c) are looked through, and docker runs are named by
+// image, so unrelated commands in one project don't share a history.
 func hashCmd(argv []string) string {
-	// Same script with different arguments counts as the same command for learning runtimes.
+	if len(argv) >= 3 {
+		switch strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe") {
+		case "sh", "bash", "zsh", "cmd", "powershell", "pwsh":
+			if f := strings.Fields(argv[len(argv)-1]); len(f) > 0 {
+				argv = f
+			}
+		}
+	}
 	key := strings.Join(argv[:min(len(argv), 2)], " ")
+	if base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe"); (base == "docker" || base == "podman") && len(argv) > 1 && argv[1] == "run" {
+		key = base + " run " + dockerImage(argv[2:])
+	}
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:6])
+}
+
+// dockerImage finds the image in `docker run` arguments: the first argument that isn't a flag
+// or a flag's value.
+func dockerImage(args []string) string {
+	withValue := map[string]bool{"--name": true, "-e": true, "--env": true, "-v": true, "--volume": true, "-p": true, "--publish": true,
+		"-w": true, "--workdir": true, "--gpus": true, "--label": true, "-l": true, "--network": true, "--entrypoint": true, "-u": true, "--user": true,
+		"--shm-size": true, "--memory": true, "-m": true, "--cpus": true, "--mount": true, "--env-file": true, "--platform": true}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			if withValue[a] {
+				i++
+			}
+			continue
+		}
+		return a
+	}
+	return ""
+}
+
+// detachArgs rebuilds the child's command line from the parsed flags (never by filtering raw
+// args, which could also hit the job's own flags after --).
+func detachArgs(r *runFlags, argv []string) []string {
+	out := []string{"--minutes", fmt.Sprint(r.minutes), "--bid", fmt.Sprint(r.bid), "--evict", r.evict}
+	if r.gpu {
+		out = append(out, "--gpu")
+	}
+	if r.spot {
+		out = append(out, "--spot")
+	}
+	if r.vram > 0 {
+		out = append(out, "--vram", fmt.Sprint(r.vram))
+	}
+	if r.ram > 0 {
+		out = append(out, "--ram", fmt.Sprint(r.ram))
+	}
+	if r.name != "" {
+		out = append(out, "--name", r.name)
+	}
+	if r.project != "" {
+		out = append(out, "--project", r.project)
+	}
+	return append(append(out, "--"), argv...)
 }
 
 func run(args []string) (int, error) {
@@ -171,25 +231,19 @@ func run(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	if r.minutes <= 0 {
+		ui.Say(ui.Gold, "no --minutes given: assuming 30. Pass an honest estimate; it's your lease.")
+		r.minutes = 30
+	}
 	if r.detach {
-		var rest []string
-		for _, a := range args {
-			if a != "--detach" && a != "-detach" {
-				rest = append(rest, a)
-			}
-		}
 		cwd, _ := os.Getwd()
-		id, log, err := client.Detached(rest, cwd)
+		id, log, err := client.Detached(detachArgs(r, argv), cwd)
 		if err != nil {
 			return 1, err
 		}
 		fmt.Println(id)
 		ui.Note("queued as %s; output in %s; `firefighter wait %s` for the receipt", id, log, id)
 		return 0, nil
-	}
-	if r.minutes <= 0 {
-		ui.Say(ui.Gold, "no --minutes given: assuming 30. Pass an honest estimate; it's your lease.")
-		r.minutes = 30
 	}
 	c, err := client.Connect()
 	if err != nil {
@@ -223,9 +277,20 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	if err != nil {
 		return 1, false, err
 	}
+	// Ctrl-C, a closed terminal, or an agent harness's SIGTERM: cancel at once, even mid-poll.
 	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
+	signal.Notify(interrupt, stopSignals...)
 	defer signal.Stop(interrupt)
+	var cancelled atomic.Bool
+	waitDone := make(chan struct{})
+	go func() {
+		select {
+		case <-interrupt:
+			cancelled.Store(true)
+			_, _ = c.Act(t.ID, "cancel", daemon.Act{})
+		case <-waitDone:
+		}
+	}()
 
 	last, lastMarket := "", time.Time{}
 	for v.State == "waiting" {
@@ -237,11 +302,8 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 			ui.Note("%s  (re-bid: firefighter bid %s <1-10>)", v.Market, t.ID)
 			lastMarket = time.Now()
 		}
-		select {
-		case <-interrupt:
-			_, _ = c.Act(t.ID, "cancel", daemon.Act{})
+		if cancelled.Load() {
 			return 130, false, errors.New("cancelled while waiting")
-		default:
 		}
 		nv, err := c.Get(t.ID, "waiting", 20)
 		if errors.Is(err, client.ErrNotFound) { // the daemon restarted: get back in line
@@ -256,8 +318,15 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		}
 		v = nv
 	}
+	close(waitDone)
+	if cancelled.Load() {
+		return 130, false, errors.New("cancelled while waiting")
+	}
 	if v.State == "done" {
-		return 1, false, errors.New("the job was closed before it started")
+		if v.Receipt != nil && v.Receipt.Outcome == "cancelled" {
+			return 130, false, errors.New("cancelled while waiting")
+		}
+		return 1, true, nil // closed under us (daemon restart): get back in line
 	}
 	if !quiet {
 		ui.Say(ui.Pink, "%s: spotlight's yours (lease %.0f min, budget left %.1f)", t.Name, t.Minutes, v.Budget)
@@ -270,7 +339,8 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		"FIREFIGHTER_PAUSE_FILE="+daemon.PauseFile(t.ID),
 		"FIREFIGHTER_PAUSED_FILE="+daemon.PausedFile(t.ID),
 		"FIREFIGHTER_CHECKPOINT_FILE="+daemon.CheckpointFile(t.ID))
-	sysinfo.PrepareChild(cmd)
+	sysinfo.PrepareChild(cmd, argv)
+	defer sysinfo.RestoreForeground()
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		_, _ = c.Act(t.ID, "done", daemon.Act{Exit: 127})
@@ -300,6 +370,9 @@ loop:
 			break loop
 		case <-interrupt:
 			_ = sysinfo.Terminate(cmd.Process.Pid)
+			if runtime.GOOS == "windows" {
+				_ = sysinfo.Kill(cmd.Process.Pid)
+			}
 		case <-keepalive.C: // re-register if the daemon restarted, so the job stays governed
 			if _, err := c.Get(t.ID, "", 0); errors.Is(err, client.ErrNotFound) {
 				t2 := t
@@ -361,7 +434,7 @@ func dockerize(argv []string, id string) ([]string, string) {
 // ---- other commands ---------------------------------------------------------------------------------
 
 func wait(args []string) (int, error) {
-	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
+	fs := flag.NewFlagSet("wait", flag.ContinueOnError) // exit: the job's exit code; 124 on --timeout
 	timeout := fs.Float64("timeout", 0, "give up after this many seconds (0 = never)")
 	var id string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -383,7 +456,16 @@ func wait(args []string) (int, error) {
 	deadline := time.Now().Add(time.Duration(*timeout * float64(time.Second)))
 	v, err := c.GetSoon(id)
 	last := ""
-	for err == nil && v.State != "done" {
+	// An evicted job requeues under the same id: keep waiting for the attempt that finishes.
+	for err == nil && (v.State != "done" || (v.Receipt != nil && v.Receipt.Requeue)) {
+		if v.State == "done" {
+			time.Sleep(500 * time.Millisecond)
+			v, err = c.GetSoon(id)
+			if v.State == "done" && v.Receipt != nil && v.Receipt.Requeue && time.Since(v.Receipt.Ended) > 30*time.Second {
+				break // the requeued attempt never came back (its client died)
+			}
+			continue
+		}
 		if line := fmt.Sprintf("%s: %s #%d ~%s %s", id, v.State, v.Position, v.ETA, v.Why); line != last {
 			ui.Note("%s", line)
 			last = line
@@ -667,7 +749,10 @@ func configCmd(args []string) error {
 	return nil
 }
 
-func install() error {
+func install(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("setup takes no arguments (got %q); it installs autostart, MCP and agent rules", args[0])
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -696,7 +781,10 @@ func install() error {
 	return nil
 }
 
-func uninstall() error {
+func uninstall(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("uninstall takes no arguments (got %q)", args[0])
+	}
 	for _, s := range setup.Uninstall() {
 		if s.Err != nil {
 			ui.Say(ui.Ember, "%s: %v", s.What, s.Err)
@@ -709,13 +797,25 @@ func uninstall() error {
 	return nil
 }
 
+// stopDaemon asks the daemon to shut down over its authenticated API; it kills only a process that
+// is really a firefighter daemon (never whatever reused a stale pid).
 func stopDaemon() error {
+	if c, err := client.Connect0(); err == nil {
+		if c.Shutdown() == nil {
+			for i := 0; i < 30; i++ {
+				time.Sleep(100 * time.Millisecond)
+				if _, err := client.Connect0(); err != nil {
+					return nil
+				}
+			}
+		}
+	}
 	b, err := os.ReadFile(daemon.EndpointPath())
 	if err != nil {
 		return nil
 	}
 	var ep daemon.Endpoint
-	if json.Unmarshal(b, &ep) != nil || !sysinfo.Alive(ep.PID) {
+	if json.Unmarshal(b, &ep) != nil || ep.PID <= 1 || !sysinfo.Alive(ep.PID) || !strings.Contains(sysinfo.Name(ep.PID), "firefighter") {
 		return nil
 	}
 	return sysinfo.Kill(ep.PID)
@@ -733,7 +833,7 @@ func daemonCmd(args []string) error {
 		return err
 	}
 	defer unlock()
-	return daemon.New().Serve()
+	return daemon.New(version).Serve()
 }
 
 const protocol = `# firefighter pause/checkpoint protocol for long GPU loops (Python; same idea in any language)

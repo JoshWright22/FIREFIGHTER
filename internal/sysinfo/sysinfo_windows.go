@@ -3,6 +3,8 @@
 package sysinfo
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -24,6 +26,8 @@ var (
 	getForegroundWindow  = user32.NewProc("GetForegroundWindow")
 	getWindowRect        = user32.NewProc("GetWindowRect")
 	getClassName         = user32.NewProc("GetClassNameW")
+	isZoomed             = user32.NewProc("IsZoomed")
+	getWindowLong        = user32.NewProc("GetWindowLongW")
 	monitorFromWindow    = user32.NewProc("MonitorFromWindow")
 	getMonitorInfo       = user32.NewProc("GetMonitorInfoW")
 	getWindowThreadPid   = user32.NewProc("GetWindowThreadProcessId")
@@ -65,6 +69,14 @@ func foregroundFullscreen() string {
 	getClassName.Call(hwnd, uintptr(unsafe.Pointer(&cls[0])), 64)
 	switch windows.UTF16ToString(cls[:]) {
 	case "Progman", "WorkerW", "Shell_TrayWnd":
+		return ""
+	}
+	// A maximized window with a title bar isn't fullscreen (its rect overshoots the monitor a bit).
+	if z, _, _ := isZoomed.Call(hwnd); z != 0 {
+		return ""
+	}
+	gwlStyle := ^uintptr(15)                                                         // GWL_STYLE = -16
+	if st, _, _ := getWindowLong.Call(hwnd, gwlStyle); st&0x00C00000 == 0x00C00000 { // WS_CAPTION
 		return ""
 	}
 	var w rect
@@ -233,10 +245,20 @@ func SetCPUs(pid int, cpus []int) error {
 	return nil
 }
 
+func guard(pid int) error {
+	if pid <= 4 || pid == os.Getpid() {
+		return fmt.Errorf("refusing to touch pid %d", pid)
+	}
+	return nil
+}
+
 func Suspend(pid int) error { return ntCall(ntSuspendProcess, pid) }
 func Resume(pid int) error  { return ntCall(ntResumeProcess, pid) }
 
 func ntCall(p *windows.LazyProc, pid int) error {
+	if err := guard(pid); err != nil {
+		return err
+	}
 	h, err := open(pid, 0x0800) // PROCESS_SUSPEND_RESUME
 	if err != nil {
 		return err
@@ -249,6 +271,9 @@ func ntCall(p *windows.LazyProc, pid int) error {
 }
 
 func Kill(pid int) error {
+	if err := guard(pid); err != nil {
+		return err
+	}
 	h, err := open(pid, windows.PROCESS_TERMINATE)
 	if err != nil {
 		return err
@@ -261,10 +286,23 @@ func Kill(pid int) error {
 // checkpoint flag file instead and this kills.
 func Terminate(pid int) error { return Kill(pid) }
 
-// PrepareChild puts the child in its own process group (so the guard can address the tree).
-func PrepareChild(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
+var getConsoleWindow = kernel32.NewProc("GetConsoleWindow")
+
+// PrepareChild puts the child in its own process group. With no console of our own (a detached
+// run, the MCP server) the child gets none either, so nothing flashes over the user's screen. A
+// `cmd /c <line>` goes to cmd.exe verbatim: Go's C-runtime quoting breaks cmd's own parsing.
+func PrepareChild(cmd *exec.Cmd, argv []string) {
+	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP)
+	if w, _, _ := getConsoleWindow.Call(); w == 0 {
+		flags |= 0x08000000 // CREATE_NO_WINDOW
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
+	if len(argv) >= 3 && strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe") == "cmd" && strings.EqualFold(argv[1], "/c") {
+		cmd.SysProcAttr.CmdLine = `cmd /s /c "` + strings.Join(argv[2:], " ") + `"`
+	}
 }
+
+func RestoreForeground() {}
 
 // Contain puts a started child in a Job Object that kills the whole tree when the client exits, so
 // no orphaned workers survive a crashed or killed `firefighter run`.
