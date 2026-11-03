@@ -1,0 +1,692 @@
+// firefighter: lets AI agents share one computer's GPU, CPU and RAM while the human always comes first.
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/JoshWright22/firefighter/internal/client"
+	"github.com/JoshWright22/firefighter/internal/config"
+	"github.com/JoshWright22/firefighter/internal/daemon"
+	"github.com/JoshWright22/firefighter/internal/mcp"
+	"github.com/JoshWright22/firefighter/internal/policy"
+	"github.com/JoshWright22/firefighter/internal/setup"
+	"github.com/JoshWright22/firefighter/internal/sysinfo"
+	"github.com/JoshWright22/firefighter/internal/ui"
+)
+
+var version = "dev"
+
+const usage = `firefighter: your agents start the fires, you stay the headliner.
+
+  firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--bid 1-10] [--name NAME] -- <command...>
+                                 wait for a turn, run the command here, print a receipt
+      --detach                   queue it and return a job id at once (then: firefighter wait <id>)
+      --evict never|graceful|force   what may happen if the human needs resources back
+      --spot                     leftovers only: cheapest, preempted first
+  firefighter wait <id>          block until a job ends; prints its receipt and log tail
+  firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
+  firefighter extend <id> <min>  lengthen a running job's lease
+  firefighter cancel <id>        cancel a waiting or running job
+  firefighter adopt <pid> [--gpu] [--name NAME] [--minutes N]   govern a process already running
+  firefighter plan "<what>" --when "<when>" --minutes N [--gpu PCT] [--vram GB] [--ram GB] [--done]
+  firefighter config [show | set <key> <value> | unset <key> | presets | path]
+  firefighter protocol           the pause/checkpoint helper for long GPU loops
+  firefighter setup              start at logon + teach every agent CLI (MCP + global rules)
+  firefighter uninstall          undo setup
+  firefighter daemon [--stop]    the guard itself (setup and the CLI start it for you)
+  firefighter mcp                MCP server on stdio (setup registers it)
+  firefighter version
+`
+
+func main() {
+	if len(os.Args) < 2 {
+		ui.PrintBanner()
+		fmt.Fprint(os.Stderr, "\n"+usage)
+		os.Exit(2)
+	}
+	cmd, args := os.Args[1], os.Args[2:]
+	var err error
+	code := 0
+	switch cmd {
+	case "run":
+		code, err = run(args)
+	case "wait":
+		code, err = wait(args)
+	case "status":
+		err = status(args)
+	case "extend":
+		err = extend(args)
+	case "cancel":
+		err = act(args, "cancel")
+	case "adopt":
+		err = adopt(args)
+	case "plan":
+		err = plan(args)
+	case "config":
+		err = configCmd(args)
+	case "protocol":
+		fmt.Print(protocol)
+	case "setup", "install":
+		err = install()
+	case "uninstall":
+		err = uninstall()
+	case "daemon":
+		err = daemonCmd(args)
+	case "mcp":
+		err = mcp.Serve(version)
+	case "version", "--version", "-v":
+		fmt.Println("firefighter", version)
+	case "help", "--help", "-h":
+		fmt.Print(usage)
+	default:
+		err = fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
+		code = 2
+	}
+	if err != nil {
+		ui.Say(ui.Ember, "%v", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+// ---- run --------------------------------------------------------------------------------------------
+
+type runFlags struct {
+	gpu, spot, detach, quiet bool
+	minutes, vram, ram      float64
+	bid                     int
+	name, project, evict    string
+	id, log                 string
+}
+
+func parseRun(args []string) (*runFlags, []string, error) {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	r := &runFlags{}
+	fs.BoolVar(&r.gpu, "gpu", false, "needs the GPU")
+	fs.BoolVar(&r.spot, "spot", false, "leftovers only")
+	fs.BoolVar(&r.detach, "detach", false, "return a job id at once")
+	fs.BoolVar(&r.quiet, "quiet", false, "no status lines")
+	fs.Float64Var(&r.minutes, "minutes", 0, "runtime estimate (lease)")
+	fs.Float64Var(&r.vram, "vram", 0, "peak VRAM GB")
+	fs.Float64Var(&r.ram, "ram", 0, "peak RAM GB")
+	fs.IntVar(&r.bid, "bid", 5, "urgency 1-10 (costs budget)")
+	fs.StringVar(&r.name, "name", "", "job name")
+	fs.StringVar(&r.project, "project", "", "project (default: the git repo or folder name)")
+	fs.StringVar(&r.evict, "evict", "graceful", "never | graceful | force")
+	fs.StringVar(&r.id, "id", "", "job id (internal)")
+	fs.StringVar(&r.log, "log", "", "log file (internal)")
+	if err := fs.Parse(args); err != nil {
+		return nil, nil, err
+	}
+	if fs.NArg() == 0 {
+		return nil, nil, errors.New("nothing to run: firefighter run [flags] -- <command...>")
+	}
+	if r.evict != "never" && r.evict != "graceful" && r.evict != "force" {
+		return nil, nil, fmt.Errorf("--evict must be never, graceful or force")
+	}
+	return r, fs.Args(), nil
+}
+
+func projectOf(dir string) string {
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return filepath.Base(d)
+		}
+		if filepath.Dir(d) == d {
+			return filepath.Base(dir)
+		}
+	}
+}
+
+func hashCmd(argv []string) string {
+	// Same script with different arguments counts as the same command for learning runtimes.
+	key := strings.Join(argv[:min(len(argv), 2)], " ")
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:6])
+}
+
+func run(args []string) (int, error) {
+	r, argv, err := parseRun(args)
+	if err != nil {
+		return 2, err
+	}
+	if r.detach {
+		var rest []string
+		for _, a := range args {
+			if a != "--detach" && a != "-detach" {
+				rest = append(rest, a)
+			}
+		}
+		cwd, _ := os.Getwd()
+		id, log, err := client.Detached(rest, cwd)
+		if err != nil {
+			return 1, err
+		}
+		fmt.Println(id)
+		ui.Note("queued as %s; output in %s; `firefighter wait %s` for the receipt", id, log, id)
+		return 0, nil
+	}
+	if r.minutes <= 0 {
+		ui.Say(ui.Gold, "no --minutes given: assuming 30. Pass an honest estimate; it's your lease.")
+		r.minutes = 30
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return 1, err
+	}
+	cwd, _ := os.Getwd()
+	if r.project == "" {
+		r.project = projectOf(cwd)
+	}
+	if r.name == "" {
+		r.name = r.project + " " + filepath.Base(argv[0])
+	}
+	if r.id == "" {
+		r.id = daemon.NewID()
+	}
+	argv, container := dockerize(argv, r.id)
+	t := policy.Ticket{ID: r.id, Project: r.project, Name: r.name, Cwd: cwd, Command: strings.Join(argv, " "), CmdHash: hashCmd(argv),
+		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, ClientPID: os.Getpid()}
+	for attempt := 1; ; attempt++ {
+		code, requeue, err := turn(c, t, argv, container, r.quiet)
+		if err != nil || !requeue {
+			return code, err
+		}
+		ui.Say(ui.Violet, "evicted to make room (checkpointed); back in line, attempt %d", attempt+1)
+	}
+}
+
+// turn is one wait-run-receipt cycle. requeue is true when the guard evicted the job gracefully.
+func turn(c *client.Client, t policy.Ticket, argv []string, container string, quiet bool) (int, bool, error) {
+	v, err := c.Create(daemon.Request{Ticket: t})
+	if err != nil {
+		return 1, false, err
+	}
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	defer signal.Stop(interrupt)
+
+	last := ""
+	for v.State == "waiting" {
+		if line := fmt.Sprintf("#%d in line, on ~%s: %s", v.Position, v.ETA, v.Why); line != last && !quiet {
+			ui.Say(ui.Gold, "%s [%s] waiting in the wings %s", t.Name, ui.BandLabel(v.Band), line)
+			last = line
+		}
+		select {
+		case <-interrupt:
+			_, _ = c.Act(t.ID, "cancel", daemon.Act{})
+			return 130, false, errors.New("cancelled while waiting")
+		default:
+		}
+		nv, err := c.Get(t.ID, "waiting", 20)
+		if errors.Is(err, client.ErrNotFound) { // the daemon restarted: get back in line
+			nv, err = c.Create(daemon.Request{Ticket: t})
+		}
+		if err != nil {
+			if c2, err2 := client.Connect(); err2 == nil {
+				c = c2
+				continue
+			}
+			return 1, false, err
+		}
+		v = nv
+	}
+	if v.State == "done" {
+		return 1, false, errors.New("the job was closed before it started")
+	}
+	if !quiet {
+		ui.Say(ui.Pink, "%s: spotlight's yours (lease %.0f min, budget left %.1f)", t.Name, t.Minutes, v.Budget)
+	}
+
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = append(os.Environ(),
+		"FIREFIGHTER_JOB_ID="+t.ID,
+		"FIREFIGHTER_PAUSE_FILE="+daemon.PauseFile(t.ID),
+		"FIREFIGHTER_PAUSED_FILE="+daemon.PausedFile(t.ID),
+		"FIREFIGHTER_CHECKPOINT_FILE="+daemon.CheckpointFile(t.ID))
+	sysinfo.PrepareChild(cmd)
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		_, _ = c.Act(t.ID, "done", daemon.Act{Exit: 127})
+		return 127, false, err
+	}
+	release, _ := sysinfo.Contain(cmd.Process.Pid)
+	defer release()
+	if _, err := c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid}); err != nil && !quiet {
+		ui.Note("couldn't register with the guard: %v", err)
+	}
+	if container != "" {
+		go func() { // the container appears a moment after docker run starts
+			time.Sleep(3 * time.Second)
+			_, _ = c.Act(t.ID, "container", daemon.Act{Container: container})
+		}()
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	keepalive := time.NewTicker(10 * time.Second)
+	defer keepalive.Stop()
+	var werr error
+loop:
+	for {
+		select {
+		case werr = <-done:
+			break loop
+		case <-interrupt:
+			_ = sysinfo.Terminate(cmd.Process.Pid)
+		case <-keepalive.C: // re-register if the daemon restarted, so the job stays governed
+			if _, err := c.Get(t.ID, "", 0); errors.Is(err, client.ErrNotFound) {
+				t2 := t
+				t2.PID = cmd.Process.Pid
+				_, _ = c.Create(daemon.Request{Ticket: t2, Running: true})
+			} else if err != nil {
+				if c2, err := client.Connect(); err == nil {
+					c = c2
+				}
+			}
+		}
+	}
+	code := 0
+	var ee *exec.ExitError
+	if errors.As(werr, &ee) {
+		code = ee.ExitCode()
+	} else if werr != nil {
+		code = 1
+	}
+	v, err = c.Act(t.ID, "done", daemon.Act{Exit: code})
+	if err != nil {
+		return code, false, nil
+	}
+	if rec := v.Receipt; rec != nil && !quiet {
+		color := ui.Pink
+		if rec.Outcome != "ok" {
+			color = ui.Ember
+		}
+		ui.Say(color, "%s: curtain call, %s (exit %d) in %.1f min (declared %.0f), waited %.1f, charged %.1f machine-min, peak %.1f GB RAM / %.1f GB VRAM",
+			t.Name, rec.Outcome, rec.Exit, time.Since(start).Minutes(), rec.Declared, rec.Waited, rec.Charged, rec.PeakRAM, rec.PeakVRAM)
+		return code, rec.Requeue, nil
+	}
+	return code, v.Receipt != nil && v.Receipt.Requeue, nil
+}
+
+// dockerize labels `docker run` / `podman run` so the guard can find, pause, pin and kill the container.
+func dockerize(argv []string, id string) ([]string, string) {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe")
+	if (base != "docker" && base != "podman") || len(argv) < 2 || argv[1] != "run" {
+		return argv, ""
+	}
+	name := ""
+	for i, a := range argv {
+		if a == "--name" && i+1 < len(argv) {
+			name = argv[i+1]
+		} else if strings.HasPrefix(a, "--name=") {
+			name = strings.TrimPrefix(a, "--name=")
+		}
+	}
+	extra := []string{"--label", "firefighter.job=" + id}
+	if name == "" {
+		name = "firefighter-" + id
+		extra = append(extra, "--name", name)
+	}
+	out := append([]string{argv[0], "run"}, extra...)
+	return append(out, argv[2:]...), name
+}
+
+// ---- other commands ---------------------------------------------------------------------------------
+
+func wait(args []string) (int, error) {
+	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
+	timeout := fs.Float64("timeout", 0, "give up after this many seconds (0 = never)")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
+		return 2, errors.New("usage: firefighter wait <id> [--timeout s]")
+	}
+	id := fs.Arg(0)
+	c, err := client.Connect()
+	if err != nil {
+		return 1, err
+	}
+	deadline := time.Now().Add(time.Duration(*timeout * float64(time.Second)))
+	v, err := c.Get(id, "", 0)
+	last := ""
+	for err == nil && v.State != "done" {
+		if line := fmt.Sprintf("%s: %s #%d ~%s %s", id, v.State, v.Position, v.ETA, v.Why); line != last {
+			ui.Note("%s", line)
+			last = line
+		}
+		if *timeout > 0 && time.Now().After(deadline) {
+			return 124, fmt.Errorf("still %s", v.State)
+		}
+		v, err = c.Get(id, v.State, 25)
+	}
+	if err != nil {
+		return 1, err
+	}
+	b, _ := json.MarshalIndent(v.Receipt, "", "  ")
+	fmt.Println(string(b))
+	if tail := client.Tail(client.LogPath(id), 2000); tail != "" {
+		fmt.Println("--- log tail ---\n" + tail)
+	}
+	if v.Receipt != nil {
+		return v.Receipt.Exit, nil
+	}
+	return 0, nil
+}
+
+func status(args []string) error {
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	s, err := c.Status()
+	if err != nil {
+		return err
+	}
+	if len(args) > 0 && args[0] == "--json" {
+		b, _ := json.MarshalIndent(s, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	p := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
+	p("%s  human: %s %s", ui.Gradient("firefighter"), ui.UserLabel(s.User), s.UserWhy)
+	p("  reserve for the human: %.0f CPUs, %.0f%% RAM, %.1f GB VRAM", s.Reserve["cpus"], s.Reserve["ram_pct"], s.Reserve["vram_gb"])
+	m := s.Machine
+	p("  CPU %.1f/%.0f busy (%.1f human+other)  RAM %.1f/%.1f GB free  GPU %.0f%%  VRAM %.1f/%.1f GB",
+		m["cpu_busy"], m["cpus"], m["user_cpus"], m["ram_avail_gb"], m["ram_total_gb"], m["gpu_util"], m["vram_used_gb"], m["vram_total_gb"])
+	p("  policy: preset %s, order %s, pricing %s, budget %s", s.Policy["preset"], s.Policy["order"], s.Policy["pricing"], s.Policy["budget"])
+	if s.ConfigErr != "" {
+		p("  %s", ui.Paint(ui.Ember, "config error: "+s.ConfigErr))
+	}
+	p("\n%s", ui.Paint(ui.Pink, "on stage"))
+	for _, v := range s.Running {
+		note := v.Why
+		if v.Paused {
+			note = "paused: " + note
+		}
+		p("  %-8s %-34s %-14s until ~%s %s", v.ID, trunc(v.Name, 34), trunc(v.Project, 14), v.ETA, note)
+	}
+	p("\n%s", ui.Paint(ui.Gold, "in the wings"))
+	for _, v := range s.Waiting {
+		p("  %-8s #%d %-31s %-14s on ~%s %s", v.ID, v.Position, trunc(v.Name, 31), trunc(v.Project, 14), v.ETA, v.Why)
+	}
+	if len(s.Foreign) > 0 || len(s.Docker) > 0 {
+		p("\n%s", ui.Paint(ui.Violet, "other load (counted as the human's)"))
+		for n, u := range s.Foreign {
+			p("  %-30s GPU %.0f%%", n, u)
+		}
+		for _, d := range s.Docker {
+			p("  docker %-23s CPU %.0f%%  RAM %.1f GB", d.Name, d.CPU, d.MemGB)
+		}
+	}
+	if len(s.Budgets) > 0 {
+		p("\n%s", ui.Paint(ui.Flame, "budgets (machine-minutes left)"))
+		for k, b := range s.Budgets {
+			p("  %-24s %.1f", k, b)
+		}
+	}
+	if len(s.Plans) > 0 {
+		p("\n%s", ui.Paint(ui.Ash, "planned"))
+		for _, pl := range s.Plans {
+			p("  %s %s: %s, %s, ~%.0f min", pl.ID, pl.Project, pl.What, pl.When, pl.Minutes)
+		}
+	}
+	return nil
+}
+
+func trunc(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+func extend(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: firefighter extend <id> <minutes>")
+	}
+	m, err := strconv.ParseFloat(args[1], 64)
+	if err != nil {
+		return err
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	v, err := c.Act(args[0], "extend", daemon.Act{Minutes: m})
+	if err == nil {
+		ui.Say(ui.Pink, "%s: encore, lease now ends ~%s", v.Name, v.ETA)
+	}
+	return err
+}
+
+func act(args []string, verb string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: firefighter %s <id>", verb)
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	_, err = c.Act(args[0], verb, daemon.Act{})
+	return err
+}
+
+func adopt(args []string) error {
+	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
+	gpu := fs.Bool("gpu", false, "uses the GPU")
+	name := fs.String("name", "", "name")
+	minutes := fs.Float64("minutes", 60, "expected minutes left")
+	var pidArg string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		pidArg, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if pidArg == "" && fs.NArg() > 0 {
+		pidArg = fs.Arg(0)
+	}
+	pid, err := strconv.Atoi(pidArg)
+	if err != nil || !sysinfo.Alive(pid) {
+		return errors.New("usage: firefighter adopt <running pid> [--gpu] [--name NAME] [--minutes N]")
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	cwd, _ := os.Getwd()
+	if *name == "" {
+		*name = sysinfo.Name(pid)
+	}
+	v, err := c.Create(daemon.Request{Running: true, Ticket: policy.Ticket{Project: projectOf(cwd), Name: *name, GPU: *gpu, Minutes: *minutes,
+		PID: pid, ClientPID: pid, Bid: 5, Evict: "graceful", CmdHash: hashCmd([]string{sysinfo.Name(pid)})}})
+	if err == nil {
+		ui.Say(ui.Pink, "adopted pid %d as %s (%s)", pid, v.ID, v.Name)
+	}
+	return err
+}
+
+func plan(args []string) error {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	when := fs.String("when", "now", "when")
+	minutes := fs.Float64("minutes", 0, "minutes")
+	gpu := fs.Float64("gpu", 0, "GPU %")
+	vram := fs.Float64("vram", 0, "VRAM GB")
+	ram := fs.Float64("ram", 0, "RAM GB")
+	done := fs.Bool("done", false, "remove this project's plans (or the plan with this id)")
+	project := fs.String("project", "", "project")
+	var what string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		what, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if what == "" {
+		what = strings.Join(fs.Args(), " ")
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	cwd, _ := os.Getwd()
+	if *project == "" {
+		*project = projectOf(cwd)
+	}
+	if *done {
+		key := *project
+		if what != "" {
+			key = what
+		}
+		return c.Unplan(key)
+	}
+	p, err := c.Plan(daemon.Plan{Project: *project, What: what, When: *when, Minutes: *minutes, GPUPct: *gpu, VRAMGB: *vram, RAMGB: *ram})
+	if err == nil {
+		ui.Say(ui.Gold, "announced %s: %s (%s); remove with `firefighter plan --done`", p.ID, p.What, p.When)
+	}
+	return err
+}
+
+func configCmd(args []string) error {
+	if len(args) == 0 || args[0] == "show" {
+		c, err := config.Load()
+		fmt.Print(c.Show())
+		return err
+	}
+	switch args[0] {
+	case "set":
+		if len(args) != 3 {
+			return errors.New("usage: firefighter config set <dotted.key> <value>")
+		}
+		if err := config.Set(args[1], args[2]); err != nil {
+			return err
+		}
+		ui.Say(ui.Pink, "%s = %s (the guard picks it up within a second)", args[1], args[2])
+	case "unset":
+		if len(args) != 2 {
+			return errors.New("usage: firefighter config unset <dotted.key>")
+		}
+		return config.Unset(args[1])
+	case "presets":
+		fmt.Println("balanced   default: researched policy (LAS fair share, priced bids, Karma budgets, dynamic reserve)")
+		fmt.Println("gamer      bigger reserves, one GPU job at a time, nothing on the GPU during games")
+		fmt.Println("throughput small reserves, up to 3 GPU jobs packed by learned VRAM")
+		fmt.Println("fair       DRF order, free bids, daily budgets: a shared lab machine")
+		fmt.Println("\nfirefighter config set preset <name>")
+	case "path":
+		fmt.Println(config.Path())
+	default:
+		return fmt.Errorf("unknown config action %q", args[0])
+	}
+	return nil
+}
+
+func install() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+	ui.PrintBanner()
+	fmt.Fprintln(os.Stderr)
+	failed := 0
+	for _, s := range setup.Install(exe) {
+		if s.Err != nil {
+			failed++
+			ui.Say(ui.Ember, "%s: %v", s.What, s.Err)
+		} else {
+			ui.Say(ui.Pink, "%s", s.What)
+		}
+	}
+	if _, err := client.Connect(); err != nil {
+		ui.Say(ui.Ember, "guard: %v", err)
+	} else {
+		ui.Say(ui.Pink, "guard running")
+	}
+	ui.Note("new agent sessions will queue heavy work through firefighter. Try: firefighter status")
+	if failed > 0 {
+		return fmt.Errorf("%d setup step(s) failed", failed)
+	}
+	return nil
+}
+
+func uninstall() error {
+	for _, s := range setup.Uninstall() {
+		if s.Err != nil {
+			ui.Say(ui.Ember, "%s: %v", s.What, s.Err)
+		} else {
+			ui.Say(ui.Ash, "%s", s.What)
+		}
+	}
+	_ = stopDaemon()
+	ui.Note("state stays in %s; delete it to forget budgets and history", config.Home())
+	return nil
+}
+
+func stopDaemon() error {
+	b, err := os.ReadFile(daemon.EndpointPath())
+	if err != nil {
+		return nil
+	}
+	var ep daemon.Endpoint
+	if json.Unmarshal(b, &ep) != nil || !sysinfo.Alive(ep.PID) {
+		return nil
+	}
+	return sysinfo.Kill(ep.PID)
+}
+
+func daemonCmd(args []string) error {
+	if len(args) > 0 && args[0] == "--stop" {
+		return stopDaemon()
+	}
+	if c, err := client.Connect0(); err == nil && c != nil {
+		return errors.New("the guard is already running")
+	}
+	unlock, err := daemon.Lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return daemon.New().Serve()
+}
+
+const protocol = `# firefighter pause/checkpoint protocol for long GPU loops (Python; same idea in any language)
+#
+# The guard asks a job to pause while the human games, and to checkpoint and exit when the human
+# needs its RAM or VRAM back. Jobs that honor it are never suspended or killed mid-step; exit 75
+# after checkpointing and firefighter requeues the job automatically.
+import os, sys, time
+
+def firefighter_step(save_checkpoint=None):
+    """Call once per training step."""
+    pause = os.environ.get("FIREFIGHTER_PAUSE_FILE")
+    if pause and os.path.exists(pause):
+        ack = os.environ["FIREFIGHTER_PAUSED_FILE"]
+        open(ack, "w").close()
+        try:
+            import torch; torch.cuda.empty_cache()
+        except Exception:
+            pass
+        while os.path.exists(pause):
+            time.sleep(1)
+        os.remove(ack)
+    ckpt = os.environ.get("FIREFIGHTER_CHECKPOINT_FILE")
+    if ckpt and os.path.exists(ckpt):
+        if save_checkpoint:
+            save_checkpoint()
+        sys.exit(75)
+`
