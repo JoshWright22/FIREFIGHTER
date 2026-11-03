@@ -40,10 +40,9 @@ func Congestion(demandMinutes, supplyMinutes float64) float64 {
 // its age. Past it: half its age again (heavy-tailed runtimes: a job that overran tends to keep
 // going; mean residual life grows with age), never under a minute.
 func Remaining(predicted, age float64) float64 {
-	if age < predicted {
-		return math.Max(1, predicted-age)
-	}
-	return math.Max(1, age/2)
+	// Never less than half its age (heavy tail), so the estimate doesn't drop to ~0 just before the
+	// prediction and then jump: it bends smoothly from "prediction minus age" into "half its age".
+	return math.Max(1, math.Max(predicted-age, age/2))
 }
 
 // Slot is one running or waiting job, as the scheduler simulation sees it.
@@ -84,16 +83,19 @@ func Schedule(slots int, running []Slot, waiting []Slot) (starts map[string]floa
 // has been (weighted in as the horizon grows), and announced plans (at a 0.7 reliability):
 // P = 1 - (1-Psched)(1-w(h)·Phist)(1-Pplan), w(h) = 1 - e^(-h/60).
 func BusyProb(h float64, busyUntil []float64, hist float64, histKnown bool, plan bool) float64 {
+	// Each slot frees at an uncertain time around its estimate: the chance it's still taken at h is a
+	// log-logistic survival curve with its median at the estimate (runtimes are heavy-tailed, so
+	// estimates are soft both ways). The resource is full only while every slot is taken.
 	sched := 0.0
-	full := len(busyUntil) > 0
-	for _, b := range busyUntil {
-		if b <= h {
-			full = false
-			break
+	if len(busyUntil) > 0 {
+		sched = 0.95
+		for _, b := range busyUntil {
+			if b <= 0 {
+				sched = 0
+				break
+			}
+			sched *= 1 / (1 + math.Pow(h/b, 4))
 		}
-	}
-	if full {
-		sched = 0.95 - 0.25*(1-math.Exp(-h/120)) // runtimes are uncertain: less sure further out
 	}
 	w := 0.0
 	if histKnown {

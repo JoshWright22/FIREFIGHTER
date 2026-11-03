@@ -49,7 +49,6 @@ const usage = `firefighter: your agents won't set your GPU on fire.
   firefighter plan "<what>" --when "<when>" --minutes N [--gpu PCT] [--vram GB] [--ram GB] [--done]
   firefighter config [show | set <key> <value> | unset <key> | presets | path]
   firefighter protocol           the pause/checkpoint helper for long GPU loops
-  firefighter dashboard [--port N]  the live picture in your browser (127.0.0.1 only)
   firefighter statusline [--json]  one line for a status bar (Claude Code, VS Code, tmux, T3 Code)
   firefighter events             NDJSON stream of status changes, for editor plugins
   firefighter setup              start at logon + teach every agent CLI (MCP + global rules)
@@ -84,8 +83,6 @@ func main() {
 		err = statusline(args)
 	case "events":
 		err = events(args)
-	case "dashboard", "ui":
-		err = dashboard(args)
 	case "bid":
 		err = rebid(args)
 	case "cancel":

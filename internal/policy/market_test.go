@@ -27,13 +27,16 @@ func TestBusyProbBlendsSignals(t *testing.T) {
 	if near < 0.8 || near > 0.95 || far < near-0.001 {
 		t.Fatalf("scheduled busy: %v %v", near, far)
 	}
-	if p := BusyProb(60, []float64{30}, 0.5, false, false); p != 0 {
-		t.Fatalf("no history known, free by then: %v", p)
+	if p := BusyProb(60, []float64{30}, 0.5, false, false); p > 0.1 {
+		t.Fatalf("no history known, very likely free by then: %v", p)
 	}
-	if p := BusyProb(60, []float64{30}, 0.5, true, false); p < 0.25 || p > 0.4 {
+	if a, b, c := BusyProb(80, []float64{89}, 0, false, false), BusyProb(89, []float64{89}, 0, false, false), BusyProb(100, []float64{89}, 0, false, false); !(a > b && b > c && c > 0.2 && b > 0.4) {
+		t.Fatalf("busy odds fall smoothly around the estimate, no cliff: %v %v %v", a, b, c)
+	}
+	if p := BusyProb(60, []float64{30}, 0.5, true, false); p < 0.3 || p > 0.45 {
 		t.Fatalf("history weighs in with the horizon: %v", p)
 	}
-	if p := BusyProb(60, []float64{30}, 0, false, true); p != 0.7 {
+	if p := BusyProb(60, nil, 0, false, true); p != 0.7 {
 		t.Fatalf("a plan alone: %v", p)
 	}
 }

@@ -85,6 +85,7 @@ type Daemon struct {
 	names    map[string]bool
 	namesAt  time.Time
 	foreign  map[string]float64 // non-job GPU users -> %
+	outSince map[string]time.Time // when each busy non-job GPU user was first seen busy
 	graphics map[string]float64 // non-job 3D-engine users -> % (games, video)
 	others   []sysinfo.Container
 	notify   chan struct{}
@@ -434,6 +435,19 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		d.foreign[n] = math.Max(d.foreign[n], u)
 		if g.Util3D >= 1 {
 			d.graphics[n] = math.Max(d.graphics[n], g.Util3D)
+		}
+	}
+	if d.outSince == nil {
+		d.outSince = map[string]time.Time{}
+	}
+	for n := range d.outSince {
+		if d.foreign[n] < c.Reserve.ForeignGPUPct {
+			delete(d.outSince, n)
+		}
+	}
+	for n, u := range d.foreign {
+		if _, ok := d.outSince[n]; !ok && u >= c.Reserve.ForeignGPUPct {
+			d.outSince[n] = time.Now()
 		}
 	}
 }

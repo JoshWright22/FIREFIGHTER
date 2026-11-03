@@ -124,21 +124,6 @@ with sync_playwright() as p:
         print("wrote", *[o.relative_to(ROOT).as_posix() for o in outs])
     browser.close()
 
-# Fonts for `firefighter dashboard`, embedded in the binary: subset to what the page draws.
-from fontTools import subset as _subset
-DASH = ROOT / "cmd" / "firefighter" / "dash"
-_opts = _subset.Options()
-_opts.layout_features = ["kern", "liga", "calt", "tnum"]
-_basic = "".join(chr(c) for c in range(0x20, 0x7F)) + "·…→←↑↓◆●○–—×%°"
-for src, out, f in [("InterTight", "InterTight-Black.ttf", font),
-                    ("JetBrainsMono", "JetBrainsMono.ttf", TTFont(HERE / "fonts" / "JetBrainsMono.ttf"))]:
-    sub = _subset.Subsetter(_opts)
-    sub.populate(text=_basic)
-    sub.subset(f)
-    f.save(DASH / out)
-    shutil.copyfile(HERE / "fonts" / f"OFL-{src}.txt", DASH / f"OFL-{src}.txt")
-print("wrote dashboard fonts")
-
 for name in ["icon.svg", "demo.svg", "social-preview.png"]:
     shutil.copyfile(ASSETS / name, ROOT / "docs" / name)
 print("copied icon.svg, demo.svg, social-preview.png to docs/")

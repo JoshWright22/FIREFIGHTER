@@ -61,8 +61,10 @@ func (d *Daemon) line(gpu bool, exclude string, now time.Time) (running []policy
 		running = append(running, policy.Slot{ID: r.ID, EndsIn: left, Running: true})
 	}
 	if gpu {
-		for range d.busyOutside() { // unmanaged GPU work: unknown end, assume 30 min
-			running = append(running, policy.Slot{ID: "outside", EndsIn: 30, Running: true})
+		// Unmanaged GPU work: its end is unknown, so assume 30 minutes at first and, past that, as long
+		// again as it has already run (heavy tail): a 2-hour training run isn't "done in 30".
+		for n, at := range d.outSince {
+			running = append(running, policy.Slot{ID: "outside:" + n, EndsIn: policy.Remaining(30, now.Sub(at).Minutes()), Running: true})
 		}
 		if d.gpuHeld() {
 			running = append(running, policy.Slot{ID: "human", EndsIn: math.Max(15, time.Until(d.gameTill).Minutes()), Running: true})
