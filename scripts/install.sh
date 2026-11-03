@@ -4,6 +4,11 @@
 # Puts the binary in ~/.local/bin, then runs `firefighter setup` (start at logon, MCP for agent
 # CLIs, shared-machine rules in their global instructions). Undo: firefighter uninstall.
 set -eu
+# Not as root: the old binary it stops is user-writable, and setup edits your own configs.
+if [ "$(id -u)" = "0" ] && [ "${FIREFIGHTER_ALLOW_ELEVATED:-}" != "1" ]; then
+  echo "Run this as your normal user, not root or sudo. firefighter runs as you." >&2
+  exit 1
+fi
 REPO="JoshWright22/FIREFIGHTER"
 BIN_DIR="${FIREFIGHTER_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN_DIR"

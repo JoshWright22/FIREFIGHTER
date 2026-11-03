@@ -195,14 +195,29 @@ func writeFile(path string, b []byte) error {
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
 		bak := path + ".firefighter.bak"
-		if _, err := os.Stat(bak); os.IsNotExist(err) {
+		if _, err := os.Lstat(bak); os.IsNotExist(err) {
 			if old, err := os.ReadFile(path); err == nil {
-				_ = os.WriteFile(bak, old, mode)
+				// Exclusive create: never through a link someone planted at the backup's name.
+				if f, err := os.OpenFile(bak, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode); err == nil {
+					_, _ = f.Write(old)
+					_ = f.Close()
+				}
 			}
 		}
 	}
 	tmp := path + ".firefighter.tmp"
-	if err := os.WriteFile(tmp, b, mode); err != nil {
+	_ = os.Remove(tmp) // a planted link is removed, never written through
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

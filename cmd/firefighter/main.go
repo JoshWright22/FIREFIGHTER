@@ -854,6 +854,9 @@ func configCmd(args []string) error {
 }
 
 func install(args []string) error {
+	if sysinfo.Elevated() && os.Getenv("FIREFIGHTER_ALLOW_ELEVATED") != "1" {
+		return errors.New("run setup from a normal (not administrator/root) terminal: it edits your own agent configs, and an elevated setup would write them as admin. Containers/CI: FIREFIGHTER_ALLOW_ELEVATED=1")
+	}
 	if len(args) > 0 {
 		return fmt.Errorf("setup takes no arguments (got %q); it installs autostart, MCP and agent rules", args[0])
 	}

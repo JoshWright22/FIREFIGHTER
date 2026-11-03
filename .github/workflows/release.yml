@@ -22,7 +22,7 @@ jobs:
           go-version: stable
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
-          version: "~> v2"
+          version: "v2.19.0" # exact: this job can publish and sign
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,10 +58,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write       # upload one file; runs no third-party code
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: vsix
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: firefighter-vscode.vsix
       - name: attach the extension to the release
         run: gh release upload "$GITHUB_REF_NAME" firefighter-vscode.vsix --clobber --repo "$GITHUB_REPOSITORY"
         env:

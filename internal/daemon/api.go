@@ -177,6 +177,20 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
 		return
 	}
+	if req.Running && caller == 0 {
+		fail(w, http.StatusForbidden, "couldn't tell which process is asking; adopt from a normal terminal")
+		return
+	}
+	if req.Running && !req.Adopt && caller > 1 && !sysinfo.DescendantOf(t.PID, caller) {
+		// Re-registration after a daemon restart comes from the job's own client.
+		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't a job this client started", t.PID))
+		return
+	}
+	if req.Running && req.Adopt && owner != 0 && !sysinfo.DescendantOf(t.PID, owner) {
+		// An agent may adopt work from its own session; any other process is the human's to adopt.
+		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't from this agent session; the human can adopt it from a terminal", t.PID))
+		return
+	}
 	if req.Running && t.ClientPID > 1 && (t.PID == t.ClientPID || sysinfo.DescendantOf(t.ClientPID, t.PID)) {
 		// Adopting the caller's own shell or agent would put it (and the caller) on idle priority
 		// and kill it with the job.
@@ -406,7 +420,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		starter := caller
-		if starter <= 1 {
+		if starter < 0 { // the connection table isn't available on this system
 			starter = j.ClientPID
 		}
 		if starter <= 1 || !sysinfo.DescendantOf(a.PID, starter) {
@@ -809,20 +823,38 @@ func cleanText(s string, max int) string {
 }
 
 // callerPID finds the local process on the other end of a request's TCP connection (0 if unknown).
+// It matches the whole established connection (the client's address and port, and ours), so a
+// process can't pose as another by binding a port that one listens on. -1: the lookup itself isn't
+// available here (callers fall back); 0: no such connection (the request is refused).
 func callerPID(r *http.Request) int {
 	host, port, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || (host != "127.0.0.1" && host != "::1") {
 		return 0
 	}
-	p, _ := strconv.Atoi(port)
-	conns, err := psnet.Connections("tcp")
+	local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if local == nil {
+		return -1
+	}
+	lhost, lport, err := net.SplitHostPort(local.String())
 	if err != nil {
-		return 0
+		return -1
+	}
+	p, _ := strconv.Atoi(port)
+	lp, _ := strconv.Atoi(lport)
+	conns, err := psnet.Connections("tcp")
+	if err != nil || len(conns) == 0 {
+		return -1
 	}
 	for _, c := range conns {
-		if int(c.Laddr.Port) == p && c.Pid > 0 && c.Pid != int32(os.Getpid()) {
+		if c.Pid > 0 && c.Pid != int32(os.Getpid()) && strings.EqualFold(c.Status, "ESTABLISHED") &&
+			int(c.Laddr.Port) == p && sameIP(c.Laddr.IP, host) && int(c.Raddr.Port) == lp && sameIP(c.Raddr.IP, lhost) {
 			return int(c.Pid)
 		}
 	}
 	return 0
+}
+
+func sameIP(a, b string) bool {
+	x, y := net.ParseIP(a), net.ParseIP(b)
+	return x != nil && y != nil && x.Equal(y)
 }

@@ -40,6 +40,30 @@ type tool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
+// listed is a tool as tools/list shows it, with MCP annotations.
+type listed struct {
+	tool
+	Annotations map[string]any `json:"annotations,omitempty"`
+}
+
+// submit runs a shell command as the user, outside the calling agent's own sandbox: say so, and
+// let hosts ask for approval as they would for a shell tool. The rest only read or change queue
+// state.
+func annotated(ts []tool) []listed {
+	out := make([]listed, len(ts))
+	for i, t := range ts {
+		out[i] = listed{tool: t}
+		switch t.Name {
+		case "firefighter_submit":
+			out[i].Description += " Runs the command as you, outside any agent sandbox, with your network and files: only submit what you'd run in your own shell."
+			out[i].Annotations = map[string]any{"title": "Run a command through the queue", "destructiveHint": true, "openWorldHint": true, "readOnlyHint": false}
+		case "firefighter_status", "firefighter_wait":
+			out[i].Annotations = map[string]any{"readOnlyHint": true, "openWorldHint": false}
+		}
+	}
+	return out
+}
+
 func obj(props map[string]any, required ...string) map[string]any {
 	m := map[string]any{"type": "object", "properties": props}
 	if len(required) > 0 {
@@ -143,7 +167,7 @@ func handle(req rpc, version string) rpc {
 	case "ping":
 		resp.Result = map[string]any{}
 	case "tools/list":
-		resp.Result = map[string]any{"tools": tools()}
+		resp.Result = map[string]any{"tools": annotated(tools())}
 	case "tools/call":
 		var p struct {
 			Name      string         `json:"name"`

@@ -441,7 +441,17 @@ func Name(pid int) string {
 		return ""
 	}
 	n, _ := p.Name()
-	return strings.ToLower(n)
+	return printable(strings.ToLower(n))
+}
+
+// printable drops control characters: a process may name itself with a newline and a fake line.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Containers lists running Docker containers with their CPU and memory, so the status can say where

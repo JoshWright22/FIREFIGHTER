@@ -299,11 +299,15 @@ tests both one-command installers.
 
 ## Security notes
 
-- The guard refuses to run as administrator or root: any agent of yours can read its token, so an
-  elevated guard would lend those rights to every agent. It runs as you, binds only 127.0.0.1, and
+- The guard, `setup` and both installers refuse to run as administrator or root: any agent of
+  yours can read the token and write its files, so anything elevated would lend those rights to
+  every agent. It runs as you, binds only 127.0.0.1, and
   keeps its folder private (0700/0600 on Unix).
-- It only acts on what a job's own client started (the caller is identified by its TCP connection,
-  not by what it claims), on containers labeled for that job, and on processes you `adopt`.
+- It only acts on what a job's own client started (the caller is identified by its exact TCP
+  connection, not by what it claims), on containers labeled for that job, and on processes adopted
+  by you or, for its own session's work only, by an agent. Ancestry checks ignore reused pids.
+- `firefighter_submit` runs a command as you, outside an agent's own sandbox; its MCP annotations
+  say so, so hosts can ask for approval as they do for a shell.
 - Releases are built by GitHub Actions with SHA-pinned actions and least-privilege tokens, and carry
   signed build provenance: `gh attestation verify firefighter_windows_amd64.zip --repo JoshWright22/FIREFIGHTER`.
 - Not a sandbox: an agent with your shell can do anything you can. firefighter makes the polite

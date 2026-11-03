@@ -70,7 +70,11 @@ func AgentAncestorPID(pid int, names []string) int {
 				return int(p.Pid)
 			}
 		}
+		child := p
 		p, err = p.Parent()
+		if err == nil && p != nil && youngerThan(p, child) {
+			break
+		}
 	}
 	return 0
 }
@@ -99,13 +103,20 @@ func Ancestors(pid int) []int {
 	var out []int
 	p, err := process.NewProcess(int32(pid))
 	for depth := 0; err == nil && depth < 30; depth++ {
+		child := p
 		p, err = p.Parent()
-		if err != nil || p == nil || p.Pid <= 0 {
-			break
+		if err != nil || p == nil || p.Pid <= 0 || youngerThan(p, child) {
+			break // a "parent" started after its child is a reused pid, not the real parent
 		}
 		out = append(out, int(p.Pid))
 	}
 	return out
+}
+
+func youngerThan(parent, child *process.Process) bool {
+	pc, err1 := parent.CreateTime()
+	cc, err2 := child.CreateTime()
+	return err1 == nil && err2 == nil && pc > cc
 }
 
 // DescendantOf says whether pid is a child (at any depth) of ancestor.

@@ -4,6 +4,13 @@
 # `firefighter setup` (start at logon, MCP for agent CLIs, shared-machine rules in their global
 # instructions). Undo: firefighter uninstall.
 $ErrorActionPreference = 'Stop'
+# Not from an admin shell: the old binary it stops is user-writable, and setup edits your own
+# configs. firefighter runs as you.
+$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($admin -and $env:FIREFIGHTER_ALLOW_ELEVATED -ne '1') {
+    Write-Host 'Run this from a normal (non-administrator) PowerShell window. firefighter runs as you.'
+    return
+}
 $repo = 'JoshWright22/FIREFIGHTER'
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\firefighter'
 New-Item -ItemType Directory -Force $dir | Out-Null
