@@ -36,7 +36,7 @@ export const register: Register = on => {
       const { stdout, stderr } = await $.process.run(['firefighter', 'status'], { timeoutMs: 15000, env: { NO_COLOR: '1' } })
       return { text: stdout.trim() || stderr.trim() }
     } catch {
-      return { text: 'firefighter is not installed. Windows: irm https://raw.githubusercontent.com/JoshWright22/firefighter/main/scripts/install.ps1 | iex   macOS/Linux: curl -fsSL https://raw.githubusercontent.com/JoshWright22/firefighter/main/scripts/install.sh | sh' }
+      return { text: 'firefighter is not installed. Windows: irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.ps1 | iex   macOS/Linux: curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh' }
     }
   })
 

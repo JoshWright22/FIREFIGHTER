@@ -28,7 +28,7 @@ function listen() {
   })
   child.on('error', () => {
     item.text = '$(flame) firefighter: not installed'
-    item.tooltip = 'Install: see https://github.com/JoshWright22/firefighter'
+    item.tooltip = 'Install: see https://github.com/JoshWright22/FIREFIGHTER'
     item.show()
   })
   child.on('exit', () => {

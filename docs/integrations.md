@@ -53,7 +53,7 @@ the easiest way for any editor plugin (including a T3 Code or Zed extension) to 
 Install, at a Claude Code prompt:
 
 ```
-/plugin install firefighter --marketplace JoshWright22/firefighter
+/plugin install firefighter --marketplace JoshWright22/FIREFIGHTER
 ```
 
 **VS Code, Cursor, Windsurf** ([integrations/vscode](../integrations/vscode)): a status bar item

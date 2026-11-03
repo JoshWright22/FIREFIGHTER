@@ -1,10 +1,10 @@
 # firefighter installer for Windows:
-#   irm https://raw.githubusercontent.com/JoshWright22/firefighter/main/scripts/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.ps1 | iex
 # Puts firefighter.exe in %LOCALAPPDATA%\Programs\firefighter, adds it to your PATH, then runs
 # `firefighter setup` (start at logon, MCP for agent CLIs, shared-machine rules in their global
 # instructions). Undo: firefighter uninstall.
 $ErrorActionPreference = 'Stop'
-$repo = 'JoshWright22/firefighter'
+$repo = 'JoshWright22/FIREFIGHTER'
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\firefighter'
 New-Item -ItemType Directory -Force $dir | Out-Null
 $exe = Join-Path $dir 'firefighter.exe'

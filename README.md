@@ -1,8 +1,8 @@
 <p align="center"><img src="assets/logo.svg" alt="firefighter: GPU, CPU and RAM scheduler for AI coding agents" width="640"></p>
 
 <p align="center">
-  <a href="https://github.com/JoshWright22/firefighter/actions/workflows/ci.yml"><img src="https://github.com/JoshWright22/firefighter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/JoshWright22/firefighter/releases"><img src="https://img.shields.io/github/v/release/JoshWright22/firefighter?color=d4147a&label=release" alt="release"></a>
+  <a href="https://github.com/JoshWright22/FIREFIGHTER/actions/workflows/ci.yml"><img src="https://github.com/JoshWright22/FIREFIGHTER/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/JoshWright22/FIREFIGHTER/releases"><img src="https://img.shields.io/github/v/release/JoshWright22/FIREFIGHTER?color=d4147a&label=release" alt="release"></a>
   <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-141216" alt="Windows, macOS, Linux">
   <img src="https://img.shields.io/badge/MCP-server-d4147a" alt="MCP server">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-141216" alt="MIT"></a>
@@ -61,13 +61,13 @@ crawl, your game stutters, audio crackles, and nobody knows who's using what or 
 **Windows** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/JoshWright22/firefighter/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.ps1 | iex
 ```
 
 **macOS / Linux**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/JoshWright22/firefighter/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh
 ```
 
 The installer checks the release checksum, puts one ~8 MB binary on your PATH, and runs `firefighter setup`.
@@ -211,7 +211,7 @@ for agents that read files), `daemon.log`, `logs/<id>.log` (detached jobs, kept 
   automatically.
 - **Claude Code plugin:** a live status-line entry, `/firefighter`, and a guard that sends heavy Bash
   commands back to the agent to rerun through the queue:
-  `/plugin install firefighter --marketplace JoshWright22/firefighter`
+  `/plugin install firefighter --marketplace JoshWright22/FIREFIGHTER`
 - **VS Code, Cursor, Windsurf extension:** a live status bar item (the `.vsix` is on every release).
 - **Anything else:** `firefighter statusline` gives one line for any status bar (Claude Code's
   `statusLine`, tmux, starship), and `firefighter events` streams NDJSON for editor plugins.

@@ -1,10 +1,10 @@
 #!/bin/sh
 # firefighter installer for macOS and Linux:
-#   curl -fsSL https://raw.githubusercontent.com/JoshWright22/firefighter/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh
 # Puts the binary in ~/.local/bin, then runs `firefighter setup` (start at logon, MCP for agent
 # CLIs, shared-machine rules in their global instructions). Undo: firefighter uninstall.
 set -eu
-REPO="JoshWright22/firefighter"
+REPO="JoshWright22/FIREFIGHTER"
 BIN_DIR="${FIREFIGHTER_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN_DIR"
 
