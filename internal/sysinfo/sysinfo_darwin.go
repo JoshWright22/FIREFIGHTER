@@ -45,3 +45,7 @@ func Background(pid int) error {
 // SetCPUs is a no-op: macOS has no CPU affinity; the background QoS band keeps jobs off the
 // performance cores when the user needs them.
 func SetCPUs(int, []int) error { return nil }
+
+// gpus: GPUs beyond what vendor tools list. Linux: nvidia-smi, rocm-smi and sysfs cover it; macOS
+// GPUs share system memory (admitted as RAM).
+func (*platformReader) gpus(map[string]bool) []GPU { return nil }

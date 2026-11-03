@@ -530,7 +530,8 @@ type View struct {
 	Receipt  *Receipt      `json:"receipt,omitempty"`
 	Quote    *policy.Quote `json:"quote,omitempty"`
 	Market   string        `json:"market,omitempty"`     // the quote in one line
-	Device   *int          `json:"gpu_device,omitempty"` // the GPU it was placed on (multi-GPU machines)
+	Device   *int          `json:"gpu_device,omitempty"` // the GPU it was placed on, in its vendor's numbering
+	Vendor   string        `json:"gpu_vendor,omitempty"` // nvidia | amd | intel
 	PauseF   string        `json:"pause_file,omitempty"`
 	PausedF  string        `json:"paused_file,omitempty"`
 	CheckF   string        `json:"checkpoint_file,omitempty"`
@@ -543,9 +544,10 @@ func (d *Daemon) view(j *job) View {
 		Budget: round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(j.Project))))), Pred: round1(j.PredMinutes),
 		Receipt: j.receipt, Paused: !j.pausedAt.IsZero(), Checkpt: !j.checkpoint.IsZero(), Why: j.reason,
 		PauseF: PauseFile(j.ID), PausedF: PausedFile(j.ID), CheckF: CheckpointFile(j.ID)}
-	if j.device >= 0 {
-		dev := j.device
-		v.Device = &dev
+	if j.device >= 0 && j.device < len(d.snap.GPUs) {
+		g := d.snap.GPUs[j.device]
+		dev := g.Index
+		v.Device, v.Vendor = &dev, g.Vendor
 	}
 	switch j.State {
 	case "waiting":

@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -96,7 +98,7 @@ func NewReader() *Reader { return &Reader{platform: newPlatformReader()} }
 
 // Read samples the machine. GPU vendor tools are slow, so they refresh at most every 2 s.
 func (r *Reader) Read() Snapshot {
-	s := Snapshot{Time: time.Now(), CPUs: runtime.NumCPU(), Idle: -1}
+	s := Snapshot{Time: time.Now(), CPUs: logicalCPUs(), Idle: -1}
 	if p, err := cpu.Percent(0, false); err == nil && len(p) > 0 {
 		s.CPUBusy = p[0] / 100 * float64(s.CPUs)
 	}
@@ -105,7 +107,7 @@ func (r *Reader) Read() Snapshot {
 		s.RAMAvailGB = gb(v.Available)
 	}
 	if time.Since(r.gpuAt) > 2*time.Second {
-		r.gpu = readGPUs()
+		r.gpu = r.readGPUs()
 		r.gpuAt = time.Now()
 	}
 	s.GPUs = r.gpu
@@ -184,11 +186,22 @@ func run(timeout time.Duration, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-func readGPUs() []GPU {
-	if g := nvidiaGPUs(); len(g) > 0 {
-		return g
+// readGPUs lists every GPU from every vendor: NVIDIA (nvidia-smi), AMD (rocm-smi, or the amdgpu
+// driver's sysfs files on Linux), and on Windows any other discrete adapter (DXGI). Index is the
+// vendor's own device number (what CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES mean), so a job can
+// be pinned to the card it was admitted on.
+func (r *Reader) readGPUs() []GPU {
+	gs := nvidiaGPUs()
+	amd := amdGPUs()
+	if len(amd) == 0 {
+		amd = sysfsAMD()
 	}
-	return amdGPUs()
+	gs = append(gs, amd...)
+	have := map[string]bool{}
+	for _, g := range gs {
+		have[g.Vendor] = true
+	}
+	return append(gs, r.platform.gpus(have)...)
 }
 
 func nvidiaGPUs() []GPU {
@@ -234,6 +247,47 @@ func nvidiaProcs() map[int]ProcGPU {
 		m[pid] = p
 	}
 	return m
+}
+
+var cpuCount int
+
+// logicalCPUs counts every logical CPU, across Windows processor groups (runtime.NumCPU sees only
+// the process's group on machines with more than 64).
+func logicalCPUs() int {
+	if cpuCount == 0 {
+		cpuCount = runtime.NumCPU()
+		if n, err := cpu.Counts(true); err == nil && n > cpuCount {
+			cpuCount = n
+		}
+	}
+	return cpuCount
+}
+
+// sysfsAMD reads the amdgpu driver's files (Linux without ROCm installed).
+func sysfsAMD() []GPU {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	cards, _ := filepath.Glob("/sys/class/drm/card[0-9]*/device")
+	sort.Strings(cards)
+	var gs []GPU
+	seen := map[string]bool{}
+	read := func(p string) string { b, _ := os.ReadFile(p); return strings.TrimSpace(string(b)) }
+	for _, c := range cards {
+		real, _ := filepath.EvalSymlinks(c)
+		if seen[real] || read(filepath.Join(c, "vendor")) != "0x1002" {
+			continue
+		}
+		seen[real] = true
+		total := num(read(filepath.Join(c, "mem_info_vram_total"))) / (1 << 30)
+		if total < 1 {
+			continue // an APU's small carve-out: its memory is system RAM
+		}
+		gs = append(gs, GPU{Index: len(gs), Vendor: "amd", Name: "AMD GPU", VRAMGB: total,
+			UsedGB: num(read(filepath.Join(c, "mem_info_vram_used"))) / (1 << 30),
+			Util:   num(read(filepath.Join(c, "gpu_busy_percent")))})
+	}
+	return gs
 }
 
 // amdGPUs reads ROCm's rocm-smi (Linux AMD).

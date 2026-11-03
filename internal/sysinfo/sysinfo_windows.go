@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -120,7 +121,10 @@ func foregroundApp() string {
 type platformReader struct {
 	query      uintptr
 	util, vram uintptr
+	adapterMem uintptr
 	ok         bool
+	adapters   []dxgiAdapter
+	adaptersAt time.Time
 }
 
 func newPlatformReader() *platformReader {
@@ -137,6 +141,7 @@ func newPlatformReader() *platformReader {
 		return r == 0
 	}
 	p.ok = add(`\GPU Engine(*)\Utilization Percentage`, &p.util) && add(`\GPU Process Memory(*)\Dedicated Usage`, &p.vram)
+	add(`\GPU Adapter Memory(*)\Dedicated Usage`, &p.adapterMem)
 	pdhCollect.Call(p.query)
 	return p
 }
@@ -197,6 +202,63 @@ func (p *platformReader) procGPU() map[int]ProcGPU {
 	return m
 }
 
+// gpus returns discrete adapters of vendors no vendor tool already listed (have), with VRAM in use
+// and utilization from the counters (sampled at the last procGPU call, under a second ago).
+func (p *platformReader) gpus(have map[string]bool) []GPU {
+	if p.adapters == nil || time.Since(p.adaptersAt) > time.Minute {
+		p.adapters, p.adaptersAt = dxgiAdapters(), time.Now()
+	}
+	if len(p.adapters) == 0 {
+		return nil
+	}
+	used, util := map[string]float64{}, map[string]map[string]float64{}
+	if p.ok {
+		for inst, v := range p.array(p.adapterMem) {
+			if l := luidOf(inst); l != "" {
+				used[l] += v / (1 << 30)
+			}
+		}
+		for inst, v := range p.array(p.util) {
+			l, eng := luidOf(inst), ""
+			if k := strings.LastIndex(inst, "engtype_"); k >= 0 {
+				eng = inst[k+8:]
+			}
+			if l == "" {
+				continue
+			}
+			if util[l] == nil {
+				util[l] = map[string]float64{}
+			}
+			util[l][eng] += v
+		}
+	}
+	var out []GPU
+	idx := map[string]int{}
+	for _, a := range p.adapters {
+		i := idx[a.vendor]
+		idx[a.vendor]++
+		if have[a.vendor] {
+			continue
+		}
+		busy := 0.0
+		for _, v := range util[a.luid] { // the busiest engine type is the adapter's utilization
+			busy = max(busy, min(100, v))
+		}
+		out = append(out, GPU{Index: i, Name: a.name, Vendor: a.vendor, VRAMGB: a.vram, UsedGB: used[a.luid], Util: busy})
+	}
+	return out
+}
+
+// luidOf pulls "luid_0x..._0x..." out of a GPU counter instance name.
+func luidOf(inst string) string {
+	inst = strings.ToLower(inst)
+	i := strings.Index(inst, "luid_0x")
+	if i < 0 || len(inst) < i+26 {
+		return ""
+	}
+	return inst[i : i+26]
+}
+
 func pidOf(instance string) int {
 	f := strings.Split(instance, "_")
 	if len(f) < 2 || f[0] != "pid" {
@@ -235,6 +297,9 @@ func Background(pid int) error {
 
 // SetCPUs pins a process to the given logical CPUs (first 64; one processor group).
 func SetCPUs(pid int, cpus []int) error {
+	if logicalCPUs() > 64 {
+		return setCPUSets(pid, cpus) // an affinity mask reaches one processor group of 64
+	}
 	var mask uintptr
 	for _, c := range cpus {
 		if c < 64 {
@@ -376,3 +441,57 @@ func ExeName(n string) string {
 // PrepareBackground starts a helper (docker, the harvester) with no window; Windows has no terminal
 // foreground to lose.
 func PrepareBackground(cmd *exec.Cmd) { PrepareChild(cmd, nil) }
+
+var (
+	getSystemCpuSetInformation = kernel32.NewProc("GetSystemCpuSetInformation")
+	setProcessDefaultCpuSets   = kernel32.NewProc("SetProcessDefaultCpuSets")
+)
+
+// setCPUSets restricts a process to CPUs across all processor groups (Windows 10+ CPU Sets), for
+// machines with more than 64 logical CPUs. CPU i is group*64 + its index in the group.
+func setCPUSets(pid int, cpus []int) error {
+	if getSystemCpuSetInformation.Find() != nil || setProcessDefaultCpuSets.Find() != nil {
+		return nil
+	}
+	var size uint32
+	getSystemCpuSetInformation.Call(0, 0, uintptr(unsafe.Pointer(&size)), 0, 0)
+	if size == 0 {
+		return nil
+	}
+	buf := make([]byte, size)
+	if r, _, e := getSystemCpuSetInformation.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(size), uintptr(unsafe.Pointer(&size)), 0, 0); r == 0 {
+		return e
+	}
+	want := map[int]bool{}
+	for _, c := range cpus {
+		want[c] = true
+	}
+	var ids []uint32
+	for off := uint32(0); off+16 <= size; {
+		recSize := *(*uint32)(unsafe.Pointer(&buf[off]))
+		if recSize == 0 {
+			break
+		}
+		if *(*uint32)(unsafe.Pointer(&buf[off+4])) == 0 { // CpuSetInformation
+			id := *(*uint32)(unsafe.Pointer(&buf[off+8]))
+			group := *(*uint16)(unsafe.Pointer(&buf[off+12]))
+			logical := buf[off+14]
+			if want[int(group)*64+int(logical)] {
+				ids = append(ids, id)
+			}
+		}
+		off += recSize
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	h, err := open(pid, 0x2000) // PROCESS_SET_LIMITED_INFORMATION
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h)
+	if r, _, e := setProcessDefaultCpuSets.Call(uintptr(h), uintptr(unsafe.Pointer(&ids[0])), uintptr(len(ids))); r == 0 {
+		return e
+	}
+	return nil
+}

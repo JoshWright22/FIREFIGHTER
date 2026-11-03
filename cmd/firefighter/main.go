@@ -379,10 +379,7 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		"FIREFIGHTER_PAUSED_FILE="+daemon.PausedFile(t.ID),
 		"FIREFIGHTER_CHECKPOINT_FILE="+daemon.CheckpointFile(t.ID))
 	// Multi-GPU: the daemon admitted the job against one card's free VRAM; run it there.
-	if v.Device != nil && os.Getenv("CUDA_VISIBLE_DEVICES") == "" && os.Getenv("HIP_VISIBLE_DEVICES") == "" {
-		dev := strconv.Itoa(*v.Device)
-		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES="+dev, "HIP_VISIBLE_DEVICES="+dev)
-	}
+	cmd.Env = append(cmd.Env, pinGPU(v.Device, v.Vendor)...)
 	sysinfo.PrepareChild(cmd, argv)
 	defer sysinfo.RestoreForeground()
 	start := time.Now()
@@ -959,4 +956,28 @@ func hasFlag(args []string, f string) bool {
 		}
 	}
 	return false
+}
+
+// pinGPU returns the environment that keeps a job on the card the daemon admitted it on, in that
+// vendor's own numbering. Nothing when the user already chose devices, or the job wasn't placed.
+func pinGPU(dev *int, vendor string) []string {
+	if dev == nil {
+		return nil
+	}
+	for _, k := range []string{"CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "ONEAPI_DEVICE_SELECTOR"} {
+		if os.Getenv(k) != "" {
+			return nil
+		}
+	}
+	d := strconv.Itoa(*dev)
+	switch vendor {
+	case "nvidia":
+		// nvidia-smi numbers cards by PCI bus; CUDA's default is fastest-first. Same order: PCI.
+		return []string{"CUDA_DEVICE_ORDER=PCI_BUS_ID", "CUDA_VISIBLE_DEVICES=" + d}
+	case "amd":
+		return []string{"HIP_VISIBLE_DEVICES=" + d, "ROCR_VISIBLE_DEVICES=" + d}
+	case "intel":
+		return []string{"ONEAPI_DEVICE_SELECTOR=level_zero:" + d}
+	}
+	return nil
 }

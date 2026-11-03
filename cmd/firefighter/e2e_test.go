@@ -58,6 +58,12 @@ func helper(spec string) int {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		appendLine(file, fmt.Sprintf("end %d", time.Now().UnixNano()))
 		return 0
+	case "env": // env:NAME,NAME2:file writes NAME=value for each (empty if unset)
+		file := strings.Join(f[2:], ":")
+		for _, k := range strings.Split(f[1], ",") {
+			appendLine(file, k+"="+os.Getenv(k))
+		}
+		return 0
 	case "once75": // checkpoint-and-exit the first time, succeed the second
 		marker := strings.Join(f[1:], ":")
 		if !exists(marker) {
@@ -726,5 +732,39 @@ func TestStatuslineAndEvents(t *testing.T) {
 	line, err := bufio.NewReader(pipe).ReadString('\n')
 	if err != nil || !strings.Contains(line, `"type":"status"`) {
 		t.Fatalf("events: %v %q", err, line)
+	}
+}
+
+// Two cards: the first nearly full, the second free. A GPU job is admitted on the free one and
+// pinned there in its vendor's numbering, with CUDA ordered like nvidia-smi.
+func TestMultiGPUPlacesJobOnTheFreeCard(t *testing.T) {
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{
+		{"index": 0, "name": "Busy", "vendor": "nvidia", "vram_gb": 16, "used_gb": 15.5, "util": 0},
+		{"index": 1, "name": "Free", "vendor": "nvidia", "vram_gb": 16, "used_gb": 0, "util": 0},
+	}})
+	out := filepath.Join(e.home, "env.txt")
+	if o, code := e.job("env:CUDA_VISIBLE_DEVICES,CUDA_DEVICE_ORDER,HIP_VISIBLE_DEVICES:"+out, "--gpu", "--minutes", "1", "--vram", "4"); code != 0 {
+		t.Fatalf("job failed %d:\n%s", code, o)
+	}
+	got := readFile(out)
+	if !strings.Contains(got, "CUDA_VISIBLE_DEVICES=1") || !strings.Contains(got, "CUDA_DEVICE_ORDER=PCI_BUS_ID") || !strings.Contains(got, "HIP_VISIBLE_DEVICES=\n") {
+		t.Fatalf("job should be pinned to NVIDIA card 1:\n%s", got)
+	}
+}
+
+// NVIDIA card full, AMD card free: the job goes to the AMD card, pinned with ROCm's variables in
+// AMD's own numbering (device 0), and CUDA isn't touched.
+func TestMixedVendorsPinWithTheirOwnVariables(t *testing.T) {
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{
+		{"index": 0, "name": "GeForce", "vendor": "nvidia", "vram_gb": 12, "used_gb": 11.8, "util": 0},
+		{"index": 0, "name": "Radeon", "vendor": "amd", "vram_gb": 24, "used_gb": 0, "util": 0},
+	}})
+	out := filepath.Join(e.home, "env.txt")
+	if o, code := e.job("env:HIP_VISIBLE_DEVICES,ROCR_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES:"+out, "--gpu", "--minutes", "1", "--vram", "8"); code != 0 {
+		t.Fatalf("job failed %d:\n%s", code, o)
+	}
+	got := readFile(out)
+	if !strings.Contains(got, "HIP_VISIBLE_DEVICES=0") || !strings.Contains(got, "ROCR_VISIBLE_DEVICES=0") || !strings.Contains(got, "CUDA_VISIBLE_DEVICES=\n") {
+		t.Fatalf("job should be pinned to the AMD card with ROCm variables:\n%s", got)
 	}
 }

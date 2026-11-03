@@ -140,3 +140,7 @@ func SetCPUs(pid int, cpus []int) error {
 	}
 	return err
 }
+
+// gpus: GPUs beyond what vendor tools list. Linux: nvidia-smi, rocm-smi and sysfs cover it; macOS
+// GPUs share system memory (admitted as RAM).
+func (*platformReader) gpus(map[string]bool) []GPU { return nil }
