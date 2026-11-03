@@ -26,7 +26,7 @@ func Detached(runArgs []string, cwd string) (id, log string, err error) {
 	if err := os.MkdirAll(filepath.Dir(log), 0o700); err != nil {
 		return "", "", err
 	}
-	f, err := os.Create(log)
+	f, err := os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", "", err
 	}

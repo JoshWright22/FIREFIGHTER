@@ -114,7 +114,11 @@ func (d *Daemon) routes() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only local clients by name (defense in depth against DNS rebinding; the token already
 		// can't be sent by a page without a CORS preflight, which fails).
-		if h, _, err := net.SplitHostPort(r.Host); err != nil || (h != "127.0.0.1" && h != "localhost" && h != "::1") {
+		h, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			h = strings.Trim(r.Host, "[]") // no port given
+		}
+		if h != "127.0.0.1" && h != "localhost" && h != "::1" {
 			http.Error(w, "bad host", http.StatusForbidden)
 			return
 		}
@@ -733,6 +737,10 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Project, p.What, p.When = cleanText(p.Project, 100), cleanText(p.What, 300), cleanText(p.When, 40)
+	planOwner := 0
+	if caller := callerPID(r); caller > 1 {
+		planOwner = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	mine := 0
@@ -746,19 +754,29 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID, p.Added = NewID(), time.Now()
+	p.owner = planOwner
 	d.st.Plans = append(d.st.Plans, &p)
 	reply(w, p)
 }
 
 func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
+	caller := callerPID(r)
+	agent := 0
+	if caller > 1 {
+		agent = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id := r.PathValue("id")
 	var keep []*Plan
 	for _, p := range d.st.Plans {
-		if p.ID != id && p.Project != id {
-			keep = append(keep, p)
+		// The human removes any plan; an agent removes its own session's (or, after a restart
+		// forgot who added it, its project's).
+		mine := agent == 0 || p.owner == agent || (p.owner == 0 && p.Project == id)
+		if (p.ID == id || p.Project == id) && mine {
+			continue
 		}
+		keep = append(keep, p)
 	}
 	d.st.Plans = keep
 	reply(w, map[string]int{"plans": len(keep)})

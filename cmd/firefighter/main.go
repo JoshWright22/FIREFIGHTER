@@ -686,6 +686,7 @@ func quote(args []string) error {
 }
 
 func rebid(args []string) error {
+	force, args := hasFlag(args, "--force"), without(args, "--force")
 	if len(args) != 2 {
 		return errors.New("usage: firefighter bid <id> <1-10>")
 	}
@@ -697,7 +698,7 @@ func rebid(args []string) error {
 	if err != nil {
 		return err
 	}
-	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b), Project: callerProject(), Force: hasFlag(args, "--force")})
+	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b), Project: callerProject(), Force: force})
 	if err == nil {
 		ui.Say(ui.Ivory, "%s: bid %d, now #%d, on ~%s", v.Name, b, v.Position, v.ETA)
 	}
@@ -705,6 +706,7 @@ func rebid(args []string) error {
 }
 
 func extend(args []string) error {
+	force, args := hasFlag(args, "--force"), without(args, "--force")
 	if len(args) != 2 {
 		return errors.New("usage: firefighter extend <id> <minutes>")
 	}
@@ -716,7 +718,7 @@ func extend(args []string) error {
 	if err != nil {
 		return err
 	}
-	v, err := c.Act(args[0], "extend", daemon.Act{Minutes: m, Project: callerProject(), Force: hasFlag(args, "--force")})
+	v, err := c.Act(args[0], "extend", daemon.Act{Minutes: m, Project: callerProject(), Force: force})
 	if err == nil {
 		ui.Say(ui.Hot, "%s: encore, lease now ends ~%s", v.Name, v.ETA)
 	}
@@ -998,6 +1000,16 @@ func callerProject() string {
 	return projectOf(wd)
 }
 
+func without(args []string, f string) []string {
+	var out []string
+	for _, a := range args {
+		if a != f {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func hasFlag(args []string, f string) bool {
 	for _, a := range args {
 		if a == f {
@@ -1038,7 +1050,7 @@ func dockerGPU(argv []string, dev *int, vendor string) []string {
 		return argv
 	}
 	out := append([]string{}, argv...)
-	want := fmt.Sprintf(`"device=%d"`, *dev)
+	want := fmt.Sprintf("device=%d", *dev) // one device: no comma, so no CSV quoting needed
 	end := len(out)
 	if k := dockerImageAt(out[2:]); k >= 0 {
 		end = k + 2

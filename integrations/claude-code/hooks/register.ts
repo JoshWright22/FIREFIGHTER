@@ -2,7 +2,7 @@ import type { Register } from 'claude-code'
 
 // A command already going through the queue: `firefighter run ...`, optionally after `cd x &&` or
 // environment assignments.
-const QUEUED = /^\s*(cd\s+("[^"]*"|'[^']*'|\S+)\s*&&\s*)?([A-Za-z_][A-Za-z0-9_]*=\S*\s+)*firefighter(\.exe)?\s+run\b/
+const QUEUED = /^\s*(cd\s+("[^"]*"|'[^']*'|\S+)\s*&&\s*)?([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'[^']*'|\S*)\s+)*firefighter(\.exe)?\s+run\b/
 
 // Heavy work an agent should queue: training/eval/benchmark scripts, distributed launchers, and
 // GPU containers. Commands that already go through firefighter pass.

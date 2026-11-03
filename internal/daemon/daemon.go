@@ -4,6 +4,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -1271,7 +1272,10 @@ func shell(cmd string) {
 }
 
 func docker(engine string, args ...string) {
-	c := exec.Command(engine, args...)
+	// A hung engine (Docker Desktop restarting) must not block the queue behind it.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	c := exec.CommandContext(ctx, engine, args...)
 	sysinfo.PrepareBackground(c)
 	if out, err := c.CombinedOutput(); err != nil {
 		logf("%s %s: %v %s", engine, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

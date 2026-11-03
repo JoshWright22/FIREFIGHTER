@@ -187,7 +187,7 @@ func (p *platformReader) procGPU() map[int]ProcGPU {
 		if pid := pidOf(inst); pid > 0 {
 			g := m[pid]
 			g.Util = min(100, g.Util+v)
-			if strings.HasSuffix(inst, "engtype_3D") {
+			if strings.HasSuffix(strings.ToLower(inst), "engtype_3d") {
 				g.Util3D = min(100, g.Util3D+v)
 			}
 			m[pid] = g

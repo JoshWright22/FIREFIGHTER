@@ -50,6 +50,7 @@ type Plan struct {
 	VRAMGB  float64   `json:"vram_gb"`
 	RAMGB   float64   `json:"ram_gb"`
 	Added   time.Time `json:"added"`
+	owner   int       // agent session that announced it (not saved: unknown after a restart)
 }
 
 type saved struct {
