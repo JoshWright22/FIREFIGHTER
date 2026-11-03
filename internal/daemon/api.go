@@ -46,12 +46,15 @@ func (d *Daemon) Serve() error {
 	tok := make([]byte, 16)
 	_, _ = rand.Read(tok)
 	d.Token, d.Port = hex.EncodeToString(tok), ln.Addr().(*net.TCPAddr).Port
+	logf("daemon up on 127.0.0.1:%d (pid %d)", d.Port, os.Getpid())
+	d.mu.Lock()
+	d.step(d.reader.Read(), time.Now(), 0) // measure before the first ticket arrives
+	d.mu.Unlock()
+	go d.Run()
 	b, _ := json.Marshal(Endpoint{PID: os.Getpid(), Port: d.Port, Token: d.Token})
 	if err := os.WriteFile(EndpointPath(), b, 0o600); err != nil {
 		return err
 	}
-	logf("daemon up on 127.0.0.1:%d (pid %d)", d.Port, os.Getpid())
-	go d.Run()
 	return http.Serve(ln, d.routes())
 }
 
@@ -387,10 +390,22 @@ func (d *Daemon) blocker(j *job) string {
 		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", j.NeedVRAM, math.Max(0, vram))
 	case j.NeedRAM > ram:
 		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram))
+	case j.GPU && len(d.busyOutside()) > 0:
+		return "GPU busy outside firefighter: " + strings.Join(d.busyOutside(), ", ")
 	case j.GPU:
 		return "GPU turn queue"
 	}
 	return "starting"
+}
+
+func (d *Daemon) busyOutside() []string {
+	var out []string
+	for n, u := range d.foreign {
+		if u >= d.cfg.Reserve.ForeignGPUPct {
+			out = append(out, fmt.Sprintf("%s %.0f%%", n, u))
+		}
+	}
+	return out
 }
 
 // Status is the whole picture, for `firefighter status`, MCP and STATUS.md.

@@ -279,7 +279,7 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	keepalive := time.NewTicker(10 * time.Second)
+	keepalive := time.NewTicker(5 * time.Second)
 	defer keepalive.Stop()
 	var werr error
 loop:
@@ -352,16 +352,25 @@ func dockerize(argv []string, id string) ([]string, string) {
 func wait(args []string) (int, error) {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
 	timeout := fs.Float64("timeout", 0, "give up after this many seconds (0 = never)")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
+	var id string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		id, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2, err
+	}
+	if id == "" && fs.NArg() == 1 {
+		id = fs.Arg(0)
+	}
+	if id == "" {
 		return 2, errors.New("usage: firefighter wait <id> [--timeout s]")
 	}
-	id := fs.Arg(0)
 	c, err := client.Connect()
 	if err != nil {
 		return 1, err
 	}
 	deadline := time.Now().Add(time.Duration(*timeout * float64(time.Second)))
-	v, err := c.Get(id, "", 0)
+	v, err := c.GetSoon(id)
 	last := ""
 	for err == nil && v.State != "done" {
 		if line := fmt.Sprintf("%s: %s #%d ~%s %s", id, v.State, v.Position, v.ETA, v.Why); line != last {

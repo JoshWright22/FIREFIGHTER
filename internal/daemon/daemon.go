@@ -65,6 +65,7 @@ type Daemon struct {
 	names    map[string]bool
 	namesAt  time.Time
 	foreign  map[string]float64 // non-job GPU users -> %
+	graphics map[string]float64 // non-job 3D-engine users -> % (games, video)
 	others   []sysinfo.Container
 	notify   chan struct{}
 	rng      *rand.Rand
@@ -293,7 +294,7 @@ func (d *Daemon) measureJobs(now time.Time, dt time.Duration) {
 		jobCPU += j.cpuNow
 	}
 	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
-	d.foreign = map[string]float64{}
+	d.foreign, d.graphics = map[string]float64{}, map[string]float64{}
 	for pid, g := range d.snap.ProcGPU {
 		if jobPIDs[pid] || g.Util < 1 {
 			continue
@@ -303,6 +304,9 @@ func (d *Daemon) measureJobs(now time.Time, dt time.Duration) {
 			continue
 		}
 		d.foreign[n] = math.Max(d.foreign[n], g.Util)
+		if g.Util3D >= 1 {
+			d.graphics[n] = math.Max(d.graphics[n], g.Util3D)
+		}
 	}
 }
 
@@ -338,9 +342,9 @@ func (d *Daemon) senseUser(now time.Time) {
 			why = a
 		}
 	}
-	for n, u := range d.foreign {
+	for n, u := range d.graphics { // 3D engine only: CUDA compute outside firefighter is load, not play
 		if u >= c.Reserve.ForeignGPUPct {
-			why = fmt.Sprintf("%s using %.0f%% GPU", n, u)
+			why = fmt.Sprintf("%s using %.0f%% of the 3D engine", n, u)
 		}
 	}
 	if why != "" {
@@ -616,6 +620,12 @@ func (d *Daemon) admit(now time.Time) {
 	gpuRunning := 0
 	for _, j := range d.jobs {
 		if j.GPU && (j.State == "running" || j.State == "granted") {
+			gpuRunning++
+		}
+	}
+	// GPU compute outside firefighter (another agent's unmanaged job, a local model server) holds a slot.
+	for _, u := range d.foreign {
+		if u >= c.Reserve.ForeignGPUPct {
 			gpuRunning++
 		}
 	}

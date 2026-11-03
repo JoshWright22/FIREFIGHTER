@@ -1,0 +1,73 @@
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest, macos-13]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go vet ./...
+      - name: unit tests
+        run: go test -count=1 -race ./internal/...
+      - name: end-to-end tests (real daemon, scripted human and GPU)
+        run: go test -count=1 -v -timeout 20m ./cmd/firefighter
+      - name: cross-build every target
+        shell: bash
+        run: |
+          for t in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/firefighter || exit 1
+          done
+
+  install:
+    name: one-command install (${{ matrix.os }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: build
+        shell: bash
+        run: go build -o "$RUNNER_TEMP/firefighter$([ "$RUNNER_OS" = Windows ] && echo .exe)" ./cmd/firefighter
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p ~/.claude ~/.codex
+          FIREFIGHTER_LOCAL_BINARY="$RUNNER_TEMP/firefighter" sh scripts/install.sh
+          export PATH="$HOME/.local/bin:$PATH"
+          firefighter version
+          firefighter status
+          firefighter run --minutes 1 -- sh -c 'echo installed-and-running'
+          grep -q "firefighter run" ~/.claude/CLAUDE.md
+          grep -q "mcp_servers.firefighter" ~/.codex/config.toml
+          firefighter uninstall
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$HOME\.claude","$HOME\.codex" | Out-Null
+          $env:FIREFIGHTER_LOCAL_BINARY = "$env:RUNNER_TEMP\firefighter.exe"
+          ./scripts/install.ps1
+          $env:Path = "$env:LOCALAPPDATA\Programs\firefighter;$env:Path"
+          firefighter version
+          firefighter status
+          firefighter run --minutes 1 -- cmd /c echo installed-and-running
+          if (-not (Select-String -Quiet "firefighter run" "$HOME\.claude\CLAUDE.md")) { throw "rules missing" }
+          schtasks /Query /TN firefighter
+          firefighter uninstall

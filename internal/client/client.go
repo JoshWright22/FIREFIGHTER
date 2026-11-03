@@ -150,3 +150,19 @@ func Connect0() (*Client, error) {
 	}
 	return c, nil
 }
+
+// GetSoon is Get for a job that may not have registered yet (a detached run starting up): it
+// retries "not found" for a few seconds while the job's log file exists.
+func (c *Client) GetSoon(id string) (daemon.View, error) {
+	end := time.Now().Add(15 * time.Second)
+	for {
+		v, err := c.Get(id, "", 0)
+		if err != ErrNotFound || time.Now().After(end) {
+			return v, err
+		}
+		if _, serr := os.Stat(LogPath(id)); serr != nil {
+			return v, err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}

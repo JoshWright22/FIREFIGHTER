@@ -7,6 +7,8 @@ package sysinfo
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -30,6 +32,7 @@ type GPU struct {
 
 type ProcGPU struct {
 	Util   float64 // percent of the GPU this process's engines used
+	Util3D float64 // of that, the 3D (graphics) engine: games and video, not CUDA compute
 	VRAMGB float64 // dedicated VRAM held
 }
 
@@ -94,7 +97,43 @@ func (r *Reader) Read() Snapshot {
 	}
 	s.Idle = idleSeconds()
 	s.Foreground = foregroundFullscreen()
+	applyFake(&s)
 	return s
+}
+
+// applyFake overlays FIREFIGHTER_FAKE_FILE (JSON) on a sample, so tests on headless VMs can
+// script the human (idle time, a fullscreen game), memory pressure and a GPU.
+func applyFake(s *Snapshot) {
+	path := os.Getenv("FIREFIGHTER_FAKE_FILE")
+	if path == "" {
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var f struct {
+		Idle       *float64 `json:"idle"`
+		Foreground *string  `json:"foreground"`
+		RAMAvailGB *float64 `json:"ram_avail_gb"`
+		GPUs       []GPU    `json:"gpus"`
+	}
+	if json.Unmarshal(b, &f) != nil {
+		return
+	}
+	if f.Idle != nil {
+		s.Idle = *f.Idle
+	}
+	if f.Foreground != nil {
+		s.Foreground = *f.Foreground
+	}
+	if f.RAMAvailGB != nil {
+		s.RAMAvailGB = *f.RAMAvailGB
+	}
+	if f.GPUs != nil {
+		s.GPUs = f.GPUs
+		s.ProcGPU = map[int]ProcGPU{} // a scripted GPU has no real processes on it
+	}
 }
 
 func gb(b uint64) float64 { return float64(b) / (1 << 30) }

@@ -215,7 +215,7 @@ func call(name string, a map[string]any) (string, error) {
 			t = 50
 		}
 		id := s(a, "id")
-		v, err := c.Get(id, "", 0)
+		v, err := c.GetSoon(id)
 		for i := 0; err == nil && v.State != "done" && i < t/25+1; i++ {
 			v, err = c.Get(id, v.State, min(25, t))
 		}

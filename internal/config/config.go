@@ -290,8 +290,8 @@ func (c Config) Show() string {
 }
 
 func parse(v string) any {
-	if b, err := strconv.ParseBool(v); err == nil {
-		return b
+	if v == "true" || v == "false" {
+		return v == "true"
 	}
 	if i, err := strconv.ParseInt(v, 10, 64); err == nil {
 		return i

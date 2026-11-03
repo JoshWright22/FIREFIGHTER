@@ -49,7 +49,9 @@ type Step struct {
 func Install(exe string) []Step {
 	var steps []Step
 	add := func(what string, err error) { steps = append(steps, Step{what, err}) }
-	add("start the guard at logon", autostart(exe))
+	if os.Getenv("FIREFIGHTER_NO_AUTOSTART") == "" {
+		add("start the guard at logon", autostart(exe))
+	}
 	for _, f := range instructionFiles() {
 		add("agent rules -> "+f, upsertBlock(f, Instructions))
 	}
@@ -136,7 +138,7 @@ func upsertBlock(path, block string) error {
 
 func registerMCP(exe string) []Step {
 	var steps []Step
-	if claude, err := exec.LookPath("claude"); err == nil {
+	if claude, err := exec.LookPath("claude"); err == nil && os.Getenv("FIREFIGHTER_NO_CLI_REGISTER") == "" {
 		_ = exec.Command(claude, "mcp", "remove", "--scope", "user", "firefighter").Run()
 		out, err := exec.Command(claude, "mcp", "add", "--scope", "user", "firefighter", "--", exe, "mcp").CombinedOutput()
 		if err != nil {
@@ -160,7 +162,7 @@ func registerMCP(exe string) []Step {
 
 func unregisterMCP() []Step {
 	var steps []Step
-	if claude, err := exec.LookPath("claude"); err == nil {
+	if claude, err := exec.LookPath("claude"); err == nil && os.Getenv("FIREFIGHTER_NO_CLI_REGISTER") == "" {
 		steps = append(steps, Step{"MCP <- Claude Code", exec.Command(claude, "mcp", "remove", "--scope", "user", "firefighter").Run()})
 	}
 	steps = append(steps, Step{"MCP <- ~/.claude.json", jsonServers(claudeJSON(), "mcpServers", "", false)})
