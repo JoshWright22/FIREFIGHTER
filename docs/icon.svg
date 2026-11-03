@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="firefighter icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d0f2e"/>
+      <stop offset="1" stop-color="#0b0612"/>
+    </linearGradient>
+    <linearGradient id="fire" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff2d95"/>
+      <stop offset="0.55" stop-color="#ff6a00"/>
+      <stop offset="1" stop-color="#ffc94a"/>
+    </linearGradient>
+    <radialGradient id="spot" cx="0.5" cy="0" r="0.9">
+      <stop offset="0" stop-color="#9d4eff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#9d4eff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <g filter="url(#glow)">
+    <path d="M128 222c-44 0-72-31-72-70 0-39 26-57 39-91 5 23 18 34 29 39-3-34 13-60 39-78-5 29 8 49 23 67 16 18 24 36 24 60 0 41-34 73-82 73z" fill="url(#fire)"/>
+    <path d="M130 222c-21 0-34-14-34-32 0-21 16-29 23-47 5 15 13 21 21 26 5 8 10 16 10 26 0 16-8 27-20 27z" fill="#0b0612" opacity="0.88"/>
+    <circle cx="129" cy="198" r="9" fill="#9d4eff"/>
+  </g>
+</svg>
