@@ -58,6 +58,23 @@ func (s *Scanner) Scan(minCPU, minRAM float64) []Proc {
 }
 
 // AgentAncestor returns the name of the nearest ancestor whose name contains one of names.
+// AgentAncestorPID is the pid of the nearest agent CLI above pid (pid itself counts), 0 if none:
+// it identifies which agent session a request comes from.
+func AgentAncestorPID(pid int, names []string) int {
+	p, err := process.NewProcess(int32(pid))
+	for depth := 0; err == nil && p != nil && depth < 30; depth++ {
+		n, _ := p.Name()
+		n = strings.TrimSuffix(strings.ToLower(n), ".exe")
+		for _, a := range names {
+			if a = strings.ToLower(a); n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
+				return int(p.Pid)
+			}
+		}
+		p, err = p.Parent()
+	}
+	return 0
+}
+
 func AgentAncestor(pid int, names []string) string {
 	p, err := process.NewProcess(int32(pid))
 	for depth := 0; err == nil && depth < 20; depth++ {

@@ -41,6 +41,9 @@ type Ticket struct {
 	ClientPID int       `json:"client_pid"`
 	Device    *int      `json:"gpu_device,omitempty"` // re-registration: the card it was placed on
 	Vendor    string    `json:"gpu_vendor,omitempty"`
+	// WantVendor: which GPUs the job can use: nvidia | amd | intel | any. Empty: NVIDIA cards when
+	// the machine has any (most GPU code is CUDA), else any.
+	WantVendor string `json:"want_vendor,omitempty"`
 
 	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: max(declared, learned peak x margin)
 	NeedRAM     float64 `json:"need_ram_gb"`

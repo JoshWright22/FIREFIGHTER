@@ -75,9 +75,9 @@ you.
 | `GET /v1/ping` | `{ok, pid, version}` |
 | `GET /v1/status` | Everything `status --json` shows |
 | `GET /v1/quote?gpu=true&minutes=30&vram=8&ram=4&project=p&urgent=false` | The market for a job (tiers, busy odds, `do`), with no side effects |
-| `POST /v1/tickets` | Queue a job: `{project, name, gpu, minutes, vram_gb, ram_gb, bid, evict, spot, client_pid}` |
+| `POST /v1/tickets` | Queue a job: `{project, name, gpu, minutes, vram_gb, ram_gb, bid, evict, spot, want_vendor}`. The caller is identified by its connection, not a field. |
 | `GET /v1/tickets/{id}?state=waiting&wait=20` | Get a job; long-polls up to `wait` seconds for its state to change |
-| `POST /v1/tickets/{id}/{start\|done\|extend\|bid\|cancel\|container}` | Change a job: `{pid}`, `{exit}`, `{minutes}` (extend, bid) |
+| `POST /v1/tickets/{id}/{start\|done\|extend\|bid\|cancel\|container}` | Change a job: `{pid}`, `{exit}`, `{minutes}` (extend, bid), `{container, engine}`. `done`/`extend`/`bid`/`cancel` from an agent work on its own session's jobs or its `project`; other jobs need `force`. The human (no agent above the caller) can manage any job. |
 | `POST /v1/plans` · `DELETE /v1/plans/{id or project}` | Announce or remove planned work |
 | `POST /v1/shutdown` | Save and exit |
 

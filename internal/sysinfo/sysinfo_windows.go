@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -466,21 +467,35 @@ func setCPUSets(pid int, cpus []int) error {
 	for _, c := range cpus {
 		want[c] = true
 	}
-	var ids []uint32
+	// CPU i is the i-th logical processor counting group by group (groups needn't hold 64: a
+	// 2 x 48-thread machine has groups of 48).
+	type rec struct {
+		id      uint32
+		group   uint16
+		logical uint8
+	}
+	var all []rec
 	for off := uint32(0); off+16 <= size; {
 		recSize := *(*uint32)(unsafe.Pointer(&buf[off]))
 		if recSize == 0 {
 			break
 		}
 		if *(*uint32)(unsafe.Pointer(&buf[off+4])) == 0 { // CpuSetInformation
-			id := *(*uint32)(unsafe.Pointer(&buf[off+8]))
-			group := *(*uint16)(unsafe.Pointer(&buf[off+12]))
-			logical := buf[off+14]
-			if want[int(group)*64+int(logical)] {
-				ids = append(ids, id)
-			}
+			all = append(all, rec{*(*uint32)(unsafe.Pointer(&buf[off+8])), *(*uint16)(unsafe.Pointer(&buf[off+12])), buf[off+14]})
 		}
 		off += recSize
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].group != all[j].group {
+			return all[i].group < all[j].group
+		}
+		return all[i].logical < all[j].logical
+	})
+	var ids []uint32
+	for i, r := range all {
+		if want[i] {
+			ids = append(ids, r.id)
+		}
 	}
 	if len(ids) == 0 {
 		return nil

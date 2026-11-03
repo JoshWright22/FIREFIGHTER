@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,7 @@ type job struct {
 	backfilled  bool      // started ahead of a GPU head waiting on VRAM: can't extend its lease
 	device      int       // GPU index the job was placed on (-1: any/unknown)
 	engine      string    // container engine of j.container: docker | podman
+	ownerAgent  int       // pid of the agent session that submitted it (0: a human)
 	ackBusy     time.Time // acked the pause but still computing on the GPU since then
 }
 
@@ -544,7 +546,14 @@ func (d *Daemon) account(project string, now time.Time) *policy.Account {
 	if a == nil {
 		na := d.newAccount(project, now)
 		if len(d.st.Accounts) > 0 {
-			d.st.Newcomers -= na.Bucket // drawn from the pool all new projects share
+			if d.cfg.Budget.Policy == "daily" {
+				// Daily budgets: a new project's first day is what's left in the shared pool.
+				grant := math.Min(d.cfg.Allowance(project), d.newcomers(now))
+				na.Day, na.UsedDay = now.Format("2006-01-02"), d.cfg.Allowance(project)-grant
+				d.st.Newcomers -= grant
+			} else {
+				d.st.Newcomers -= na.Bucket // drawn from the pool all new projects share
+			}
 		}
 		a = &na
 		d.st.Accounts[project] = a
@@ -628,7 +637,11 @@ func (d *Daemon) enforceCPU() {
 		}
 		if j.container != "" && j.applied[-1] != key {
 			j.applied[-1] = key
-			d.docker(j.engine, "update", "--cpuset-cpus", fmt.Sprintf("%d-%d", n-allow, n-1), j.container)
+			if runtime.GOOS == "linux" {
+				d.docker(j.engine, "update", "--cpuset-cpus", fmt.Sprintf("%d-%d", n-allow, n-1), j.container)
+			} else { // Docker Desktop runs containers in a VM whose CPU numbers aren't the host's: cap the count
+				d.docker(j.engine, "update", "--cpus", strconv.Itoa(allow), j.container)
+			}
 		}
 	}
 }
@@ -1077,9 +1090,42 @@ func (d *Daemon) freestCard() (int, float64) {
 	return best, bestFree
 }
 
+// cardFor picks the GPU a job should use: among the vendor it wants (see policy.Ticket.WantVendor),
+// the one with the most VRAM left after jobs' unclaimed needs. Returns -1 with no GPU.
+func (d *Daemon) cardFor(want string) (int, float64) {
+	want = strings.ToLower(want)
+	has := map[string]bool{}
+	for _, g := range d.snap.GPUs {
+		has[g.Vendor] = true
+	}
+	if want == "" && has["nvidia"] {
+		want = "nvidia"
+	}
+	if want == "any" || !has[want] {
+		want = ""
+	}
+	best, bestLeft := -1, 0.0
+	for i, g := range d.snap.GPUs {
+		if want != "" && g.Vendor != want {
+			continue
+		}
+		left := g.VRAMGB - g.UsedGB
+		for _, j := range d.jobs {
+			if j.GPU && (j.State == "granted" || j.State == "running") && d.onCard(j, i) {
+				left -= math.Max(0, j.NeedVRAM-j.vramGB)
+			}
+		}
+		if best < 0 || left > bestLeft {
+			best, bestLeft = i, left
+		}
+	}
+	return best, bestLeft
+}
+
 func (d *Daemon) admit(now time.Time) {
 	c := d.cfg
 	ram, vram := d.headroom(now)
+	taken := map[int]float64{} // VRAM granted per card this tick
 	_, vt := d.snap.MaxFreeVRAM()
 	gpuRunning := 0
 	for _, j := range d.jobs {
@@ -1117,14 +1163,19 @@ func (d *Daemon) admit(now time.Time) {
 			if gpuBlocked || gpuRunning >= c.GPU.MaxJobs {
 				continue
 			}
-			// A need can't exceed what the card ever offers: its size, less the human's reserve, less
-			// the least VRAM others have held lately. A learned peak near the card's size is clamped
-			// to that, so it waits for the emptiest the card gets instead of forever.
+			card, left := d.cardFor(t.WantVendor)
+			left -= d.res.VRAMGB + taken[card]
+			// A learned need can't exceed what the card ever offers: its size, less the human's
+			// reserve, less the desktop's own baseline (at most 1.5 GB). A learned peak near the
+			// card's size is clamped to that, so it waits for the card at its emptiest instead of
+			// forever. A declared --vram is never shrunk, and an idle program holding VRAM still
+			// makes the job wait.
 			need := t.NeedVRAM
-			if card, _ := d.freestCard(); card >= 0 && card < len(d.cardFloor) {
-				need = math.Min(need, math.Max(0.5, d.snap.GPUs[card].VRAMGB-d.res.VRAMGB-d.cardFloor[card]))
+			if card >= 0 && card < len(d.cardFloor) && need > t.VRAMGB {
+				most := d.snap.GPUs[card].VRAMGB - d.res.VRAMGB - math.Min(d.cardFloor[card], 1.5)
+				need = math.Max(t.VRAMGB, math.Min(need, math.Max(0.5, most)))
 			}
-			if vt > 0 && need > vram {
+			if vt > 0 && card >= 0 && need > left {
 				headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
 				continue
 			}
@@ -1153,11 +1204,13 @@ func (d *Daemon) admit(now time.Time) {
 			d.unknownAt[t.GPU] = now
 		}
 		if t.GPU {
+			card, _ := d.cardFor(t.WantVendor)
+			taken[card] += t.NeedVRAM
 			vram -= t.NeedVRAM
 			gpuRunning++
 			j.backfilled = headWaitsOnVRAM
 			if len(d.snap.GPUs) > 1 {
-				j.device, _ = d.freestCard() // and the client pins it there (CUDA/HIP_VISIBLE_DEVICES)
+				j.device = card // and the client pins it there, in that vendor's numbering
 			}
 		}
 		j.State, j.granted = "granted", now

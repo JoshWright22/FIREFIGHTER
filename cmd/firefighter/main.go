@@ -126,7 +126,7 @@ type runFlags struct {
 	gpu, spot, detach, quiet, urgent bool
 	minutes, vram, ram               float64
 	bid                              int
-	name, project, evict             string
+	name, project, evict, vendor     string
 	id, log                          string
 }
 
@@ -142,6 +142,7 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	fs.Float64Var(&r.ram, "ram", 0, "peak RAM GB")
 	fs.IntVar(&r.bid, "bid", 5, "1-10; prefer --urgent (10) or the default (5)")
 	fs.BoolVar(&r.urgent, "urgent", false, "the human is waiting on the result: starts sooner, costs 2x")
+	fs.StringVar(&r.vendor, "gpu-vendor", "", "GPUs the job can use: nvidia, amd, intel or any (default: NVIDIA if present)")
 	fs.StringVar(&r.name, "name", "", "job name")
 	fs.StringVar(&r.project, "project", "", "project (default: the git repo or folder name)")
 	fs.StringVar(&r.evict, "evict", "graceful", "never | graceful | force")
@@ -221,6 +222,15 @@ func hashCmd(argv []string) string {
 // dockerImage finds the image in `docker run` arguments: the first argument that isn't a flag
 // or a flag's value.
 func dockerImage(args []string) string {
+	if i := dockerImageAt(args); i >= 0 {
+		return args[i]
+	}
+	return ""
+}
+
+// dockerImageAt is the index of the image in `docker run` arguments (after "run"), -1 if none:
+// everything after it belongs to the container's own command and is never rewritten.
+func dockerImageAt(args []string) int {
 	withValue := map[string]bool{"--name": true, "-e": true, "--env": true, "-v": true, "--volume": true, "-p": true, "--publish": true,
 		"-w": true, "--workdir": true, "--gpus": true, "--label": true, "-l": true, "--network": true, "--entrypoint": true, "-u": true, "--user": true,
 		"--shm-size": true, "--memory": true, "-m": true, "--cpus": true, "--mount": true, "--env-file": true, "--platform": true}
@@ -232,9 +242,9 @@ func dockerImage(args []string) string {
 			}
 			continue
 		}
-		return a
+		return i
 	}
-	return ""
+	return -1
 }
 
 // detachArgs rebuilds the child's command line from the parsed flags (never by filtering raw
@@ -246,6 +256,9 @@ func detachArgs(r *runFlags, argv []string) []string {
 	}
 	if r.spot {
 		out = append(out, "--spot")
+	}
+	if r.vendor != "" {
+		out = append(out, "--gpu-vendor", r.vendor)
 	}
 	if r.vram > 0 {
 		out = append(out, "--vram", fmt.Sprint(r.vram))
@@ -297,7 +310,7 @@ func run(args []string) (int, error) {
 	}
 	argv, container := dockerize(argv, r.id)
 	t := policy.Ticket{ID: r.id, Project: r.project, Name: r.name, Cwd: cwd, Command: strings.Join(argv, " "), CmdHash: hashCmd(argv),
-		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, ClientPID: os.Getpid()}
+		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, ClientPID: os.Getpid(), WantVendor: r.vendor}
 	for attempt := 1; ; attempt++ {
 		code, requeue, err := turn(c, t, argv, container, r.quiet)
 		if err != nil || !requeue {
@@ -481,7 +494,11 @@ func dockerize(argv []string, id string) ([]string, string) {
 		return argv, ""
 	}
 	name := ""
-	for i, a := range argv {
+	end := len(argv)
+	if k := dockerImageAt(argv[2:]); k >= 0 {
+		end = k + 2
+	}
+	for i, a := range argv[:end] {
 		if a == "--name" && i+1 < len(argv) {
 			name = argv[i+1]
 		} else if strings.HasPrefix(a, "--name=") {
@@ -1019,10 +1036,11 @@ func dockerGPU(argv []string, dev *int, vendor string) []string {
 	}
 	out := append([]string{}, argv...)
 	want := fmt.Sprintf(`"device=%d"`, *dev)
-	for i, a := range out {
-		if a == "--" {
-			break
-		}
+	end := len(out)
+	if k := dockerImageAt(out[2:]); k >= 0 {
+		end = k + 2
+	}
+	for i, a := range out[:end] {
 		switch {
 		case a == "--gpus" && i+1 < len(out) && !strings.Contains(out[i+1], "device="):
 			out[i+1] = want

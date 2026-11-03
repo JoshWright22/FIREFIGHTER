@@ -48,14 +48,15 @@ crawl, your game stutters, audio crackles, and nobody knows who's using what or 
   total), new project names that try to get a fresh budget (all new projects share one small
   daily pool), chronic under-estimates (×1.25), VRAM hoarding (×3), lease overruns (×2, preempted
   first), leases over 24 h, extensions after a short backfill, and one agent cancelling or
-  re-bidding another project's job. Text an agent sends (plans, names) is stripped of control
+  re-bidding another agent session's job (you, from a terminal or editor, can manage any job). Text an agent sends (plans, names) is stripped of control
   characters before other agents or your terminal see it.
 - ⏸️ **Polite preemption.** The ladder goes: shrink the job's CPU set → cooperative pause at a step
   boundary → suspend (for jobs that ignore the pause) → checkpoint-and-exit with automatic requeue
   when you need the memory back → kill, but only when RAM is critical.
 - 🧮 **Any machine.** Any number of GPUs from any vendor (NVIDIA, AMD, Intel; mixed is fine), any
   CPU count (Windows processor groups past 64 included), any RAM size. Each GPU job is placed on the
-  card it was admitted on, in that vendor's own numbering. Every PC runs its own firefighter; nothing
+  card it was admitted on, in that vendor's own numbering. On mixed machines a job goes to the
+  NVIDIA cards unless it says otherwise (`--gpu-vendor amd|intel|any`). Every PC runs its own firefighter; nothing
   goes over the network.
 - 🔌 **Set and forget.** `setup` starts the guard at logon and, for every agent it finds installed,
   registers the MCP server and adds a short rule block to its global instructions, so every new

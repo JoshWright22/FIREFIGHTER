@@ -147,6 +147,13 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
+	// Who is really asking: the process on the other end of this connection, not what it claims,
+	// and the agent session it belongs to. Looked up before taking the lock (it lists sockets).
+	caller := callerPID(r)
+	owner := 0
+	if caller > 1 {
+		owner = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := time.Now()
@@ -190,9 +197,8 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if t.Name == "" {
 		t.Name = t.Project
 	}
-	// Who is really asking: the process on the other end of this connection, not what it claims.
-	if pid := callerPID(r); pid > 1 {
-		t.ClientPID = pid
+	if caller > 1 {
+		t.ClientPID = caller
 	}
 	open, total := 0, 0
 	for _, o := range d.jobs {
@@ -224,6 +230,13 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		t.State, t.Started = "running", now
 	}
 	j := newJob(&t)
+	j.ownerAgent = owner
+	if req.Running && req.Adopt {
+		// Work started outside the queue and brought in: priced and placed like any adopted
+		// process (1.5x, spot, preempted first), so start-then-adopt never beats queueing.
+		j.adopted = true
+		t.Band = policy.BandSpot
+	}
 	if req.Running && t.Device != nil {
 		// Re-registration: put the job back on the card it was placed on.
 		for i, g := range d.snap.GPUs {
@@ -240,7 +253,6 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		_ = sysinfo.Background(t.PID)
 		d.lockPrice(j, now)
 	}
-	j.adopted = req.Running && req.Adopt
 	d.jobs[t.ID] = j
 	logf("%s [%s] %s: %s, band %d, bid %d, %.0f min declared (%.0f predicted), need %.1f GB RAM %.1f GB VRAM",
 		t.Name, t.Project, t.ID, map[bool]string{true: "GPU", false: "CPU"}[t.GPU], t.Band, t.Bid, t.Minutes, t.PredMinutes, t.NeedRAM, t.NeedVRAM)
@@ -360,6 +372,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	caller := callerPID(r)
+	callerAgent := 0
+	if caller > 1 {
+		callerAgent = sysinfo.AgentAncestorPID(caller, d.cfg.Guard.AgentParents)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id, verb := r.PathValue("id"), r.PathValue("verb")
@@ -369,11 +386,14 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	// cancel/bid/extend must name the job's project (or --force); done is checked when a project is
-	// sent (clients from before this check don't send one when finishing their own job).
-	if ((verb == "cancel" || verb == "bid" || verb == "extend") || (verb == "done" && a.Project != "")) && a.Project != j.Project && !a.Force {
-		fail(w, http.StatusForbidden, fmt.Sprintf("job %s belongs to project %s, not %s; add --force if you mean it", id, j.Project, a.Project))
-		return
+	// Who may change a job: the human (no agent above the caller: a terminal, the VS Code button),
+	// the agent session that submitted it, or an agent in the same project. Other agents need
+	// --force. A guard against agents touching each other's work by accident, not a sandbox.
+	if verb == "cancel" || verb == "bid" || verb == "extend" || verb == "done" {
+		if callerAgent != 0 && callerAgent != j.ownerAgent && cleanText(a.Project, 100) != j.Project && !a.Force {
+			fail(w, http.StatusForbidden, fmt.Sprintf("job %s belongs to another agent session (project %s); add --force if you mean it", id, j.Project))
+			return
+		}
 	}
 	switch verb {
 	case "start":
@@ -385,11 +405,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, fmt.Sprintf("pid %d isn't a running process", a.PID))
 			return
 		}
-		caller := callerPID(r)
-		if caller <= 1 {
-			caller = j.ClientPID
+		starter := caller
+		if starter <= 1 {
+			starter = j.ClientPID
 		}
-		if caller <= 1 || !sysinfo.DescendantOf(a.PID, caller) {
+		if starter <= 1 || !sysinfo.DescendantOf(a.PID, starter) {
 			// The job is a process its client started. Anything else (a game, a browser, another
 			// agent) must not be made idle-priority and killed with this job.
 			fail(w, http.StatusForbidden, fmt.Sprintf("pid %d wasn't started by this job's client", a.PID))

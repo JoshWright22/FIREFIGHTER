@@ -752,15 +752,16 @@ func TestMultiGPUPlacesJobOnTheFreeCard(t *testing.T) {
 	}
 }
 
-// NVIDIA card full, AMD card free: the job goes to the AMD card, pinned with ROCm's variables in
-// AMD's own numbering (device 0), and CUDA isn't touched.
+// NVIDIA card full, AMD card free: a ROCm job (--gpu-vendor amd) goes to the AMD card, pinned with
+// ROCm's variables in AMD's own numbering (device 0), and CUDA isn't touched. Without the flag a
+// GPU job waits for the NVIDIA card (most GPU code is CUDA).
 func TestMixedVendorsPinWithTheirOwnVariables(t *testing.T) {
 	e := newEnv(t, map[string]any{"gpus": []map[string]any{
 		{"index": 0, "name": "GeForce", "vendor": "nvidia", "vram_gb": 12, "used_gb": 11.8, "util": 0},
 		{"index": 0, "name": "Radeon", "vendor": "amd", "vram_gb": 24, "used_gb": 0, "util": 0},
 	}})
 	out := filepath.Join(e.home, "env.txt")
-	if o, code := e.job("env:HIP_VISIBLE_DEVICES,ROCR_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES:"+out, "--gpu", "--minutes", "1", "--vram", "8"); code != 0 {
+	if o, code := e.job("env:HIP_VISIBLE_DEVICES,ROCR_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES:"+out, "--gpu", "--gpu-vendor", "amd", "--minutes", "1", "--vram", "8"); code != 0 {
 		t.Fatalf("job failed %d:\n%s", code, o)
 	}
 	got := readFile(out)
