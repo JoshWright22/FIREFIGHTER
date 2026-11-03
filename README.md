@@ -320,6 +320,8 @@ tests both one-command installers.
   locked npm toolchain for the extension, and least-privilege tokens, and carry signed build
   provenance. The installers check it automatically when the GitHub CLI is installed and signed in;
   by hand: `gh attestation verify firefighter_windows_amd64.zip --repo JoshWright22/FIREFIGHTER`.
+- Any agent can stop the guard (it's your process; it could kill it anyway). It comes back on the
+  next firefighter call, and the new guard thaws anything the old one had suspended.
 - Not a sandbox: an agent with your shell can do anything you can. firefighter makes the polite
   path the cheap one and catches the careless one; it doesn't contain a hostile one.
 - Windows: shared build servers a job starts (MSBuild nodes, VBCSCompiler) end with the job, because

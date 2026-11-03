@@ -278,6 +278,9 @@ func open(pid int, access uint32) (windows.Handle, error) {
 // Background gives a process idle CPU priority, idle GPU scheduling priority, very low memory
 // priority (Windows trims its pages before the user's) and very low I/O priority.
 func Background(pid int) error {
+	if err := guard(pid); err != nil {
+		return err
+	}
 	h, err := open(pid, windows.PROCESS_SET_INFORMATION|windows.PROCESS_QUERY_INFORMATION)
 	if err != nil {
 		return err
@@ -298,6 +301,9 @@ func Background(pid int) error {
 
 // SetCPUs pins a process to the given logical CPUs (first 64; one processor group).
 func SetCPUs(pid int, cpus []int) error {
+	if err := guard(pid); err != nil {
+		return err
+	}
 	if logicalCPUs() > 64 {
 		return setCPUSets(pid, cpus) // an affinity mask reaches one processor group of 64
 	}

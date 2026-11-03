@@ -96,7 +96,7 @@ func HumanSession(pid int, humans, agents, agentHosts []string) bool {
 	for depth := 0; err == nil && p != nil && depth < 40; depth++ {
 		n, _ := p.Name()
 		n = strings.TrimSuffix(strings.ToLower(n), ".exe")
-		if depth > 0 && (match(n, agents) || match(n, agentHosts)) {
+		if match(n, agents) || match(n, agentHosts) { // the caller itself too (node calling directly)
 			return false
 		}
 		if depth > 0 && match(n, humans) { // a host above the caller, never the caller's own name

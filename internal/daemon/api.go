@@ -471,7 +471,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 		logf("%s: started pid %d after %.1f min", j.Name, a.PID, now.Sub(j.Created).Minutes())
 	case "container":
-		if a.Container != "" && a.Container != j.container {
+		if a.Container == "" || (j.ClientPID > 1 && caller > 1 && caller != j.ClientPID) {
+			fail(w, http.StatusForbidden, "only the job's own client can name its container")
+			return
+		}
+		if a.Container != j.container {
 			// Verified before the lock below would matter: only a container labeled for this job.
 			d.mu.Unlock()
 			ok := containerFor(a.Engine, a.Container, j.ID)
@@ -782,7 +786,7 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID, p.Added = NewID(), time.Now()
-	p.owner, p.ownerAt = planOwner, planOwnerAt
+	p.Owner, p.OwnerAt = planOwner, planOwnerAt
 	d.st.Plans = append(d.st.Plans, &p)
 	reply(w, p)
 }
@@ -800,12 +804,12 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 		// forgot who added it, its project's).
 		// Like jobs: the human, the session that announced it, or its project (by project name).
 		// A plan id after a restart forgot who added it: whoever names the id.
-		if p.owner == -1 && !human {
+		if p.Owner == -1 && !human {
 			keep = append(keep, p) // the human's plan
 			continue
 		}
-		mine := human || (p.owner > 0 && p.owner == agent && p.ownerAt == agentAt) || p.Project == id ||
-			(p.ID == id && p.owner == 0)
+		mine := human || (p.Owner > 0 && p.Owner == agent && p.OwnerAt == agentAt) || p.Project == id ||
+			(p.ID == id && p.Owner == 0)
 		if (p.ID == id || p.Project == id) && mine {
 			continue
 		}

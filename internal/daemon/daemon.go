@@ -1103,8 +1103,11 @@ func (d *Daemon) cardFor(want string) (int, float64) {
 	if want == "" && has["nvidia"] {
 		want = "nvidia"
 	}
-	if want == "any" || !has[want] {
+	if want == "any" {
 		want = ""
+	}
+	if want != "" && !has[want] {
+		return -1, 0 // the vendor it needs isn't reporting right now: wait for it
 	}
 	best, bestLeft := -1, 0.0
 	for i, g := range d.snap.GPUs {
@@ -1187,6 +1190,9 @@ func (d *Daemon) admit(now time.Time) {
 				continue
 			}
 			card, left := d.cardFor(t.WantVendor) // already less the jobs granted this tick
+			if card < 0 && len(d.snap.GPUs) > 0 {
+				continue // no card of the vendor it needs right now
+			}
 			left -= d.res.VRAMGB
 			need := d.needOn(t, card)
 			if vt > 0 && card >= 0 && need > left {

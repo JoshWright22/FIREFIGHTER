@@ -19,6 +19,7 @@ type rogue struct {
 	gpu     bool
 	vramGB  float64
 	created int64
+	owner   int // the agent session above it
 }
 
 // findRogues runs outside the daemon lock (it scans every process). It returns processes that
@@ -77,7 +78,7 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 		}
 		u := snap.ProcGPU[pid]
 		out = append(out, rogue{proc: p, agent: agent, project: project, gpu: u.Util-u.Util3D >= c.Reserve.ForeignGPUPct,
-			vramGB: u.VRAMGB, created: sysinfo.Created(pid)})
+			vramGB: u.VRAMGB, created: sysinfo.Created(pid), owner: sysinfo.AgentAncestorPID(pid, g.AgentParents)})
 	}
 	return out
 }
@@ -104,6 +105,7 @@ func (d *Daemon) adoptRogues(rs []rogue, now time.Time) {
 			Created: now, Started: now, PID: r.proc.PID, ClientPID: r.proc.PID, PredMinutes: 30, NeedRAM: r.proc.RAMGB, NeedVRAM: r.vramGB}
 		j := newJob(t)
 		j.adopted = true
+		j.ownerAgent, j.ownerCreated = r.owner, sysinfo.Created(r.owner)
 		_ = sysinfo.Background(r.proc.PID)
 		d.lockPrice(j, now)
 		d.jobs[t.ID] = j
