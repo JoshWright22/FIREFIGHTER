@@ -10,11 +10,12 @@ Use firefighter when several AI agents on one machine compete for a GPU, VRAM, C
 - Go: `go install github.com/JoshWright22/firefighter/cmd/firefighter@latest && firefighter setup`
 
 ## For agents
-- Run heavy work: `firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--bid 1-10] --name "<project> <what>" -- <command>`
-- Market and odds: `firefighter quote --gpu --minutes N` (price now, start time and cost per bid, busy probability over 2 h, advice)
-- Background: `firefighter run --detach ...` then `firefighter wait <id>`; re-bid with `firefighter bid <id> <n>`; lengthen with `firefighter extend <id> <min>`
+- Run heavy work: `firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent | --spot] --name "<project> <what>" -- <command>`
+- Every reply ends with `do: ...` (the recommended action). The market line shows the start time and cost for spot/normal/urgent, and busy odds over 2 h.
+- Quote without queuing: `firefighter quote --gpu --minutes N`
+- Background: `firefighter run --detach ...` then `firefighter wait <id>`; lengthen with `firefighter extend <id> <min>`
 - Status of the whole machine: `firefighter status --json`
-- MCP server: `firefighter mcp` (tools: firefighter_status, firefighter_quote, firefighter_submit, firefighter_wait, firefighter_bid, firefighter_extend, firefighter_cancel, firefighter_plan, firefighter_config)
+- MCP server: `firefighter mcp` (tools: firefighter_submit, firefighter_wait, firefighter_status, firefighter_job, firefighter_plan; one-line replies plus structuredContent)
 - Long GPU loops should honor FIREFIGHTER_PAUSE_FILE and FIREFIGHTER_CHECKPOINT_FILE (`firefighter protocol`)
 
 ## Docs

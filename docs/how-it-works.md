@@ -30,12 +30,16 @@ Twice a second the daemon:
 | Multi-resource fairness | DRF (NSDI '11) | A job is charged its dominant share each minute: max(GPU use, VRAM/card, RAM/total, CPUs/total). `order.policy = drf` orders by the decayed dominant share. | `Account.Charge`, `policy.Key` |
 | Proportional share | Lottery, stride (OSDI '94) | `order.policy = lottery` draws by weight × bid price; `stride` uses a pass value that never decays. | `policy.Order` |
 | Budgets that reward not grabbing | Karma (OSDI '23) | A steady refill of `daily_minutes`, banked up to `bank_days`. An empty budget puts the project's waiting jobs in the spot band. | `Account.Refill`, `daemon.refreshBands` |
-| Pay per use instead of free bids | Tycoon, Spawn | The posted price at grant = bid/5 × congestion (0.5–4) × surcharge, locked for the job's run. | `policy.Price`, `daemon.lockPrice` |
-| Posted prices, not auctions, for LLM bidders | InfoBid (2025), Survival Games | Quotes show aggregate market data (price, menu, busy odds), never rival bids. Accepting a posted price is the dominant strategy. | `policy/market.go`, `daemon/market.go` |
+| Pay per use instead of free bids | Tycoon, Spawn | The posted price at grant = tier (spot ⅓, normal 1, urgent 2) × congestion × surcharge, locked for the job's run. | `policy.Price`, `daemon.lockPrice` |
+| Online posted prices that rise with commitment | Zhang, Huang & Wu (SIGMETRICS '17), primal-dual pricing | Congestion = 0.5 × 8^u, where u = committed minutes in the next hour ÷ slot-minutes. | `policy.Congestion` |
+| Posted prices, not auctions, for LLM bidders | InfoBid (2025), Survival Games | Three tiers instead of a 1–10 bid. Quotes show aggregate data (start, cost, busy odds), never rival bids, and the advice never recommends outbidding. Taking a posted price is the dominant strategy. | `policy/market.go`, `daemon/market.go` |
+| Avoid herding into the same "free" hour | El Farol / congestion-game information design | Each job gets its own quiet-hour suggestion: a hash of its id picks among the near-quietest hours, skipping announced plans and hours with under 3 h of history. | `policy.QuietWindow` |
+| Mean residual life grows with age (heavy tails) | Harchol-Balter & Downey; SOAP / Gittins | Time left for a running job: before its prediction, the prediction minus its age; past it, half its age again. | `policy.Remaining` |
 | Hard bound on waiting | Starvation freedom | Anything waiting `max_wait_minutes` (45) goes next within its band. | `policy.Order` |
 | User runtime estimates are biased | Tsafrir, Etsion & Feitelson | Prediction = declared × median of the last 5 actual/declared ratios for this command. Projects whose median is over 1.5 pay ×1.25. | `policy.Predict`, `policy.Surcharge` |
 | Leases | Themis, AgentLoom `gpu_extend` | Past 1.25 × the lease (paused time excluded) without `extend`, a job drops to spot and pays ×2. | `daemon.ladder` |
 | Idle memory tax | Waldspurger, ESX | VRAM held while GPU use is under 15% is charged ×3. | `daemon.applyMeasurements` |
+| Pack only on sustained headroom | Gandiva (OSDI '18) | A second GPU job joins only while the ~30 s smoothed utilization is under `pack_below_util`. | `daemon.admit` |
 | Learned memory peaks beat estimators | GPUMemNet, LLMem, FakeTensor study | VRAM and RAM need = max(declared, 1.2 × learned peak). The learned peak decays 10% per run. A need the card can never free is clamped. | `daemon.fillNeeds` |
 | EASY backfill | Lifka; Slurm | Behind a GPU head that's waiting on VRAM, only jobs ≤ 10 predicted minutes may start. | `daemon.admit` |
 | Minimum guaranteed runtime | KAI-Scheduler | A spot GPU job yields to an in-budget one only after `min_runtime_minutes` (10), and only when the waiting job is blocked by the GPU alone. | `daemon.ladder` |
@@ -63,16 +67,23 @@ Twice a second the daemon:
 
 Every quote, for the kind of job asked about (GPU or CPU):
 
-- **Price**: congestion = 0.5 + (committed minutes in the next hour ÷ slot-minutes), clamped to
-  0.5–4. An idle machine is half price to encourage filling it.
-- **Menu**: for bids 1, 3, 5, 7 and 10, the queue position from the real ordering policy, the
-  start time from a simulation of running leases and the queue, and the cost = predicted minutes
-  × dominant share × bid/5 × congestion × surcharge.
-- **Busy odds** at 15/30/60/120 min: 0.8 × (simulated schedule says full) + 0.2 × (how busy this
-  hour of the week usually is, learned).
-- **Cheapest window**: the next hour that is usually under 50% busy.
-- **Advice**: the cheapest bid that starts within 10% (or 5 minutes) of the fastest; or `--spot`
-  if the budget can't cover it.
+- **Congestion**: 0.5 × 8^u, where u = committed minutes of that resource in the next hour ÷
+  slot-minutes, capped at 1. Idle is half price to encourage filling the machine; a fully
+  committed GPU is 4×.
+- **Menu**: spot, normal and urgent. Each tier's queue position comes from the real ordering
+  policy, its start time from one schedule simulation (running leases with heavy-tail remaining
+  time, the human holding the GPU, GPU work outside firefighter), and its cost = predicted
+  minutes × dominant share × tier price × congestion × surcharge.
+- **Busy odds** at 15/30/60/120 min: P = 1 − (1 − P_sched)(1 − w(h)·P_hist)(1 − P_plan).
+  P_sched is 0.95 when the simulation has every slot full, falling as the horizon grows.
+  w(h) = 1 − e^(−h/60) weighs in the hour-of-week history once that hour has 3+ hours of
+  observations; it moves a quarter of the way per visit, so it remembers several weeks. P_plan
+  is 0.7 when an announced GPU plan covers that time.
+- **do:** never "outbid". Short budget: spot or wait for the refill. Urgent tier: keep it only
+  if the human is waiting. A start over 60 min away: queue it, or spot, or plan it for the quiet
+  hour. Otherwise: queue at normal and keep working.
+- **One estimate everywhere**: `status`, `wait`, the CLI waiting line, MCP and the menu all
+  read the same simulation.
 
-Bids buy queue lead only under `las` and `stride` (at most `max_lead_minutes`). Under `lottery`
-they buy tickets. Under `drf`, `fifo` and `srpt` they change only the price, and quotes show that.
+Agents see a one-line reply (about 60 tokens). The full numbers are in `status --json`, the
+quote JSON and MCP `structuredContent`.

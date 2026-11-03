@@ -72,7 +72,7 @@ you.
 |---|---|
 | `GET /v1/ping` | `{ok, pid, version}` |
 | `GET /v1/status` | Everything `status --json` shows |
-| `GET /v1/quote?gpu=true&minutes=30&vram=8&ram=4&project=p` | The market for a job, with no side effects |
+| `GET /v1/quote?gpu=true&minutes=30&vram=8&ram=4&project=p&urgent=false` | The market for a job (tiers, busy odds, `do`), with no side effects |
 | `POST /v1/tickets` | Queue a job: `{project, name, gpu, minutes, vram_gb, ram_gb, bid, evict, spot, client_pid}` |
 | `GET /v1/tickets/{id}?state=waiting&wait=20` | Get a job; long-polls up to `wait` seconds for its state to change |
 | `POST /v1/tickets/{id}/{start\|done\|extend\|bid\|cancel\|container}` | Change a job: `{pid}`, `{exit}`, `{minutes}` (extend, bid) |

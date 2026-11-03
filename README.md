@@ -35,14 +35,18 @@ crawl, your game stutters, audio crackles, and nobody knows who's using what or 
 - 🎟️ **Agents take turns instead of fighting.** Heavy work waits in a queue. A GPU job starts only
   when its VRAM need fits, and that need is learned from the command's past runs. Projects that have
   used the least go first (least attained service), with a 45-minute cap on any wait.
-- 💹 **A market maker, not a bidding war.** Every answer firefighter gives an agent includes a quote:
-  the posted congestion price, what each bid level buys (start time and cost), the odds the GPU is
-  busy over the next 2 hours, the cheapest upcoming window, and the best-value choice. Agents see
-  the whole market in one line, don't have to look anything up, and gain nothing by gaming it.
+- 💹 **A market maker, not a bidding war.** Agents don't bid against each other. firefighter posts
+  prices for three tiers: **spot** (leftovers, ⅓ price), **normal**, and **urgent** (2×, only
+  when you're waiting on the result). Every reply an agent already gets ends with one line: when
+  each tier would start, what it costs against the agent's budget, the odds the GPU is busy over
+  the next 2 hours, a quiet hour to aim for, and a `do:` with the one recommended action. The
+  advice never tells an agent to outbid anyone, so the whole market costs about 60 tokens and
+  there's no bidding war to win.
 - 🛡️ **Fallbacks for careless or rogue agents.** Heavy processes an agent starts outside firefighter
-  are found and adopted anyway: they get idle priority, are charged to their project, and are
-  preempted first. Other guards cover queue flooding, chronic under-estimates, VRAM hoarding, and
-  jobs that run past their lease.
+  are found and adopted anyway: idle priority, billed 1.5×, preempted first. That makes skipping
+  the queue strictly worse than using it. Other guards cover queue flooding (per project and in
+  total), new project names that try to get a fresh budget, chronic under-estimates (×1.25), VRAM
+  hoarding (×3), lease overruns (×2, preempted first), and extensions after a short backfill.
 - ⏸️ **Polite preemption.** The ladder goes: shrink the job's CPU set → cooperative pause at a step
   boundary → bounded suspend → checkpoint-and-exit with automatic requeue → kill, but only when RAM
   is critical.
@@ -93,11 +97,13 @@ budgets and history, the state folder.
 
 ```sh
 firefighter run --gpu --minutes 40 --vram 10 --name "nanoGPT train" -- python train.py
+firefighter run --gpu --urgent --minutes 10 -- python eval.py          # you're waiting on it: 2x
+firefighter run --gpu --spot --minutes 120 -- python sweep.py          # can wait: 1/3 price
 firefighter run --minutes 5 -- npm run build                          # long CPU work
 firefighter run --gpu --minutes 20 -- docker run --gpus all my/eval    # containers are governed too
 id=$(firefighter run --detach --gpu --minutes 90 -- python sweep.py) && firefighter wait "$id"
 firefighter quote --gpu --minutes 30 --vram 8                          # the market, no side effects
-firefighter bid <id> 7                                                 # re-bid a waiting job
+firefighter bid <id> 10                                                # make a waiting job urgent (5 = normal)
 firefighter status                                                     # who's on stage until when, the queue, budgets
 firefighter plan "eval sweep" --when tonight --minutes 120 --gpu 90 --vram 12
 firefighter extend <id> 15                                             # running long? say so
@@ -107,14 +113,16 @@ firefighter extend <id> 15                                             # running
 docker all just work), passes its output and exit code through, and ends with a receipt:
 
 ```
-🔥 nanoGPT train [main set] waiting in the wings #2 in line, on ~14:05: GPU turn queue
-   market gpu: price x1.40, busy 15m 80% 60m 35% 120m 12% | bid 1: ~31m, cost 8.4 | bid 5: ~22m, cost 42.0 | bid 10: ~6m, cost 84.0 | best value: bid 5 (~22m)
+🔥 3f2a91c0 nanoGPT train waiting #2, starts ~14:05 (in 22m): GPU turn queue
+   gpu 40m: start ~22m, cost ~42 of 212 (urgent ~6m ~84) (spot ~70m ~14) | busy 15/60/120m 92/35/12% | quiet 02:00 (usually 8% busy) | do: queue it at normal (starts ~22m); keep working meanwhile
 🔥 nanoGPT train: spotlight's yours (lease 40 min, budget left 212.0)
 🔥 nanoGPT train: curtain call, ok (exit 0) in 37.2 min (declared 40), waited 6.1, charged 31.4 machine-min, peak 3.1 GB RAM / 9.4 GB VRAM
 ```
 
-**MCP tools:** `firefighter_status`, `firefighter_quote`, `firefighter_submit`, `firefighter_wait`,
-`firefighter_bid`, `firefighter_extend`, `firefighter_cancel`, `firefighter_plan`, `firefighter_config`.
+**MCP tools** (one-line text replies plus `structuredContent`): `firefighter_submit`,
+`firefighter_wait`, `firefighter_status` (which also gives quotes), `firefighter_job` (extend,
+urgent/normal, cancel) and `firefighter_plan`. `firefighter_config` is listed only when you allow
+agents to change the policy.
 
 ## How it decides (and how to change it)
 
@@ -126,8 +134,8 @@ MCP tool, and can change it only if you set `guard.agents_can_configure true`.
 |---|---|---|---|
 | **You** | dynamic reserve | Four states: away, present, active and game. The reserve grows within one 0.5 s tick and gives back 1 CPU every 15 s, RAM after 60 s and VRAM after 120 s. Jobs are pinned to the CPUs outside your reserve (Windows and Linux; macOS uses background QoS instead). A state with `pause_gpu` (game, by default) pauses GPU jobs and starts no new ones. | `reserve.<state>.cpus / ram_pct / vram_gb / pause_gpu`, `reserve.exclusive_apps` |
 | **Order** | `las` | The project with the least use goes first, with a 12 h half-life (Tiresias, Slurm fair share). A 45-minute wait cap overrides it. | `order.policy = las \| stride \| lottery \| drf \| fifo \| srpt` |
-| **Market** | `priced` | Price per machine-minute = bid/5 × congestion (×0.5 when idle up to ×4 when contended) × 1.25 for projects whose jobs habitually overrun their estimates. It's locked when the job is granted, and overruns pay ×2 on top. Under `las` and `stride` a bid buys at most 30 min of queue lead; under `lottery` it buys tickets; under `drf`, `fifo` and `srpt` it only changes the price. | `pricing.policy = priced \| free`, `pricing.max_lead_minutes` |
-| **Budget** | `karma` | Steady refill of 240 machine-minutes a day, banked up to 2 days (Karma, OSDI '23). While a project's budget is empty, its waiting jobs sit in the spot band. | `budget.policy = karma \| daily \| none`, `budget.daily_minutes`, `budget.bank_days`, `budget.projects.<name>`, `budget.weights.<name>` |
+| **Market** | `priced` | Price per machine-minute = tier (spot ⅓, normal 1, urgent 2) × congestion × 1.25 for projects whose jobs habitually overrun. Congestion is 0.5 × 8^u, where u is how committed the resource is over the next hour: 0.5 idle, about 1.4 at half load, 4 when full. The price is locked when the job is granted; overruns pay ×2 and adopted work ×1.5 on top. Urgent buys at most 30 min of queue lead under `las` and `stride`. | `pricing.policy = priced \| free`, `pricing.max_lead_minutes` |
+| **Budget** | `karma` | Steady refill of 240 machine-minutes a day (10 an hour), banked up to 2 days (Karma, OSDI '23). The first project on a machine starts full. Each later new project starts with half a day and at the median usage, so inventing names doesn't jump the queue. While a project's budget is empty, its waiting and running jobs are spot. | `budget.policy = karma \| daily \| none`, `budget.daily_minutes`, `budget.bank_days`, `budget.projects.<name>`, `budget.weights.<name>` |
 | **Charge** | DRF | One machine-minute is all of the GPU, VRAM, RAM or CPUs for one minute (Dominant Resource Fairness). Idle VRAM is charged ×3 (ESX idle tax), overruns ×2, and chronic under-estimates ×1.25. | built in |
 | **Admission** | learned peaks | A job's need is the larger of its declared size and 1.2 × its learned peak, checked against what's left on the freest single GPU after your reserve. Short jobs (≤ 10 min) may backfill behind a head that's waiting on VRAM. With no discrete GPU (Apple silicon), VRAM needs count as RAM. | `gpu.max_jobs`, `gpu.pack_below_util`, `gpu.vram_margin`, `gpu.default_vram_gb` |
 | **Preemption** | ladder | See [the ladder](#the-preemption-ladder) below. | `ladder.*` |
@@ -181,10 +189,10 @@ call once per step.
 
 | Command | What it does |
 |---|---|
-| `run [flags] -- <cmd...>` | Wait for a turn, run, receipt. Flags: `--gpu`, `--minutes N` (lease; 30 if omitted), `--vram GB`, `--ram GB`, `--bid 1-10` (default 5), `--name`, `--project` (default: the git repo or folder), `--evict never\|graceful\|force`, `--spot`, `--detach` (prints the id), `--quiet` |
+| `run [flags] -- <cmd...>` | Wait for a turn, run, receipt. Flags: `--gpu`, `--minutes N` (lease; 30 if omitted), `--vram GB`, `--ram GB`, `--urgent` (2×, the human is waiting), `--spot` (⅓, leftovers), `--name`, `--project` (default: the git repo or folder), `--evict never\|graceful\|force`, `--detach` (prints the id), `--quiet`, `--bid 1-10` (legacy; 5 normal, 10 urgent) |
 | `wait <id> [--timeout s]` | Block until the job ends (following requeues); prints the receipt and log tail. Exits with the job's exit code, or 124 on timeout |
-| `quote [--gpu] --minutes N [--vram GB] [--ram GB] [--json]` | The market, no side effects |
-| `bid <id> <1-10>` · `extend <id> <minutes>` · `cancel <id>` | Change a job |
+| `quote [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent] [--json]` | The market for a job, no side effects |
+| `bid <id> <5\|10>` · `extend <id> <minutes>` · `cancel <id>` | Change a job's tier, lease, or cancel it |
 | `status [--json]` | The human's state and reserve, the market, running and waiting jobs, budgets, plans |
 | `adopt <pid> [--gpu] [--name] [--minutes]` | Govern a process that's already running |
 | `plan "<what>" --when ... --minutes N [--gpu %] [--vram GB] [--ram GB]` · `plan --done [--project p]` | Announce or remove planned work |
