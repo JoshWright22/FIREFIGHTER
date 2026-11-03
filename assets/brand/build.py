@@ -2,12 +2,13 @@
 
     py -3.12 assets/brand/build.py
 
-Writes assets/logo.svg and assets/icon.svg with the lettering converted to paths (GitHub renders SVGs
-without web fonts), then renders the PNGs with headless Chromium (Playwright): the 512 px icons and the
-1280x640 social preview. Copies what the Pages site uses into docs/.
+Writes assets/logo.svg, assets/icon.svg and assets/social-preview.svg with the lettering converted to
+paths (GitHub renders SVGs without web fonts), then renders the PNGs with headless Chromium (Playwright):
+the 512 px icons and the 1280x640 social preview. Copies what the Pages site uses into docs/.
 
-Look: crimson poster, the name repeated in Anton, one line lit in ivory. Colors come from frames of the
-K/DA "FIRESTARTER" video (near-black, crimson, wine, candle ivory); nothing else is borrowed from it.
+Look: magenta poster, the name repeated in Inter Tight Black, centered on a cream + black pair; the icon
+is "FF" built from bars, with a ring. Fonts are OFL (assets/brand/fonts); the Black weight is instanced
+from the variable font in memory, not saved (needs skia-pathops for the overlap merge).
 """
 import shutil
 from pathlib import Path
@@ -15,52 +16,82 @@ from pathlib import Path
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools.ttLib import TTFont
+from fontTools.ttLib.removeOverlaps import removeOverlaps
+from fontTools.varLib.instancer import instantiateVariableFont
 from playwright.sync_api import sync_playwright
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent
 ROOT = ASSETS.parent
 
-INK, CRIMSON, IVORY = "#0f0f0f", "#ad004f", "#f3e6cf"
+MAGENTA, INK, CREAM = "#d4147a", "#141216", "#fff3e8"
+WORD = "FIREFIGHTER"
+TRACK = -0.02  # em; Inter Tight Black set tight like a poster
 
-font = TTFont(HERE / "fonts" / "Anton-Regular.ttf")
+font = instantiateVariableFont(TTFont(HERE / "fonts" / "InterTight.ttf"), {"wght": 900})
+removeOverlaps(font)  # variable-font strokes overlap; outlines would show the seams
 glyphs, cmap, hmtx = font.getGlyphSet(), font.getBestCmap(), font["hmtx"]
 UPM = font["head"].unitsPerEm
+CAP = font["OS/2"].sCapHeight / UPM
 
 
-def text_path(s, x, y, size, track=0.0):
-    """SVG path data for s in Anton, baseline at (x, y), size in px, track in em."""
+def text_path(s, x, y, size):
+    """SVG path data for s, baseline at (x, y), size in px."""
     k = size / UPM
     pen = SVGPathPen(glyphs)
     for ch in s:
         name = cmap[ord(ch)]
         glyphs[name].draw(TransformPen(pen, (k, 0, 0, -k, x, y)))
-        x += hmtx[name][0] * k + track * size
+        x += hmtx[name][0] * k + TRACK * size
     return pen.getCommands()
 
 
-def width(s, size, track=0.0):
-    return sum(hmtx[cmap[ord(c)]][0] for c in s) * size / UPM + track * size * len(s)
+def width(s, size):
+    return sum(hmtx[cmap[ord(c)]][0] for c in s) * size / UPM + TRACK * size * len(s)
 
 
-def poster(w, h, rows, size, pitch, lit, word, x0, y0, stroke, lit_word=None, lit_x=None):
-    """Rows of the word; row `lit` is solid ivory, the rest alternate solid ink and outlined ink."""
-    lit_word = lit_word or word
-    lit_x = x0 if lit_x is None else lit_x
-    out = [f'<rect width="{w}" height="{h}" fill="{CRIMSON}"/>']
-    for i in range(rows):
-        # The lit row starts on a whole word; the others run offset like a repeated poster.
-        x = lit_x if i == lit else x0 - (i % 2) * size * 0.9
-        d = text_path(lit_word if i == lit else word, x, y0 + i * pitch, size)
-        if i == lit:
-            out.append(f'<path d="{d}" fill="{IVORY}"/>')
-            rest = x + width(lit_word + " ", size)
-            if rest < w - 0.6 * size:  # keep the row running in ink after the lit word
-                out.append(f'<path d="{text_path(word, rest, y0 + i * pitch, size)}" fill="{INK}"/>')
-        elif i % 2 == 0:
-            out.append(f'<path d="{d}" fill="none" stroke="{INK}" stroke-width="{stroke}"/>')
-        else:
-            out.append(f'<path d="{d}" fill="{INK}"/>')
+def fit(w, share, gap=0.32):
+    """Font size at which the centered pair spans `share` of the width w."""
+    return share * w / (2 * width(WORD, 1) + gap)
+
+
+def poster(w, h, size, rows, gap=0.32, stroke=1.6):
+    """Rows of the name across a w x h magenta field, repeating both ways from the center. Every row puts
+    the gap between two names at the exact middle; on the middle row those two are solid, cream on the
+    left and black on the right, and everything else is outlined."""
+    g = gap * size
+    step = width(WORD, size) + g
+    pitch = size * CAP * 1.42
+    mid = rows // 2
+    base = h / 2 + size * CAP / 2  # baseline that centers the middle row's caps
+    left, right = w / 2 - g / 2 - width(WORD, size), w / 2 + g / 2
+    out = [f'<rect width="{w}" height="{h}" fill="{MAGENTA}"/>']
+    for r in range(rows):
+        y = base + (r - mid) * pitch
+        x = right
+        while x > -step:
+            x -= step
+        while x < w:
+            d = text_path(WORD, x, y, size)
+            if r == mid and abs(x - left) < 1:
+                out.append(f'<path d="{d}" fill="{CREAM}"/>')
+            elif r == mid and abs(x - right) < 1:
+                out.append(f'<path d="{d}" fill="{INK}"/>')
+            else:
+                out.append(f'<path d="{d}" fill="none" stroke="{INK}" stroke-width="{stroke}"/>')
+            x += step
+    return out
+
+
+def icon(S=256):
+    """FF from bars, a ring at the foot of the second F."""
+    u = S / 10
+    bars = [(2, 2, 1.3, 6), (2, 2, 2.8, 1.3), (2, 4.4, 2.2, 1.2),
+            (5.5, 2, 1.3, 6), (5.5, 2, 2.8, 1.3), (5.5, 4.4, 2.2, 1.2)]
+    out = [f'<rect width="{S}" height="{S}" fill="{MAGENTA}"/>', f'<g fill="{CREAM}">']
+    out += [f'<rect x="{x*u:g}" y="{y*u:g}" width="{bw*u:g}" height="{bh*u:g}"/>' for x, y, bw, bh in bars]
+    out += ['</g>', f'<circle cx="{8.1*u:g}" cy="{7.1*u:g}" r="{0.75*u:g}" fill="none" stroke="{CREAM}" '
+                    f'stroke-width="{0.55*u:g}"/>']
     return out
 
 
@@ -69,13 +100,11 @@ def svg(w, h, label, body):
             f'  <title>{label}</title>\n  ' + "\n  ".join(body) + "\n</svg>\n")
 
 
-# Wordmark: three rows, the middle one lit.
-logo = poster(640, 200, 3, 86, 74, 1, "FIREFIGHTER FIREFIGHTER", -12, 46, 1.4, "FIREFIGHTER", 24)
-(ASSETS / "logo.svg").write_text(svg(640, 200, "firefighter", logo), encoding="utf-8")
-
-# Icon: the same poster cropped to a square; one big lit "FF" so it still reads at 16 px.
-icon = poster(256, 256, 3, 168, 150, 1, "FFFFF", -40, 28, 2.6, "FF", (256 - width("FF", 168)) / 2)
-(ASSETS / "icon.svg").write_text(svg(256, 256, "firefighter icon", icon), encoding="utf-8")
+(ASSETS / "logo.svg").write_text(svg(640, 200, "firefighter", poster(640, 200, fit(640, 0.9), 3)), encoding="utf-8")
+(ASSETS / "icon.svg").write_text(svg(256, 256, "firefighter icon", icon()), encoding="utf-8")
+(ROOT / "docs" / "poster.svg").write_text(svg(2400, 640, "firefighter", poster(2400, 640, 120, 5, stroke=2)),
+                                         encoding="utf-8")  # the landing page banner
+(HERE / "social.svg").write_text(svg(1280, 640, "firefighter", poster(1280, 640, fit(1280, 0.86), 5, stroke=2)), encoding="utf-8")
 
 with sync_playwright() as p:
     browser = p.chromium.launch()

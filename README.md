@@ -2,10 +2,10 @@
 
 <p align="center">
   <a href="https://github.com/JoshWright22/firefighter/actions/workflows/ci.yml"><img src="https://github.com/JoshWright22/firefighter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/JoshWright22/firefighter/releases"><img src="https://img.shields.io/github/v/release/JoshWright22/firefighter?color=ad004f&label=release" alt="release"></a>
-  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0f0f0f" alt="Windows, macOS, Linux">
-  <img src="https://img.shields.io/badge/MCP-server-ad004f" alt="MCP server">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0f0f0f" alt="MIT"></a>
+  <a href="https://github.com/JoshWright22/firefighter/releases"><img src="https://img.shields.io/github/v/release/JoshWright22/firefighter?color=d4147a&label=release" alt="release"></a>
+  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-141216" alt="Windows, macOS, Linux">
+  <img src="https://img.shields.io/badge/MCP-server-d4147a" alt="MCP server">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-141216" alt="MIT"></a>
 </p>
 
 <h3 align="center">Your AI agents won't set your GPU on fire. Or your CPU, or your RAM.</h3>

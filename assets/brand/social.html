@@ -1,29 +1,12 @@
 <!doctype html>
-<!-- Source of assets/social-preview.png (1280x640). Build: py -3.12 assets/brand/build.py -->
+<!-- Source of assets/social-preview.png (1280x640). Build: py -3.12 assets/brand/build.py (writes social.svg first). -->
 <html><head><meta charset="utf-8"><style>
-  @font-face { font-family: Anton; src: url(fonts/Anton-Regular.ttf); }
   @font-face { font-family: "JetBrains Mono"; src: url(fonts/JetBrainsMono.ttf); font-weight: 100 800; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  :root { --ink: #0f0f0f; --crimson: #ad004f; --hot: #ff4f8f; --ivory: #f3e6cf; --ash: #8c8379; }
-  body { width: 1280px; height: 640px; overflow: hidden; position: relative; background: var(--crimson); color: var(--ink); }
-  .stack { position: absolute; left: -30px; top: -48px; font-family: Anton; font-size: 132px; line-height: .88; text-transform: uppercase; white-space: nowrap; }
-  .stack div:nth-child(odd) { color: transparent; -webkit-text-stroke: 2px var(--ink); }
-  .stack div.lit { color: var(--ivory); -webkit-text-stroke: 0; }
-  .card { position: absolute; right: 44px; bottom: 44px; width: 480px; background: var(--ink); color: var(--ivory); font-family: "JetBrains Mono"; }
-  .head { padding: 20px 24px 18px; border-bottom: 1px solid #2a2626; }
-  .label { font-size: 11px; letter-spacing: .16em; color: var(--ash); text-transform: uppercase; }
-  .label b { color: var(--hot); font-weight: 400; margin-right: 12px; }
-  .tag { margin-top: 10px; font-weight: 800; font-size: 19px; line-height: 1.35; letter-spacing: .02em; text-transform: uppercase; }
-  .term { padding: 16px 24px 20px; font-size: 13.5px; line-height: 1.75; white-space: pre; }
-  .c { color: var(--hot); } .g { color: var(--ash); }
+  * { margin: 0; padding: 0; }
+  body { width: 1280px; height: 640px; overflow: hidden; position: relative; }
+  img { display: block; }
+  .tag { position: absolute; left: 50%; bottom: 46px; transform: translateX(-50%); background: #141216; color: #fff3e8; font: 800 20px "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; padding: 14px 24px; white-space: nowrap; }
 </style></head><body>
-  <div class="stack"><div>firefighter firefighter firefighter</div><div>firefighter firefighter firefighter</div><div>firefighter firefighter firefighter</div><div class="lit">firefighter</div><div>firefighter firefighter firefighter</div><div>firefighter firefighter firefighter</div></div>
-  <div class="card">
-    <div class="head"><div class="label"><b>01</b>GPU · CPU · RAM guard for AI agents</div><div class="tag">Your agents won't set<br>your GPU on fire.</div></div>
-    <div class="term"><span class="g">$</span> firefighter status
-human: <span class="c">on stage (game)</span>  reserve 8 cpu
-gpu: nanoGPT train  <span class="c">paused for you</span>
-next: #1 evals sweep  ~14:06
-<span class="c">do:</span> wait; GPU frees in ~6m</div>
-  </div>
+  <img src="social.svg" width="1280" height="640" alt="">
+  <div class="tag">Your AI agents won't set your GPU on fire</div>
 </body></html>

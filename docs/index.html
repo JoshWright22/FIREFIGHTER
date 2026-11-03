@@ -15,21 +15,14 @@
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"firefighter","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","offers":{"@type":"Offer","price":"0"},"description":"Local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents sharing one computer, with an MCP server. The human at the keyboard always comes first.","codeRepository":"https://github.com/JoshWright22/firefighter","license":"https://opensource.org/licenses/MIT"}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet">
 <style>
-  :root { --ink:#0f0f0f; --fg:#fdfdfd; --dim:#a39a91; --line:#262323; --crimson:#ad004f; --hot:#ff4f8f; --ivory:#f3e6cf; }
+  :root { --ink:#141216; --fg:#fdfdfd; --dim:#a39a91; --line:#262323; --crimson:#d4147a; --hot:#ff4f8f; --ivory:#fff3e8; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--ink); color:var(--fg); font:17px/1.6 Inter,system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
   code { font-family:"JetBrains Mono",ui-monospace,monospace; }
-  .poster { position:relative; height:min(62vh,560px,60vw); background:var(--crimson); overflow:hidden; }
-  .stack { position:absolute; left:-2vw; top:-4vw; font:clamp(64px,10.5vw,152px)/.88 Anton,Impact,sans-serif; text-transform:uppercase; white-space:nowrap; color:var(--ink); }
-  .stack div { animation:drift 28s linear infinite alternate; }
-  .stack div:nth-child(odd) { color:transparent; -webkit-text-stroke:2px var(--ink); animation-direction:alternate-reverse; }
-  .stack div:nth-child(even) { margin-left:-0.9em; }
-  .stack div.lit { color:var(--ivory); margin-left:4vw; animation:none; }
-  .stack div.lit span { color:var(--ink); }
-  @keyframes drift { to { translate:-12vw 0; } }
-  @media (prefers-reduced-motion:reduce) { .stack div { animation:none; } }
+  .poster { height:min(62vh,520px,64vw); background:var(--crimson); overflow:hidden; }
+  .poster img { display:block; width:100%; height:100%; object-fit:cover; }
   main { max-width:1080px; margin:0 auto; padding:0 24px 80px; }
   .label { font:400 12px "JetBrains Mono",monospace; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); }
   .label b { color:var(--hot); font-weight:400; margin-right:12px; }
@@ -56,10 +49,7 @@
 </style>
 </head>
 <body>
-<div class="poster" aria-hidden="true"><div class="stack">
-  <div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div>
-  <div class="lit">FIREFIGHTER <span>FIREFIGHTER FIREFIGHTER</span></div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div><div>FIREFIGHTER FIREFIGHTER FIREFIGHTER</div>
-</div></div>
+<div class="poster"><img src="poster.svg" alt="firefighter"></div>
 <main>
   <h1>Your AI agents won't set<br>your <em>GPU</em> on fire.</h1>
   <p class="sub"><b>firefighter</b> is a local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents sharing one computer. One command installs it on Windows, macOS or Linux. After that, every agent session queues its heavy work, sees what the others are doing, and gets out of the way when you need the machine.</p>

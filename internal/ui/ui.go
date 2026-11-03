@@ -1,4 +1,4 @@
-// Package ui is firefighter's look: crimson, hot pink, candle ivory and ash on the terminal's own
+// Package ui is firefighter's look: magenta, hot pink, cream and ash on the terminal's own
 // background, a diamond mark, and short stage-themed lines. Colors turn off for NO_COLOR, dumb
 // terminals and non-terminals.
 package ui
@@ -14,7 +14,7 @@ type rgb struct{ r, g, b int }
 var (
 	Hot   = rgb{255, 79, 143}  // live states, errors
 	Coral = rgb{226, 136, 131} // section headers, market lines
-	Ivory = rgb{243, 230, 207} // waiting, present
+	Ivory = rgb{255, 243, 232} // waiting, present
 	Ash   = rgb{140, 131, 121} // notes
 )
 

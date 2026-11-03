@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 470" role="img" aria-label="firefighter demo: three agents queue for the GPU, the human starts a game, the training job pauses, then everyone finishes">
   <style>
-    .bg { fill: #0f0f0f; }
+    .bg { fill: #141216; }
     text { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 14.5px; white-space: pre; }
-    .w { fill: #fdfdfd; } .g { fill: #8c8379; } .k { fill: #ff4f8f; } .y { fill: #f3e6cf; } .o { fill: #ff4f8f; } .p { fill: #e28883; }
+    .w { fill: #fdfdfd; } .g { fill: #8c8379; } .k { fill: #ff4f8f; } .y { fill: #fff3e8; } .o { fill: #ff4f8f; } .p { fill: #e28883; }
     .l { opacity: 0; }
     .l0 { animation: s0 17.0s infinite; }
     @keyframes s0 { 0%,0.00% { opacity: 0 } 1.50%,94% { opacity: 1 } 98%,100% { opacity: 0 } }
@@ -36,7 +36,7 @@
     @keyframes s14 { 0%,82.35% { opacity: 0 } 83.85%,94% { opacity: 1 } 98%,100% { opacity: 0 } }
   </style>
   <rect class="bg" width="860" height="470"/>
-  <rect width="860" height="6" fill="#ad004f"/>
+  <rect width="860" height="6" fill="#d4147a"/>
   
   <text x="380" y="27" class="g">3 agents · 1 GPU · 1 human</text>
 
