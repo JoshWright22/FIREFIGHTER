@@ -1124,6 +1124,21 @@ func (d *Daemon) cardFor(want string) (int, float64) {
 	return best, bestLeft
 }
 
+// needOn is a job's VRAM need on a card. A learned need (peak x margin) can't exceed what the card
+// ever offers: its size, less the human's reserve, less the least others have held lately. Above
+// that it would wait forever, so it's clamped and starts when the card is at its emptiest (if a
+// program holds VRAM for good, the job runs with what's there and its log says so). A declared
+// --vram is never shrunk.
+func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
+	need := t.NeedVRAM
+	if card >= 0 && card < len(d.cardFloor) && card < len(d.snap.GPUs) && need > t.VRAMGB {
+		g := d.snap.GPUs[card]
+		most := g.VRAMGB - d.res.VRAMGB - d.cardFloor[card]
+		need = math.Max(t.VRAMGB, math.Min(need, math.Max(0.5, most)))
+	}
+	return need
+}
+
 // cardLeft is the VRAM a job of this vendor would find on its card, after the human's reserve.
 func (d *Daemon) cardLeft(want string) float64 {
 	_, left := d.cardFor(want)
@@ -1173,17 +1188,7 @@ func (d *Daemon) admit(now time.Time) {
 			}
 			card, left := d.cardFor(t.WantVendor) // already less the jobs granted this tick
 			left -= d.res.VRAMGB
-			// A learned need can't exceed what the card ever offers: its size, less the human's
-			// reserve, less the desktop's own baseline (at most 15% of the card, 1.5 GB minimum). A learned peak near the
-			// card's size is clamped to that, so it waits for the card at its emptiest instead of
-			// forever. A declared --vram is never shrunk, and an idle program holding VRAM still
-			// makes the job wait.
-			need := t.NeedVRAM
-			if card >= 0 && card < len(d.cardFloor) && need > t.VRAMGB {
-				g := d.snap.GPUs[card]
-				most := g.VRAMGB - d.res.VRAMGB - math.Min(d.cardFloor[card], math.Max(1.5, 0.15*g.VRAMGB))
-				need = math.Max(t.VRAMGB, math.Min(need, math.Max(0.5, most)))
-			}
+			need := d.needOn(t, card)
 			if vt > 0 && card >= 0 && need > left {
 				headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
 				continue
@@ -1219,6 +1224,11 @@ func (d *Daemon) admit(now time.Time) {
 			j.backfilled = headWaitsOnVRAM
 			if len(d.snap.GPUs) > 1 {
 				j.device = card // and the client pins it there, in that vendor's numbering
+			}
+		}
+		if t.GPU {
+			if card, _ := d.cardFor(t.WantVendor); d.needOn(t, card) < t.NeedVRAM-0.05 {
+				logf("%s: learned need %.1f GB is more than this card ever frees; starting at its emptiest (%.1f GB)", j.Name, t.NeedVRAM, d.needOn(t, card))
 			}
 		}
 		j.State, j.granted = "granted", now

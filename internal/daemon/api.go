@@ -179,11 +179,15 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
 		return
 	}
-	if req.Running && caller <= 0 {
+	if req.Running && (caller == 0 || (caller < 0 && req.Adopt)) {
 		fail(w, http.StatusForbidden, "couldn't tell which process is asking; adopt from a normal terminal")
 		return
 	}
-	if req.Running && !req.Adopt && caller > 1 && !sysinfo.DescendantOf(t.PID, caller) {
+	reg := caller
+	if reg < 0 { // no connection table here: trust the client's claim for its own job only
+		reg = t.ClientPID
+	}
+	if req.Running && !req.Adopt && (reg <= 1 || !sysinfo.DescendantOf(t.PID, reg)) {
 		// Re-registration after a daemon restart comes from the job's own client.
 		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't a job this client started", t.PID))
 		return
@@ -667,8 +671,8 @@ func (d *Daemon) blocker(j *job) string {
 		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:
 		return "spot band (over budget or --spot): runs on leftovers only"
-	case j.GPU && len(d.snap.GPUs) > 0 && j.NeedVRAM > d.cardLeft(j.WantVendor):
-		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", j.NeedVRAM, math.Max(0, d.cardLeft(j.WantVendor)))
+	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.WantVendor):
+		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), math.Max(0, d.cardLeft(j.WantVendor)))
 	case j.NeedRAM > ram:
 		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram))
 	case j.GPU && len(d.busyOutside()) > 0:
@@ -760,7 +764,10 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Project, p.What, p.When = cleanText(p.Project, 100), cleanText(p.What, 300), cleanText(p.When, 40)
-	planOwner, _ := d.sessionOf(callerPID(r))
+	planOwner, planHuman := d.sessionOf(callerPID(r))
+	if planHuman {
+		planOwner = -1 // the human's: only the human removes it
+	}
 	planOwnerAt := sysinfo.Created(planOwner)
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -793,7 +800,11 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 		// forgot who added it, its project's).
 		// Like jobs: the human, the session that announced it, or its project (by project name).
 		// A plan id after a restart forgot who added it: whoever names the id.
-		mine := human || (p.owner != 0 && p.owner == agent && p.ownerAt == agentAt) || p.Project == id ||
+		if p.owner == -1 && !human {
+			keep = append(keep, p) // the human's plan
+			continue
+		}
+		mine := human || (p.owner > 0 && p.owner == agent && p.ownerAt == agentAt) || p.Project == id ||
 			(p.ID == id && p.owner == 0)
 		if (p.ID == id || p.Project == id) && mine {
 			continue
@@ -918,4 +929,10 @@ func (d *Daemon) sessionOf(caller int) (session int, human bool) {
 		return h, false
 	}
 	return caller, false
+}
+
+// jobNeed is a job's VRAM need on the card it would get (see needOn).
+func (d *Daemon) jobNeed(j *job) float64 {
+	card, _ := d.cardFor(j.WantVendor)
+	return d.needOn(j.Ticket, card)
 }

@@ -50,7 +50,7 @@ type Plan struct {
 	VRAMGB  float64   `json:"vram_gb"`
 	RAMGB   float64   `json:"ram_gb"`
 	Added   time.Time `json:"added"`
-	owner   int       // agent session that announced it (not saved: unknown after a restart)
+	owner   int       // agent session that announced it; -1: the human (not saved: 0 after a restart)
 	ownerAt int64     // its start time (a reused pid isn't the same session)
 }
 

@@ -781,6 +781,8 @@ func TestDockerImageAt(t *testing.T) {
 		{[]string{"-it", "--rm", "--ulimit", "memlock=-1", "img"}, "img"},
 		{[]string{"-d", "-e", "A=1", "--device=/dev/kfd", "rocm/pytorch", "--gpus", "all"}, "rocm/pytorch"},
 		{[]string{"--group-add", "video", "-v", "/a:/b", "img:1"}, "img:1"},
+		{[]string{"-dp", "8080:80", "--gpus", "all", "web"}, "web"},
+		{[]string{"-itv", "/a:/b", "-p8080:80", "-q", "img2"}, "img2"},
 	}
 	for _, c := range cases {
 		if got := dockerImage(c.args); got != c.want {

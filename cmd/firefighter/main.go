@@ -244,7 +244,7 @@ func dockerImageAt(args []string) int {
 	// has many more valued options than flags, so this errs toward finding the real image).
 	flags := map[string]bool{"--detach": true, "--interactive": true, "--tty": true, "--rm": true, "--privileged": true,
 		"--init": true, "--read-only": true, "--publish-all": true, "--no-healthcheck": true, "--oom-kill-disable": true,
-		"--help": true, "--quiet": true, "--disable-content-trust": true}
+		"--help": true, "--quiet": true, "--disable-content-trust": true, "--replace": true, "--sig-proxy": true}
 	_ = withValue
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -259,9 +259,12 @@ func dockerImageAt(args []string) int {
 				i++
 			}
 		case strings.HasPrefix(a, "-") && len(a) > 1:
-			// short options: a cluster of flags (-it, -d, -P) or one valued option (-e X, -v X)
-			if strings.Trim(a[1:], "ditP") != "" && !strings.Contains(a, "=") && len(a) == 2 {
-				i++
+			// Short options: a cluster of flags (-it, -d, -P, -q), possibly ending in one valued
+			// option (-dp 8080:80, -itv /a:/b), or a valued option with its value attached (-p80:80).
+			rest := a[1:]
+			k := strings.IndexFunc(rest, func(c rune) bool { return !strings.ContainsRune("ditPq", c) })
+			if k >= 0 && k == len(rest)-1 && !strings.Contains(a, "=") {
+				i++ // the last letter takes the next argument
 			}
 		default:
 			return i
