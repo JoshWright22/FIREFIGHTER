@@ -290,12 +290,19 @@ func call(name string, a map[string]any) (string, any, error) {
 		id := s(a, "id")
 		v, err := c.GetSoon(id)
 		first := v
+		var requeuedAt time.Time
 		for err == nil && (v.State != "done" || (v.Receipt != nil && v.Receipt.Requeue)) {
 			left := int(time.Until(deadline).Seconds())
 			if left < 1 {
 				break
 			}
 			if v.State == "done" { // evicted and requeued: the next attempt registers shortly
+				if requeuedAt.IsZero() {
+					requeuedAt = time.Now()
+				} else if time.Since(requeuedAt) > 15*time.Second {
+					// Nobody re-registered: the client that would requeue it is gone.
+					return jobLine(v) + "\nrequeued, but no new attempt registered (its client exited); submit it again", v, nil
+				}
 				time.Sleep(500 * time.Millisecond)
 				v, err = c.GetSoon(id)
 				continue

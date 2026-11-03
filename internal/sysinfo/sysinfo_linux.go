@@ -21,26 +21,58 @@ func foregroundApp() string                      { return "" }
 // idleSeconds asks the desktop: GNOME/Mutter, then the freedesktop ScreenSaver interface (KDE and
 // most Wayland desktops), then xprintidle (X11). Headless machines report unknown (-1), which
 // counts as "present".
+// idleSource is the source that answered last (-1: none yet); it's tried first, and when none
+// answers the search is retried only once a minute.
+var idleSource, idleMissAt = -1, time.Time{}
+
 func idleSeconds() float64 {
-	if out, err := run(time.Second, "gdbus", "call", "--session", "--dest", "org.gnome.Mutter.IdleMonitor",
-		"--object-path", "/org/gnome/Mutter/IdleMonitor/Core", "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime"); err == nil {
-		if ms, ok := gvariantNumber(out); ok {
-			return ms / 1000
-		}
-	}
-	if out, err := run(time.Second, "gdbus", "call", "--session", "--dest", "org.freedesktop.ScreenSaver",
-		"--object-path", "/org/freedesktop/ScreenSaver", "--method", "org.freedesktop.ScreenSaver.GetSessionIdleTime"); err == nil {
-		if ms, ok := gvariantNumber(out); ok {
-			return ms / 1000
-		}
-	}
-	if os.Getenv("WAYLAND_DISPLAY") == "" {
-		if out, err := run(time.Second, "xprintidle"); err == nil {
-			if ms, err := strconv.ParseFloat(strings.TrimSpace(out), 64); err == nil {
-				return ms / 1000
+	sources := []func() (float64, bool){
+		func() (float64, bool) {
+			out, err := run(time.Second, "gdbus", "call", "--session", "--dest", "org.gnome.Mutter.IdleMonitor",
+				"--object-path", "/org/gnome/Mutter/IdleMonitor/Core", "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime")
+			if err != nil {
+				return 0, false
 			}
+			ms, ok := gvariantNumber(out)
+			return ms / 1000, ok
+		},
+		func() (float64, bool) {
+			out, err := run(time.Second, "gdbus", "call", "--session", "--dest", "org.freedesktop.ScreenSaver",
+				"--object-path", "/org/freedesktop/ScreenSaver", "--method", "org.freedesktop.ScreenSaver.GetSessionIdleTime")
+			if err != nil {
+				return 0, false
+			}
+			ms, ok := gvariantNumber(out)
+			return ms / 1000, ok
+		},
+		func() (float64, bool) {
+			if os.Getenv("WAYLAND_DISPLAY") != "" {
+				return 0, false
+			}
+			out, err := run(time.Second, "xprintidle")
+			if err != nil {
+				return 0, false
+			}
+			ms, err := strconv.ParseFloat(strings.TrimSpace(out), 64)
+			return ms / 1000, err == nil
+		},
+	}
+	if idleSource >= 0 {
+		if v, ok := sources[idleSource](); ok {
+			return v
+		}
+		idleSource = -1
+	}
+	if time.Since(idleMissAt) < time.Minute {
+		return -1
+	}
+	for i, f := range sources {
+		if v, ok := f(); ok {
+			idleSource = i
+			return v
 		}
 	}
+	idleMissAt = time.Now()
 	return -1
 }
 

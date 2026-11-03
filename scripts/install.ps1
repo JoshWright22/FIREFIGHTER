@@ -8,14 +8,17 @@ $repo = 'JoshWright22/FIREFIGHTER'
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\firefighter'
 New-Item -ItemType Directory -Force $dir | Out-Null
 $exe = Join-Path $dir 'firefighter.exe'
-Remove-Item "$exe.old" -Force -ErrorAction SilentlyContinue
+# Old copies from earlier upgrades: gone once nothing runs them any more.
+Get-ChildItem $dir -Filter 'firefighter.exe.old*' -ErrorAction SilentlyContinue | ForEach-Object {
+    try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch {}
+}
 
 # Agent sessions keep firefighter.exe open (its MCP server), so an upgrade renames the running exe
-# (Windows allows that) instead of overwriting it, and stops the old daemon cleanly.
+# (Windows allows that) to a unique name instead of overwriting it, and stops the old daemon cleanly.
 function Install-Exe($src) {
     if (Test-Path $exe) {
-        & $exe daemon --stop 2>$null
-        Move-Item $exe "$exe.old" -Force
+        try { $null = & $exe daemon --stop 2>&1 } catch {}
+        Move-Item $exe "$exe.old-$([DateTime]::Now.ToString('yyyyMMddHHmmss'))" -Force
     }
     Copy-Item $src $exe -Force
 }

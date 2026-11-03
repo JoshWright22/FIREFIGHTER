@@ -188,7 +188,13 @@ func hashCmd(argv []string) string {
 			}
 		}
 	}
-	key := strings.Join(argv[:min(len(argv), 2)], " ")
+	// The program and its first argument, by base name, so "python train.py" and
+	// "python ./train.py" (or a full path) are one command to learn from.
+	var parts []string
+	for _, a := range argv[:min(len(argv), 2)] {
+		parts = append(parts, strings.TrimSuffix(strings.ToLower(filepath.Base(filepath.Clean(a))), ".exe"))
+	}
+	key := strings.Join(parts, " ")
 	if base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe"); (base == "docker" || base == "podman") && len(argv) > 1 && argv[1] == "run" {
 		key = base + " run " + dockerImage(argv[2:])
 	}
@@ -356,6 +362,11 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		"FIREFIGHTER_PAUSE_FILE="+daemon.PauseFile(t.ID),
 		"FIREFIGHTER_PAUSED_FILE="+daemon.PausedFile(t.ID),
 		"FIREFIGHTER_CHECKPOINT_FILE="+daemon.CheckpointFile(t.ID))
+	// Multi-GPU: the daemon admitted the job against one card's free VRAM; run it there.
+	if v.Device != nil && os.Getenv("CUDA_VISIBLE_DEVICES") == "" && os.Getenv("HIP_VISIBLE_DEVICES") == "" {
+		dev := strconv.Itoa(*v.Device)
+		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES="+dev, "HIP_VISIBLE_DEVICES="+dev)
+	}
 	sysinfo.PrepareChild(cmd, argv)
 	defer sysinfo.RestoreForeground()
 	start := time.Now()
@@ -365,8 +376,20 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	}
 	release, _ := sysinfo.Contain(cmd.Process.Pid)
 	defer release()
-	if _, err := c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid}); err != nil && !quiet {
-		ui.Note("couldn't register with the guard: %v", err)
+	if _, err := c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid}); err != nil {
+		if strings.Contains(err.Error(), "not granted") {
+			// The turn lapsed (the machine slept between grant and start): don't run ungoverned;
+			// stop the just-started command and get back in line.
+			_ = sysinfo.Kill(cmd.Process.Pid)
+			_ = cmd.Wait()
+			if !quiet {
+				ui.Note("the turn lapsed before the job started; back in line")
+			}
+			return 1, true, nil
+		}
+		if !quiet {
+			ui.Note("couldn't register with the guard: %v", err)
+		}
 	}
 	if container != "" {
 		go func() { // the container appears a moment after docker run starts
@@ -628,7 +651,7 @@ func rebid(args []string) error {
 	if err != nil {
 		return err
 	}
-	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b)})
+	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b), Project: callerProject(), Force: hasFlag(args, "--force")})
 	if err == nil {
 		ui.Say(ui.Ivory, "%s: bid %d, now #%d, on ~%s", v.Name, b, v.Position, v.ETA)
 	}
@@ -647,7 +670,7 @@ func extend(args []string) error {
 	if err != nil {
 		return err
 	}
-	v, err := c.Act(args[0], "extend", daemon.Act{Minutes: m})
+	v, err := c.Act(args[0], "extend", daemon.Act{Minutes: m, Project: callerProject(), Force: hasFlag(args, "--force")})
 	if err == nil {
 		ui.Say(ui.Hot, "%s: encore, lease now ends ~%s", v.Name, v.ETA)
 	}
@@ -662,7 +685,7 @@ func act(args []string, verb string) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.Act(args[0], verb, daemon.Act{})
+	_, err = c.Act(args[0], verb, daemon.Act{Project: callerProject(), Force: hasFlag(args, "--force")})
 	return err
 }
 
@@ -853,7 +876,10 @@ func daemonCmd(args []string) error {
 		return stopDaemon()
 	}
 	if c, err := client.Connect0(); err == nil && c != nil {
-		return errors.New("the guard is already running")
+		// Not an error: service managers (systemd Restart=on-failure, launchd) would otherwise
+		// crash-loop when a CLI call already started the daemon on demand.
+		ui.Note("the guard is already running")
+		return nil
 	}
 	unlock, err := daemon.Lock()
 	if err != nil {
@@ -880,9 +906,11 @@ def firefighter_step(save_checkpoint=None):
             import torch; torch.cuda.empty_cache()
         except Exception:
             pass
-        while os.path.exists(pause):
+        ckpt = os.environ.get("FIREFIGHTER_CHECKPOINT_FILE")
+        while os.path.exists(pause) and not (ckpt and os.path.exists(ckpt)):
             time.sleep(1)
-        os.remove(ack)
+        if os.path.exists(ack):
+            os.remove(ack)
     ckpt = os.environ.get("FIREFIGHTER_CHECKPOINT_FILE")
     if ckpt and os.path.exists(ckpt):
         if save_checkpoint:
@@ -898,4 +926,20 @@ func mins(m float64) string {
 		return fmt.Sprintf("%.1fh", m/60)
 	}
 	return fmt.Sprintf("%.0fm", m)
+}
+
+// callerProject is the project of the current directory, sent so firefighter can refuse touching
+// another project's job without --force.
+func callerProject() string {
+	wd, _ := os.Getwd()
+	return projectOf(wd)
+}
+
+func hasFlag(args []string, f string) bool {
+	for _, a := range args {
+		if a == f {
+			return true
+		}
+	}
+	return false
 }

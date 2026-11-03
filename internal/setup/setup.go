@@ -132,6 +132,11 @@ func upsertBlock(path, block string) error {
 // writeFile replaces a config file safely: a one-time .firefighter.bak of the original, then a
 // temp file renamed over it, so a crash never leaves it truncated.
 func writeFile(path string, b []byte) error {
+	// A symlinked config (stow, chezmoi, a dotfiles repo) is edited where it lives: renaming over
+	// the link would cut it off from its repo.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -229,7 +234,8 @@ func jsonServers(path, key, exe string, add bool) error {
 	return writeFile(path, out)
 }
 
-var codexHeader = regexp.MustCompile(`^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*"?firefighter"?[ \t]*\][ \t]*(#.*)?$`)
+// The firefighter table and its subtables ([mcp_servers.firefighter.env], ...).
+var codexHeader = regexp.MustCompile(`^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*"?firefighter"?[ \t]*(\.[^\]]*)?\][ \t]*(#.*)?$`)
 var anyHeader = regexp.MustCompile(`^[ \t]*\[`)
 
 // codexTOML adds or removes the [mcp_servers.firefighter] table in Codex's config.toml. It edits
@@ -251,7 +257,7 @@ func codexTOML(exe string, add bool) error {
 		case codexHeader.MatchString(line):
 			skipping = true
 			continue
-		case skipping && anyHeader.MatchString(line):
+		case skipping && anyHeader.MatchString(line) && !codexHeader.MatchString(line):
 			skipping = false
 		}
 		if !skipping {
@@ -327,7 +333,7 @@ func autostart(exe string) error {
 	default:
 		if exec.Command("systemctl", "--user", "show-environment").Run() == nil {
 			dir := filepath.Join(home(), ".config", "systemd", "user")
-			unit := fmt.Sprintf("[Unit]\nDescription=firefighter: shares this machine between AI agents, the human first\n\n[Service]\nExecStart=%s daemon\nExecStop=%s daemon --stop\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n", exe, exe)
+			unit := fmt.Sprintf("[Unit]\nDescription=firefighter: shares this machine between AI agents, the human first\n\n[Service]\nExecStart=%q daemon\nExecStop=%q daemon --stop\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n", exe, exe)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return err
 			}

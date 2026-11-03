@@ -37,7 +37,8 @@ func Background(pid int) error {
 	if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, 19); err != nil {
 		return err
 	}
-	_, _ = run(2*time.Second, "taskpolicy", "-b", "-p", strconv.Itoa(pid))
+	// taskpolicy is a process spawn; callers hold the daemon lock, so it runs in the background.
+	go run(2*time.Second, "taskpolicy", "-b", "-p", strconv.Itoa(pid))
 	return nil
 }
 

@@ -83,7 +83,7 @@ func statusline(args []string) error {
 // events streams one JSON object per line whenever the picture changes (and a heartbeat every
 // 30 s), until stdin closes or the process is killed. Editors spawn it once and read lines.
 func events(args []string) error {
-	c, err := client.Connect()
+	c, err := client.Connect0()
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func events(args []string) error {
 	for {
 		s, err := c.Status()
 		if err != nil {
-			if c2, err2 := client.Connect(); err2 == nil {
+			if c2, err2 := client.Connect0(); err2 == nil {
 				c = c2
 			}
 			time.Sleep(2 * time.Second)

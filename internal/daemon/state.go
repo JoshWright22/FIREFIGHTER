@@ -56,6 +56,12 @@ type saved struct {
 	History  map[string]*History        `json:"history"`
 	Receipts map[string]*Receipt        `json:"receipts"`
 	Plans    []*Plan                    `json:"plans"`
+	// Frozen: processes the daemon suspended (pid -> start time), so a daemon that dies mid-game
+	// can thaw them on its next start even when no client re-registers them (adopted work).
+	Frozen map[int]int64 `json:"frozen,omitempty"`
+	// Newcomers: the budget never-seen projects draw from, refilled daily (guard.new_project_minutes).
+	Newcomers   float64   `json:"newcomers"`
+	NewcomersAt time.Time `json:"newcomers_at"`
 	// Occupancy is how taken the GPU usually is, per hour of the week (0-1), for quotes.
 	Occupancy  []float64 `json:"occupancy"`
 	OccSamples []float64 `json:"occupancy_hours"` // hours of observation behind each slot

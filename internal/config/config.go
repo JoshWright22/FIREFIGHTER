@@ -77,6 +77,7 @@ type Config struct {
 		KillBelowRAMPct   float64 `toml:"kill_below_ram_pct"`
 		MinRuntimeMinutes float64 `toml:"min_runtime_minutes"` // no job-vs-job preemption before this
 		OverrunFactor     float64 `toml:"overrun_factor"`      // past lease x this -> spot band, double charge
+		MaxLeaseMinutes   float64 `toml:"max_lease_minutes"`   // longest lease a job may declare (longer is cut to this)
 	} `toml:"ladder"`
 
 	Guard struct { // fallbacks for agents that skip firefighter, by accident or on purpose
@@ -88,6 +89,12 @@ type Config struct {
 		// AgentsCanConfigure lets the firefighter_config MCP tool change settings. Off: agents can
 		// read the policy but only the human (CLI) changes it.
 		AgentsCanConfigure bool `toml:"agents_can_configure"`
+		// KeepAlive: shared build servers a job may start that must outlive it (they're reused by the
+		// human's own builds), so they aren't killed with the job's leftover workers.
+		KeepAlive []string `toml:"keep_alive"`
+		// NewProjectMinutes: budget all never-seen projects share per day, so inventing project names
+		// doesn't mint budget.
+		NewProjectMinutes float64 `toml:"new_project_minutes"`
 	} `toml:"guard"`
 
 	Harvester struct { // band 4: something that only runs when nothing else wants the GPU (Salad, BOINC, ...)
@@ -133,6 +140,7 @@ func Defaults() Config {
 	c.Ladder.KillBelowRAMPct = 3
 	c.Ladder.MinRuntimeMinutes = 10
 	c.Ladder.OverrunFactor = 1.25
+	c.Ladder.MaxLeaseMinutes = 24 * 60
 	c.Harvester.IdleSeconds = 180
 	c.Guard.AutoAdopt = true
 	// Agent CLIs only: IDEs (Cursor, Windsurf, VS Code) also host the human's own terminals.
@@ -140,6 +148,8 @@ func Defaults() Config {
 	c.Guard.HeavyCPUs = 2
 	c.Guard.HeavyRAMGB = 4
 	c.Guard.HeavySeconds = 60
+	c.Guard.KeepAlive = []string{"vbcscompiler", "msbuild", "sccache", "adb", "gradle", "kotlin-daemon", "bazel", "buildkitd", "dotnet-build-server", "ccache"}
+	c.Guard.NewProjectMinutes = 120
 	return c
 }
 

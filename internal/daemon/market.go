@@ -101,7 +101,7 @@ func (d *Daemon) planned(now time.Time) (at func(h float64) bool, hours map[int]
 		w := strings.ToLower(strings.TrimSpace(p.When))
 		if w == "now" || w == "" {
 			start = p.Added
-		} else if t, err := time.ParseInLocation("15:04", w, now.Location()); err == nil {
+		} else if t, err := parseClock(w, now.Location()); err == nil {
 			start = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
 			if start.Before(now.Add(-time.Duration(math.Max(p.Minutes, 60)) * time.Minute)) {
 				start = start.Add(24 * time.Hour)
@@ -124,6 +124,19 @@ func (d *Daemon) planned(now time.Time) (at func(h float64) bool, hours map[int]
 		}
 		return false
 	}, hours
+}
+
+// parseClock reads "15:04", "3:04 PM", "3:04pm" or "3pm".
+func parseClock(s string, loc *time.Location) (time.Time, error) {
+	s = strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(s)), " ", "")
+	var err error
+	for _, f := range []string{"15:04", "3:04PM", "3PM"} {
+		var t time.Time
+		if t, err = time.ParseInLocation(f, s, loc); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, err
 }
 
 // quote prices a job against the current market: when each tier would start, what it would cost,
@@ -280,11 +293,21 @@ func (d *Daemon) newAccount(project string, now time.Time) policy.Account {
 	}
 	a := policy.Account{DecayAt: now, BucketAt: now, Bucket: d.cfg.Allowance(project)}
 	if len(used) > 0 {
-		a.Bucket = d.cfg.Allowance(project) / 2 // later projects earn the rest by refill
+		// Later projects start from a pool all new projects share per day (guard.new_project_minutes)
+		// and earn the rest by refill: a hundred invented names get no more than one.
+		a.Bucket = math.Min(d.cfg.Allowance(project)/2, d.newcomers(now))
 		sort.Float64s(used)
 		a.Charged, a.Pass = used[len(used)/2], used[len(used)/2]
 	}
 	return a
+}
+
+// newcomers is what's left today in the pool new projects start from.
+func (d *Daemon) newcomers(now time.Time) float64 {
+	if now.Sub(d.st.NewcomersAt) > 24*time.Hour {
+		d.st.Newcomers, d.st.NewcomersAt = d.cfg.Guard.NewProjectMinutes, now
+	}
+	return math.Max(0, d.st.Newcomers)
 }
 
 // probeFromQuery builds a hypothetical ticket from /v1/quote query parameters.

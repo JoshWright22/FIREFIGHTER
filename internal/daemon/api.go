@@ -109,6 +109,7 @@ func (d *Daemon) routes() http.Handler {
 			http.Error(w, "bad token", http.StatusForbidden)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -138,6 +139,18 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	t := req.Ticket
 	if t.ID == "" {
 		t.ID = NewID()
+	}
+	if !validID(t.ID) {
+		fail(w, 400, "id must be 8 lowercase hex characters")
+		return
+	}
+	if t.Minutes < 0 || math.IsNaN(t.Minutes) {
+		t.Minutes = 0
+	}
+	if lim := d.cfg.Ladder.MaxLeaseMinutes; lim > 0 && t.Minutes > lim {
+		// A huge declared lease would dodge the overrun rule and make everyone else's quote say
+		// "starts in days".
+		t.Minutes = lim
 	}
 	if req.Running && (t.PID <= 1 || !sysinfo.Alive(t.PID)) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
@@ -220,6 +233,9 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 	if t.NeedRAM == 0 {
 		t.NeedRAM = 0.5
 	}
+	if most := d.snap.RAMTotalGB * (1 - d.cfg.Reserve.Away.RAMPct/100) * 0.9; most > 0 && t.NeedRAM > most {
+		t.NeedRAM = most // a need the machine can never free would hold the line forever
+	}
 	if t.GPU {
 		t.NeedVRAM = math.Max(t.VRAMGB, h.PeakVRAM*d.cfg.GPU.VRAMMargin)
 		if t.NeedVRAM == 0 {
@@ -279,6 +295,23 @@ type Act struct {
 	Minutes   float64 `json:"minutes"`
 	Log       string  `json:"log"`
 	Container string  `json:"container"`
+	// Project is the caller's project: cancel, bid and extend on another project's job need Force.
+	// A guard against agents touching each other's jobs by accident, not a security boundary.
+	Project string `json:"project,omitempty"`
+	Force   bool   `json:"force,omitempty"`
+}
+
+// validID: ticket ids end up in file names, so only what NewID makes is accepted.
+func validID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
@@ -298,6 +331,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	if (verb == "cancel" || verb == "bid" || verb == "extend") && a.Project != "" && a.Project != j.Project && !a.Force {
+		fail(w, http.StatusForbidden, fmt.Sprintf("job %s belongs to project %s, not %s; add --force if you mean it", id, j.Project, a.Project))
+		return
+	}
 	switch verb {
 	case "start":
 		if j.State != "granted" {
@@ -395,15 +432,20 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		h.Runs++
 	}
 	if !j.suspended.IsZero() {
-		d.each(j, sysinfo.Resume)
+		d.resume(j)
 	}
 	// Workers that outlive their job (data loaders holding VRAM) would make the next GPU job run
-	// out of memory: a finished job's leftovers go with it. Adopted processes are left alone.
+	// out of memory: a finished job's leftovers go with it. Adopted processes are left alone, and so
+	// are shared build servers (guard.keep_alive) the human's own builds reuse.
 	if !j.adopted && j.State == "running" {
 		for p, created := range j.pids {
-			if p != j.PID && sysinfo.Same(p, created) {
+			if p != j.PID && sysinfo.Same(p, created) && !keepAlive(d.cfg.Guard.KeepAlive, sysinfo.Name(p)) {
 				_ = sysinfo.Kill(p)
 			}
+		}
+		// A container started by `docker run` outlives its CLI when the client is interrupted.
+		if j.container != "" && outcome != "ok" && outcome != "failed" {
+			d.docker("kill", j.container)
 		}
 	}
 	for _, f := range []string{PauseFile(id), PausedFile(id), CheckpointFile(id)} {
@@ -420,6 +462,19 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 }
 
 func round1(f float64) float64 { return math.Round(f*10) / 10 }
+
+func keepAlive(names []string, name string) bool {
+	n := strings.ToLower(strings.TrimSuffix(strings.ToLower(name), ".exe"))
+	for _, k := range names {
+		if k != "" && strings.Contains(n, strings.ToLower(k)) {
+			return true
+		}
+	}
+	return false
+}
+
+// clock formats a time the way people in the US read it: "3:04 PM".
+func clock(t time.Time) string { return t.Format("3:04 PM") }
 
 // ---- views --------------------------------------------------------------------------------------
 
@@ -440,7 +495,8 @@ type View struct {
 	Pred     float64       `json:"predicted_minutes,omitempty"`
 	Receipt  *Receipt      `json:"receipt,omitempty"`
 	Quote    *policy.Quote `json:"quote,omitempty"`
-	Market   string        `json:"market,omitempty"` // the quote in one line
+	Market   string        `json:"market,omitempty"`     // the quote in one line
+	Device   *int          `json:"gpu_device,omitempty"` // the GPU it was placed on (multi-GPU machines)
 	PauseF   string        `json:"pause_file,omitempty"`
 	PausedF  string        `json:"paused_file,omitempty"`
 	CheckF   string        `json:"checkpoint_file,omitempty"`
@@ -453,6 +509,10 @@ func (d *Daemon) view(j *job) View {
 		Budget: round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(j.Project))))), Pred: round1(j.PredMinutes),
 		Receipt: j.receipt, Paused: !j.pausedAt.IsZero(), Checkpt: !j.checkpoint.IsZero(), Why: j.reason,
 		PauseF: PauseFile(j.ID), PausedF: PausedFile(j.ID), CheckF: CheckpointFile(j.ID)}
+	if j.device >= 0 {
+		dev := j.device
+		v.Device = &dev
+	}
 	switch j.State {
 	case "waiting":
 		// One source for every estimate: the market's schedule simulation, which counts the human
@@ -460,12 +520,12 @@ func (d *Daemon) view(j *job) View {
 		q := d.quote(*j.Ticket, now)
 		own, _ := q.Tier(tierOf(j.Ticket))
 		v.Position, v.Why = own.Position, d.blocker(j)
-		v.ETA = now.Add(time.Duration(own.StartsIn * float64(time.Minute))).Format("15:04")
+		v.ETA = clock(now.Add(time.Duration(own.StartsIn * float64(time.Minute))))
 		v.StartsIn = own.StartsIn
 		v.Quote, v.Market = &q, q.Line()
 	case "running":
 		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
-		v.ETA = now.Add(time.Duration(left * float64(time.Minute))).Format("15:04")
+		v.ETA = clock(now.Add(time.Duration(left * float64(time.Minute))))
 	}
 	return v
 }
@@ -564,8 +624,23 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
+	if p.Minutes <= 0 || p.Minutes > 7*24*60 || p.GPUPct < 0 || p.GPUPct > 100 || p.VRAMGB < 0 || p.VRAMGB > 4096 ||
+		p.RAMGB < 0 || p.RAMGB > 4096 || len(p.What) > 300 || len(p.When) > 40 || len(p.Project) > 200 {
+		fail(w, 400, "plan: minutes 1-10080, gpu 0-100, sizes 0-4096 GB, short text")
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	mine := 0
+	for _, o := range d.st.Plans {
+		if o.Project == p.Project {
+			mine++
+		}
+	}
+	if mine >= 10 || len(d.st.Plans) >= 100 {
+		fail(w, http.StatusTooManyRequests, "too many plans; remove some with `firefighter plan --done`")
+		return
+	}
 	p.ID, p.Added = NewID(), time.Now()
 	d.st.Plans = append(d.st.Plans, &p)
 	reply(w, p)

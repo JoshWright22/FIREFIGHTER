@@ -86,6 +86,9 @@ type Reader struct {
 	gpu      []GPU
 	gpuAt    time.Time
 	procGPU  map[int]ProcGPU
+	procAt   time.Time
+	idle     float64
+	idleAt   time.Time
 	platform *platformReader
 }
 
@@ -109,9 +112,22 @@ func (r *Reader) Read() Snapshot {
 	s.ProcGPU = r.platform.procGPU()
 	s.ProcUtilKnown = len(s.ProcGPU) > 0
 	if !s.ProcUtilKnown {
-		s.ProcGPU = nvidiaProcs()
+		// nvidia-smi is a process spawn: refresh it with the GPU list, not every tick.
+		if time.Since(r.procAt) > 2*time.Second {
+			r.procGPU, r.procAt = nvidiaProcs(), time.Now()
+		}
+		s.ProcGPU = r.procGPU
 	}
-	s.Idle = idleSeconds()
+	// Idle time spawns helpers on Linux (gdbus, xprintidle): once a second is plenty; between
+	// samples it advances with the clock.
+	if since := time.Since(r.idleAt); since > time.Second {
+		r.idle, r.idleAt = idleSeconds(), time.Now()
+		s.Idle = r.idle
+	} else if r.idle >= 0 {
+		s.Idle = r.idle + since.Seconds()
+	} else {
+		s.Idle = r.idle
+	}
 	s.Foreground = foregroundFullscreen()
 	s.ForegroundApp = foregroundApp()
 	applyFake(&s)

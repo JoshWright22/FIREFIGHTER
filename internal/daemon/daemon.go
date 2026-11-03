@@ -49,13 +49,15 @@ type job struct {
 	container   string
 	receipt     *Receipt
 	extended    float64
-	price       float64 // locked at grant: bid price x congestion x surcharge
-	adopted     bool    // auto-adopted: heavy work an agent started outside firefighter
-	backfilled  bool    // started ahead of a GPU head waiting on VRAM: can't extend its lease
+	price       float64   // locked at grant: bid price x congestion x surcharge
+	adopted     bool      // auto-adopted: heavy work an agent started outside firefighter
+	backfilled  bool      // started ahead of a GPU head waiting on VRAM: can't extend its lease
+	device      int       // GPU index the job was placed on (-1: any/unknown)
+	ackBusy     time.Time // acked the pause but still computing on the GPU since then
 }
 
 func newJob(t *policy.Ticket) *job {
-	j := &job{Ticket: t, pids: map[int]int64{}, applied: map[int]string{}}
+	j := &job{Ticket: t, pids: map[int]int64{}, applied: map[int]string{}, device: -1}
 	if t.PID > 1 {
 		j.rootCreated = sysinfo.Created(t.PID)
 		if j.rootCreated != 0 {
@@ -84,9 +86,11 @@ type Daemon struct {
 	vramLow  time.Time
 	names    map[string]bool
 	namesAt  time.Time
-	foreign  map[string]float64 // non-job GPU users -> %
+	foreign  map[string]float64   // non-job GPU users -> %
 	outSince map[string]time.Time // when each busy non-job GPU user was first seen busy
-	graphics map[string]float64 // non-job 3D-engine users -> % (games, video)
+	lastKill time.Time            // critical-RAM kills wait for the last one to free its memory
+	dockerQ  chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
+	graphics map[string]float64   // non-job 3D-engine users -> % (games, video)
 	others   []sysinfo.Container
 	notify   chan struct{}
 	rng      *rand.Rand
@@ -130,9 +134,49 @@ func New(version string) *Daemon {
 			_ = os.Remove(filepath.Join(signalDir(), e.Name()))
 		}
 	}
+	// Processes a previous daemon suspended and never resumed (it crashed or was killed mid-game):
+	// thaw them, whoever started them.
+	for p, created := range d.st.Frozen {
+		if sysinfo.Same(p, created) {
+			_ = sysinfo.Resume(p)
+		}
+	}
+	d.st.Frozen = map[int]int64{}
+	d.dockerQ = make(chan []string, 64)
+	go func() {
+		for args := range d.dockerQ {
+			docker(args...)
+		}
+	}()
 	// The harvester's state isn't known after a restart: stop it; it restarts after the idle wait.
 	go shell(d.cfg.Harvester.Stop)
 	return d
+}
+
+// suspend freezes a job's processes and records them, so a later daemon can thaw them.
+func (d *Daemon) suspend(j *job) {
+	if d.st.Frozen == nil {
+		d.st.Frozen = map[int]int64{}
+	}
+	for p, created := range j.pids {
+		if sysinfo.Same(p, created) {
+			d.st.Frozen[p] = created
+			_ = sysinfo.Suspend(p)
+		}
+	}
+	d.signalContainer(j, "pause")
+	_ = d.st.write() // now, not at the next periodic save: a crash in between would strand them
+}
+
+// resume thaws a job's processes.
+func (d *Daemon) resume(j *job) {
+	for p, created := range j.pids {
+		delete(d.st.Frozen, p)
+		if sysinfo.Same(p, created) {
+			_ = sysinfo.Resume(p)
+		}
+	}
+	d.signalContainer(j, "unpause")
 }
 
 // release undoes everything the daemon holds over jobs before it exits: suspended jobs resume and
@@ -140,8 +184,7 @@ func New(version string) *Daemon {
 func (d *Daemon) release() {
 	for _, j := range d.jobs {
 		if !j.suspended.IsZero() {
-			d.each(j, sysinfo.Resume)
-			d.signalContainer(j, "unpause")
+			d.resume(j)
 		}
 		_ = os.Remove(PauseFile(j.ID))
 	}
@@ -461,6 +504,9 @@ func (d *Daemon) account(project string, now time.Time) *policy.Account {
 	a := d.st.Accounts[project]
 	if a == nil {
 		na := d.newAccount(project, now)
+		if len(d.st.Accounts) > 0 {
+			d.st.Newcomers -= na.Bucket // drawn from the pool all new projects share
+		}
 		a = &na
 		d.st.Accounts[project] = a
 	}
@@ -533,7 +579,7 @@ func (d *Daemon) enforceCPU() {
 		}
 		if j.container != "" && j.applied[-1] != key {
 			j.applied[-1] = key
-			go docker("update", "--cpuset-cpus", fmt.Sprintf("%d-%d", n-allow, n-1), j.container)
+			d.docker("update", "--cpuset-cpus", fmt.Sprintf("%d-%d", n-allow, n-1), j.container)
 		}
 	}
 }
@@ -563,61 +609,89 @@ func (d *Daemon) ladder(now time.Time) {
 		}
 	}
 
-	// The human's state holds the GPU (game by default): cooperative pause -> suspend (bounded)
-	// -> checkpoint, for GPU jobs. Jobs marked evict=never stay suspended instead.
+	// Memory pressure, measured first: the game ladder below only evicts suspended jobs when the
+	// memory they hold is what the human is short of.
+	ramFloor := d.snap.RAMTotalGB * d.res.RAMPct / 100
+	ramShort := d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < ramFloor
+	vramCard := d.vramShortCard()
+	d.ramLow = since(d.ramLow, ramShort, now)
+	d.vramLow = since(d.vramLow, vramCard >= 0, now)
+
+	// The human's state holds the GPU (game by default): cooperative pause, then suspend. A job
+	// stays suspended while the human needs the GPU; it is only evicted if the memory it holds is
+	// what's short (and --evict never jobs never are, short of critical RAM).
 	hold := d.gpuHeld()
 	for _, j := range d.running() {
 		if !j.GPU || !j.killedAt.IsZero() {
 			continue
 		}
+		acked := exists(PausedFile(j.ID))
 		switch {
 		case hold && j.pausedAt.IsZero() && j.checkpoint.IsZero():
 			j.pausedAt, j.reason = now, "the human needs the GPU ("+d.why()+")"
 			touch(PauseFile(j.ID))
 			logf("%s: pause requested: %s", j.Name, j.reason)
-		case hold && !j.pausedAt.IsZero() && j.suspended.IsZero() && j.checkpoint.IsZero() && !exists(PausedFile(j.ID)) &&
+		case hold && !j.pausedAt.IsZero() && j.suspended.IsZero() && j.checkpoint.IsZero() && !acked &&
 			now.Sub(j.pausedAt) > dur(c.Ladder.PauseAckSeconds):
 			j.suspended = now
-			d.each(j, sysinfo.Suspend)
-			d.signalContainer(j, "pause")
+			d.suspend(j)
 			logf("%s: no pause ack in %.0fs, suspended", j.Name, c.Ladder.PauseAckSeconds)
+		case hold && !j.pausedAt.IsZero() && j.suspended.IsZero() && j.checkpoint.IsZero() && acked:
+			// An ack is a promise, not proof: a job that acked but keeps computing is suspended.
+			j.ackBusy = since(j.ackBusy, j.gpuUtil >= 10, now)
+			if !j.ackBusy.IsZero() && now.Sub(j.ackBusy) > dur(c.Ladder.PauseAckSeconds) {
+				j.suspended = now
+				d.suspend(j)
+				logf("%s: acked the pause but kept the GPU at %.0f%%; suspended", j.Name, j.gpuUtil)
+			}
 		case hold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.Evict != "never" &&
-			now.Sub(j.suspended) > dur(c.Ladder.SuspendMaxSeconds):
-			d.requestCheckpoint(j, now, "the human still needs the GPU after the suspend limit")
+			now.Sub(j.suspended) > dur(c.Ladder.SuspendMaxSeconds) &&
+			((ramShort && j.ramGB > 0.5) || (vramCard >= 0 && d.onCard(j, vramCard))):
+			// Suspended past the limit and holding memory the human is short of. It ignored the
+			// pause file, so it can't checkpoint: resuming it would only let it compute through the
+			// game. Stop it (it is requeued).
+			j.reason = "suspended past the limit, holding memory the human needs"
+			d.killJob(j, now)
 		case !hold && !j.pausedAt.IsZero():
 			d.unpause(j, now)
 			logf("%s: resumed", j.Name)
 		}
 	}
 
-	// RAM and VRAM pressure: under the reserve for PressureSeconds -> checkpoint one victim.
-	ramFloor := d.snap.RAMTotalGB * d.res.RAMPct / 100
-	ramShort := d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < ramFloor
-	free, vt := d.snap.MaxFreeVRAM()
-	vramShort := vt > 0 && free < d.res.VRAMGB
-	d.ramLow = since(d.ramLow, ramShort, now)
-	d.vramLow = since(d.vramLow, vramShort, now)
+	// RAM and VRAM pressure: under the reserve for PressureSeconds -> checkpoint one victim, the one
+	// whose leaving actually covers the shortfall.
 	if !d.ramLow.IsZero() && now.Sub(d.ramLow) > dur(c.Ladder.PressureSeconds) {
-		if v := d.victim(false, true, func(j *job) float64 { return j.ramGB }); v != nil {
+		short := ramFloor - d.snap.RAMAvailGB
+		if v := d.victim(nil, true, false, short, func(j *job) float64 { return j.ramGB }); v != nil {
 			d.requestCheckpoint(v, now, fmt.Sprintf("RAM below the human's %.0f%% reserve", d.res.RAMPct))
 		}
 	}
 	if !d.vramLow.IsZero() && now.Sub(d.vramLow) > dur(c.Ladder.PressureSeconds) {
-		if v := d.victim(true, true, func(j *job) float64 { return j.vramGB }); v != nil {
+		card := vramCard
+		if v := d.victim(func(j *job) bool { return j.GPU && d.onCard(j, card) }, true, false, d.res.VRAMGB, func(j *job) float64 { return j.vramGB }); v != nil {
 			d.requestCheckpoint(v, now, fmt.Sprintf("VRAM below the human's %.1f GB reserve", d.res.VRAMGB))
 		}
 	}
-	// Critical RAM: kill at once, even mid-grace (lmkd/earlyoom order: highest band, heaviest first).
-	if d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < d.snap.RAMTotalGB*c.Ladder.KillBelowRAMPct/100 {
-		if v := d.victim(false, false, func(j *job) float64 { return j.ramGB }); v != nil {
+	// Critical RAM: kill at once, even mid-grace: the job whose RAM covers the shortfall (or the
+	// heaviest), one at a time, giving each kill a few seconds to actually free its memory.
+	if d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < d.snap.RAMTotalGB*c.Ladder.KillBelowRAMPct/100 && now.Sub(d.lastKill) > 5*time.Second {
+		short := d.snap.RAMTotalGB*c.Ladder.KillBelowRAMPct/100 - d.snap.RAMAvailGB
+		if v := d.victim(nil, false, true, short, func(j *job) float64 { return j.ramGB }); v != nil {
 			v.reason = "RAM critically low"
 			d.killJob(v, now)
 		}
 	}
 
 	// A spot GPU job yields to the head of the in-budget GPU line only when that helps: the slots
-	// are full, the spot job has had its minimum runtime, and its VRAM is what the head lacks.
-	if !hold {
+	// are full, the spot job has had its minimum runtime, and its VRAM is what the head lacks. One
+	// at a time: a spot job already leaving frees what the head needs.
+	leaving := false
+	for _, j := range d.running() {
+		if j.GPU && !j.checkpoint.IsZero() && j.killedAt.IsZero() {
+			leaving = true
+		}
+	}
+	if !hold && !leaving {
 		ram, vram := d.headroom(now)
 		var head *policy.Ticket
 		for _, t := range d.waiting() {
@@ -667,13 +741,12 @@ func (d *Daemon) why() string {
 func (d *Daemon) unpause(j *job, now time.Time) {
 	_ = os.Remove(PauseFile(j.ID))
 	if !j.suspended.IsZero() {
-		d.each(j, sysinfo.Resume)
-		d.signalContainer(j, "unpause")
+		d.resume(j)
 	}
 	if !j.pausedAt.IsZero() {
 		j.pausedTotal += now.Sub(j.pausedAt)
 	}
-	j.pausedAt, j.suspended, j.reason = time.Time{}, time.Time{}, ""
+	j.pausedAt, j.suspended, j.ackBusy, j.reason = time.Time{}, time.Time{}, time.Time{}, ""
 }
 
 func since(t time.Time, cond bool, now time.Time) time.Time {
@@ -686,9 +759,10 @@ func since(t time.Time, cond bool, now time.Time) time.Time {
 	return t
 }
 
-// victim picks the job to evict: highest band first, never-evict jobs last, heaviest first. With
-// oneAtATime, nothing is picked while another eviction is still in its grace period.
-func (d *Daemon) victim(gpuOnly, oneAtATime bool, weight func(*job) float64) *job {
+// victim picks the job to evict among those keep() accepts: never-evict jobs only when critical,
+// then jobs whose weight covers the shortfall `need`, then the highest band, then the heaviest.
+// With oneAtATime, nothing is picked while another eviction is still in its grace period.
+func (d *Daemon) victim(keep func(*job) bool, oneAtATime, critical bool, need float64, weight func(*job) float64) *job {
 	var best *job
 	for _, j := range d.running() {
 		if !j.killedAt.IsZero() {
@@ -698,25 +772,67 @@ func (d *Daemon) victim(gpuOnly, oneAtATime bool, weight func(*job) float64) *jo
 			if oneAtATime {
 				return nil
 			}
+			if !critical {
+				continue
+			}
 		}
-		if gpuOnly && !j.GPU {
+		if (keep != nil && !keep(j)) || (j.Evict == "never" && !critical) {
 			continue
 		}
-		if best == nil || better(j, best, weight) {
+		if best == nil || better(j, best, need, weight) {
 			best = j
 		}
 	}
 	return best
 }
 
-func better(a, b *job, w func(*job) float64) bool {
+func better(a, b *job, need float64, w func(*job) float64) bool {
 	if (a.Evict == "never") != (b.Evict == "never") {
 		return b.Evict == "never"
+	}
+	if ca, cb := w(a) >= need, w(b) >= need; ca != cb {
+		return ca // leaving actually fixes the shortfall
 	}
 	if a.Band != b.Band {
 		return a.Band > b.Band
 	}
 	return w(a) > w(b)
+}
+
+// vramShortCard returns the GPU whose free VRAM is under the human's reserve while firefighter
+// jobs run on it, or -1.
+func (d *Daemon) vramShortCard() int {
+	waitingGPU := false
+	for _, t := range d.waiting() {
+		if t.GPU {
+			waitingGPU = true
+		}
+	}
+	// Away with nobody waiting for VRAM: a job that fills the card by design (TensorFlow's default)
+	// hurts no one, so don't evict it in a loop.
+	if d.user == "away" && !waitingGPU {
+		return -1
+	}
+	for i, g := range d.snap.GPUs {
+		if g.VRAMGB-g.UsedGB >= d.res.VRAMGB {
+			continue
+		}
+		for _, j := range d.running() {
+			if j.GPU && d.onCard(j, i) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// onCard says whether a job runs (or may run) on GPU i. Jobs placed nowhere in particular use the
+// default device, 0.
+func (d *Daemon) onCard(j *job, i int) bool {
+	if j.device >= 0 {
+		return j.device == i
+	}
+	return i == 0 || len(d.snap.GPUs) <= 1
 }
 
 // requestCheckpoint asks a job to save and exit; a suspended job is resumed first so it can.
@@ -725,9 +841,17 @@ func (d *Daemon) requestCheckpoint(j *job, now time.Time, why string) {
 		return
 	}
 	if !j.suspended.IsZero() {
-		d.each(j, sysinfo.Resume)
-		d.signalContainer(j, "unpause")
-		j.suspended = time.Time{}
+		// Suspended means it ignored the pause file, so it won't read the checkpoint file either:
+		// resuming it would only let it compute (through the human's game) until the grace ends.
+		j.reason = why
+		d.killJob(j, now)
+		return
+	}
+	// A paused job waits in its pause loop: lift the pause, so it sees the checkpoint request.
+	_ = os.Remove(PauseFile(j.ID))
+	if !j.pausedAt.IsZero() {
+		j.pausedTotal += now.Sub(j.pausedAt)
+		j.pausedAt = time.Time{}
 	}
 	j.checkpoint, j.reason = now, why
 	touch(CheckpointFile(j.ID))
@@ -749,12 +873,13 @@ func (d *Daemon) killJob(j *job, now time.Time) {
 	}
 	logf("%s: killed (%s)", j.Name, j.reason)
 	if j.container != "" {
-		go docker("kill", j.container)
+		d.docker("kill", j.container)
 	}
 	if !j.suspended.IsZero() {
-		d.each(j, sysinfo.Resume) // a stopped process can't die cleanly on some systems
+		d.resume(j) // a stopped process can't die cleanly on some systems
 	}
 	d.each(j, sysinfo.Kill)
+	d.lastKill = now
 }
 
 // each applies f to every member still the same process it was when it joined the job.
@@ -768,7 +893,16 @@ func (d *Daemon) each(j *job, f func(int) error) {
 
 func (d *Daemon) signalContainer(j *job, verb string) {
 	if j.container != "" {
-		go docker(verb, j.container)
+		d.docker(verb, j.container)
+	}
+}
+
+// docker queues a docker CLI call; calls run one at a time, in order.
+func (d *Daemon) docker(args ...string) {
+	select {
+	case d.dockerQ <- args:
+	default:
+		logf("docker queue full; dropped: docker %s", strings.Join(args, " "))
 	}
 }
 
@@ -851,21 +985,42 @@ func (d *Daemon) waiting() []*policy.Ticket {
 	return policy.Order(d.cfg, w, d.st.Accounts, d.capacity(), time.Now(), d.rng)
 }
 
-// headroom is what jobs may still take: available minus the reserve minus what recently started
-// jobs haven't grown into yet. VRAM is per card: the freest GPU.
+// headroom is what jobs may still take: available minus the reserve minus what granted and running
+// jobs haven't grown into yet (a job loading data for minutes hasn't allocated its model; a job
+// that freed its cache while paused will take it back). VRAM is per card: the freest GPU, less the
+// unclaimed needs of jobs placed on it.
 func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 	ram = d.snap.RAMAvailGB - d.snap.RAMTotalGB*d.res.RAMPct/100
-	free, _ := d.snap.MaxFreeVRAM()
+	card, free := d.freestCard()
 	vram = free - d.res.VRAMGB
 	for _, j := range d.jobs {
-		if j.State == "granted" || (j.State == "running" && now.Sub(j.Started) < 90*time.Second) {
+		if j.State == "granted" || j.State == "running" {
 			ram -= math.Max(0, j.NeedRAM-j.ramGB)
-			if j.GPU {
+			if j.GPU && d.onCard(j, card) {
 				vram -= math.Max(0, j.NeedVRAM-j.vramGB)
 			}
 		}
 	}
 	return
+}
+
+// freestCard is the GPU with the most free VRAM after its jobs' unclaimed needs, and its raw free
+// VRAM (-1, 0 with no GPU).
+func (d *Daemon) freestCard() (int, float64) {
+	best, bestLeft, bestFree := -1, 0.0, 0.0
+	for i, g := range d.snap.GPUs {
+		free := g.VRAMGB - g.UsedGB
+		left := free
+		for _, j := range d.jobs {
+			if j.GPU && (j.State == "granted" || j.State == "running") && d.onCard(j, i) {
+				left -= math.Max(0, j.NeedVRAM-j.vramGB)
+			}
+		}
+		if best < 0 || left > bestLeft {
+			best, bestLeft, bestFree = i, left, free
+		}
+	}
+	return best, bestFree
 }
 
 func (d *Daemon) admit(now time.Time) {
@@ -886,13 +1041,33 @@ func (d *Daemon) admit(now time.Time) {
 	}
 	changed := false
 	headWaitsOnVRAM, cpuHeadBlocked := false, false
+	unknownGranted := map[bool]bool{} // first-time commands (no learned peaks): one per kind per tick
+	jobsOn := func(gpu bool) int {
+		n := 0
+		for _, o := range d.jobs {
+			if (o.State == "running" || o.State == "granted") && (!gpu || o.GPU) {
+				n++
+			}
+		}
+		return n
+	}
 	for _, t := range d.waiting() {
 		j := d.jobs[t.ID]
+		overdue := now.Sub(t.Created).Minutes() >= c.Order.MaxWaitMinutes
+		if d.st.History[histKey(t)] == nil {
+			if unknownGranted[t.GPU] {
+				continue
+			}
+		}
 		if t.GPU {
 			if gpuBlocked || gpuRunning >= c.GPU.MaxJobs {
 				continue
 			}
-			if vt > 0 && t.NeedVRAM > vram {
+			// The card can't free more than it has with no firefighter job and no outside compute
+			// on it: a need above that (a learned peak near the card's size) then gets the card as
+			// empty as it gets, instead of waiting forever.
+			emptiest := jobsOn(true) == 0 && len(d.outSince) == 0
+			if vt > 0 && t.NeedVRAM > vram && !emptiest {
 				headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
 				continue
 			}
@@ -904,19 +1079,29 @@ func (d *Daemon) admit(now time.Time) {
 		} else if cpuHeadBlocked && t.PredMinutes > 10 {
 			continue // an overdue big CPU job is waiting for RAM: don't let long jobs eat it first
 		}
-		if t.NeedRAM > ram {
-			if t.GPU {
-				gpuBlocked = true
-			} else if now.Sub(t.Created).Minutes() >= c.Order.MaxWaitMinutes {
-				cpuHeadBlocked = true
+		if t.NeedRAM > ram && !(overdue && jobsOn(false) == 0) {
+			// Short of RAM. An overdue job with no other job running gets what there is (the ladder
+			// still protects the human); otherwise it holds the line only once it's overdue.
+			if overdue {
+				if t.GPU {
+					gpuBlocked = true
+				} else {
+					cpuHeadBlocked = true
+				}
 			}
 			continue
 		}
 		ram -= t.NeedRAM
+		if d.st.History[histKey(t)] == nil {
+			unknownGranted[t.GPU] = true
+		}
 		if t.GPU {
 			vram -= t.NeedVRAM
 			gpuRunning++
 			j.backfilled = headWaitsOnVRAM
+			if len(d.snap.GPUs) > 1 {
+				j.device, _ = d.freestCard() // and the client pins it there (CUDA/HIP_VISIBLE_DEVICES)
+			}
 		}
 		j.State, j.granted = "granted", now
 		d.lockPrice(j, now)

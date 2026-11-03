@@ -44,7 +44,7 @@ export const register: Register = on => {
   // firefighter's daemon still adopts heavy processes started outside it.
   on('tool.call', { tool: 'Bash' }, ($, e, next) => {
     const cmd = e.command
-    if (HEAVY.test(cmd) && !/\bfirefighter\b/.test(cmd)) {
+    if (HEAVY.test(cmd) && !QUEUED.test(cmd)) {
       return {
         deny:
           'firefighter: this looks like heavy work (GPU or long CPU) on a machine shared with other agents and a human who comes first. ' +
