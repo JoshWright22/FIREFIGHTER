@@ -157,11 +157,15 @@ func Defaults() Config {
 	c.Guard.HeavySeconds = 60
 	c.Guard.KeepAlive = []string{"vbcscompiler", "msbuild", "sccache", "adb", "gradle", "kotlin-daemon", "bazel", "buildkitd", "dotnet-build-server", "ccache"}
 	c.Guard.NewProjectMinutes = 120
-	c.Guard.HumanHosts = []string{"explorer", "windowsterminal", "openconsole", "wezterm-gui", "alacritty", "kitty", "ghostty",
+	// Terminal windows only: a chain must pass through one. Not the desktop shell (explorer.exe
+	// x.bat would pass) and not tmux/screen (an agent can start a detached one silently): a human in
+	// those uses --force for other projects' jobs.
+	c.Guard.HumanHosts = []string{"windowsterminal", "openconsole", "wezterm-gui", "alacritty", "kitty", "ghostty",
 		"terminal", "iterm2", "gnome-terminal-server", "konsole", "xterm", "xfce4-terminal", "tilix", "foot", "terminator",
-		"sshd", "tmux: server", "tmux", "screen", "login"}
+		"sshd", "login"}
 	c.Guard.AgentHosts = []string{"node", "bun", "deno", "code", "code - insiders", "cursor", "windsurf", "devin", "electron",
-		"t3 code (beta)", "t3 code", "antigravity", "zed", "idea64", "pycharm64", "webstorm64", "rider64", "goland64", "clion64"}
+		"t3 code (beta)", "t3 code", "antigravity", "zed", "idea64", "pycharm64", "webstorm64", "rider64", "goland64", "clion64",
+		"kiro", "codium", "vscodium", "trae", "void", "positron", "fleet"}
 	return c
 }
 

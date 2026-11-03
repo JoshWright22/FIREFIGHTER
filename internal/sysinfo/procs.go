@@ -99,7 +99,7 @@ func HumanSession(pid int, humans, agents, agentHosts []string) bool {
 		if depth > 0 && (match(n, agents) || match(n, agentHosts)) {
 			return false
 		}
-		if match(n, humans) {
+		if depth > 0 && match(n, humans) { // a host above the caller, never the caller's own name
 			return true
 		}
 		child := p
@@ -119,7 +119,7 @@ func AgentAncestor(pid int, names []string) string {
 			return ""
 		}
 		n, _ := p.Name()
-		n = strings.TrimSuffix(strings.ToLower(n), ".exe")
+		n = printable(strings.TrimSuffix(strings.ToLower(n), ".exe"))
 		for _, a := range names {
 			// "claude" matches claude and claude-1.2, not claudette; "pi" never matches pip.
 			if a = strings.ToLower(a); n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
