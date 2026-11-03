@@ -83,8 +83,8 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 }
 
 // adoptRogues turns found rogues into spot-band jobs: idle priority, the human's CPU reserve, a
-// charge to their project, first in line for preemption. They are never killed for a rival job
-// or a soft pressure signal (evict=never); only critical RAM can kill them, like anything else.
+// charge to their project at 1.5x, and first in line for preemption (checkpoint file, then
+// SIGTERM, then kill), so skipping the queue never pays off.
 func (d *Daemon) adoptRogues(rs []rogue, now time.Time) {
 	for _, r := range rs {
 		if r.created == 0 || !sysinfo.Same(r.proc.PID, r.created) {
@@ -100,7 +100,7 @@ func (d *Daemon) adoptRogues(rs []rogue, now time.Time) {
 			continue
 		}
 		t := &policy.Ticket{ID: NewID(), Project: r.project, Name: fmt.Sprintf("unmanaged %s (started by %s)", r.proc.Name, r.agent),
-			GPU: r.gpu, Minutes: 30, Bid: 5, Evict: "never", Band: policy.BandSpot, State: "running",
+			GPU: r.gpu, Minutes: 30, Bid: 5, Evict: "graceful", Band: policy.BandSpot, State: "running",
 			Created: now, Started: now, PID: r.proc.PID, ClientPID: r.proc.PID, PredMinutes: 30, NeedRAM: r.proc.RAMGB, NeedVRAM: r.vramGB}
 		j := newJob(t)
 		j.adopted = true

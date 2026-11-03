@@ -2,26 +2,48 @@ package policy
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/config"
 )
 
-// firefighter is the market maker for the machine. Instead of letting agents bid blind against each
-// other (LLM bidders start sniping and shading once they see rivals' bids), it posts prices: every
-// call gets a quote with the current congestion price, a menu of what each bid level buys (start
-// time and cost), and the odds each resource is busy over the next hours. Accepting a posted price
-// is the dominant strategy, so there is nothing to game, and agents still see the whole market.
+// firefighter is the market maker for the machine. Agents don't bid against each other (LLM
+// bidders snipe and escalate once they see rivals' positions); firefighter posts prices for three
+// tiers (spot, normal, urgent) and tells each agent, in every reply, when each tier would start,
+// what it would cost, how busy the machine will be, and one recommended action that never says
+// "outbid". Taking a posted price is the dominant strategy, so there is nothing to game.
 
-// Congestion is the posted price multiplier for one machine-minute: 0.5 when the resource sits idle
-// (fill it up), 1 at balance, up to 4 when demand over the next hour far exceeds what's free.
+// Tier bids: spot runs on leftovers at a third of the price; urgent is for work the human is
+// waiting on and costs double. Bids between are accepted from the CLI for compatibility.
+const (
+	BidNormal = 5
+	BidUrgent = 10
+	SpotPrice = 1.0 / 3
+)
+
+// Congestion is the posted price multiplier for one machine-minute: exponential in how committed
+// the resource is over the next hour (online primal-dual pricing, Zhang et al. SIGMETRICS'17):
+// 0.5 idle, ~1.4 at half load, 4 when fully committed.
 func Congestion(demandMinutes, supplyMinutes float64) float64 {
 	if supplyMinutes <= 0 {
 		return 4
 	}
-	return math.Max(0.5, math.Min(4, 0.5+demandMinutes/supplyMinutes))
+	u := math.Max(0, math.Min(1, demandMinutes/supplyMinutes))
+	return 0.5 * math.Pow(8, u)
+}
+
+// Remaining estimates a running job's minutes left. Before its prediction: the prediction minus
+// its age. Past it: half its age again (heavy-tailed runtimes: a job that overran tends to keep
+// going; mean residual life grows with age), never under a minute.
+func Remaining(predicted, age float64) float64 {
+	if age < predicted {
+		return math.Max(1, predicted-age)
+	}
+	return math.Max(1, age/2)
 }
 
 // Slot is one running or waiting job, as the scheduler simulation sees it.
@@ -33,7 +55,7 @@ type Slot struct {
 
 // Schedule simulates the GPU (or CPU) line: running jobs finish on their predicted ends, waiting
 // jobs start in order on the first free slot. It returns each waiting job's start offset (minutes)
-// and the busy intervals of the whole schedule.
+// and the time each slot frees after the whole queue.
 func Schedule(slots int, running []Slot, waiting []Slot) (starts map[string]float64, busyUntil []float64) {
 	if slots < 1 {
 		slots = 1
@@ -57,22 +79,36 @@ func Schedule(slots int, running []Slot, waiting []Slot) (starts map[string]floa
 	return starts, free
 }
 
-// BusyProb is the chance the resource is fully taken h minutes from now: the simulated schedule says
-// busy or free, blended with how busy this hour of the week usually is (plans and history) so a
-// quote never promises more certainty than the past supports.
-func BusyProb(h float64, busyUntil []float64, prior float64) float64 {
-	sched := 1.0
+// BusyProb is the chance the resource is fully taken h minutes from now. Three independent signals:
+// the simulated schedule (trusted less the further out it looks), how busy this hour of the week
+// has been (weighted in as the horizon grows), and announced plans (at a 0.7 reliability):
+// P = 1 - (1-Psched)(1-w(h)·Phist)(1-Pplan), w(h) = 1 - e^(-h/60).
+func BusyProb(h float64, busyUntil []float64, hist float64, histKnown bool, plan bool) float64 {
+	sched := 0.0
+	full := len(busyUntil) > 0
 	for _, b := range busyUntil {
 		if b <= h {
-			sched = 0 // at least one slot is free by then
+			full = false
 			break
 		}
 	}
-	return math.Round((0.8*sched+0.2*prior)*100) / 100
+	if full {
+		sched = 0.95 - 0.25*(1-math.Exp(-h/120)) // runtimes are uncertain: less sure further out
+	}
+	w := 0.0
+	if histKnown {
+		w = 1 - math.Exp(-h/60)
+	}
+	p := 0.0
+	if plan {
+		p = 0.7
+	}
+	return math.Round((1-(1-sched)*(1-w*hist)*(1-p))*100) / 100
 }
 
-// Offer is one line of the menu: what a bid level buys.
+// Offer is one tier of the menu.
 type Offer struct {
+	Tier     string  `json:"tier"` // spot | normal | urgent
 	Bid      int     `json:"bid"`
 	StartsIn float64 `json:"starts_in_min"`
 	Position int     `json:"position"`
@@ -82,78 +118,114 @@ type Offer struct {
 // Quote is the market information returned with every call.
 type Quote struct {
 	Resource string             `json:"resource"` // gpu | cpu
-	Price    float64            `json:"price"`    // congestion multiplier now
-	Busy     map[string]float64 `json:"busy"`     // horizon ("15m","30m","60m","120m") -> probability fully taken
+	Minutes  float64            `json:"minutes"`  // the job priced (predicted runtime)
+	Price    float64            `json:"congestion"`
+	Busy     map[string]float64 `json:"busy"` // horizon ("15m","30m","60m","120m") -> probability fully taken
 	Menu     []Offer            `json:"menu"`
-	Cheapest string             `json:"cheapest_window,omitempty"`
-	Advice   string             `json:"advice"`
+	Quiet    string             `json:"quiet_window,omitempty"`
+	Do       string             `json:"do"`
 	Budget   float64            `json:"budget_left"`
+	Refill   float64            `json:"refill_per_hour"`
 }
 
-var MenuBids = []int{1, 3, 5, 7, 10}
-
-// Line renders a quote in one compact line for CLI output and agent context.
-func (q Quote) Line() string {
-	s := fmt.Sprintf("market %s: price x%.2f, busy 15m %.0f%% 60m %.0f%% 120m %.0f%%", q.Resource, q.Price,
-		100*q.Busy["15m"], 100*q.Busy["60m"], 100*q.Busy["120m"])
+// Tier returns the menu entry for a tier (spot, normal, urgent).
+func (q Quote) Tier(tier string) (Offer, bool) {
 	for _, o := range q.Menu {
-		s += fmt.Sprintf(" | bid %d: %s, cost %.1f", o.Bid, inMin(o.StartsIn), o.Cost)
+		if o.Tier == tier {
+			return o, true
+		}
 	}
-	if q.Cheapest != "" {
-		s += " | cheapest " + q.Cheapest
+	return Offer{}, false
+}
+
+// Line renders a quote in one compact line (about 60-80 tokens) for CLI output and agent replies.
+func (q Quote) Line() string {
+	var b strings.Builder
+	n, _ := q.Tier("normal")
+	fmt.Fprintf(&b, "%s %.0fm: start %s, cost ~%.0f of %.0f", q.Resource, q.Minutes, inMin(n.StartsIn), n.Cost, q.Budget)
+	if u, ok := q.Tier("urgent"); ok && u.StartsIn < n.StartsIn-1 {
+		fmt.Fprintf(&b, " (urgent %s ~%.0f)", inMin(u.StartsIn), u.Cost)
 	}
-	return s + " | " + q.Advice
+	if s, ok := q.Tier("spot"); ok {
+		fmt.Fprintf(&b, " (spot %s ~%.0f)", inMin(s.StartsIn), s.Cost)
+	}
+	fmt.Fprintf(&b, " | busy 15/60/120m %.0f/%.0f/%.0f%%", 100*q.Busy["15m"], 100*q.Busy["60m"], 100*q.Busy["120m"])
+	if q.Quiet != "" {
+		b.WriteString(" | quiet " + q.Quiet)
+	}
+	b.WriteString(" | do: " + q.Do)
+	return b.String()
 }
 
 func inMin(m float64) string {
 	if m < 1 {
 		return "now"
 	}
+	if m >= 90 {
+		return fmt.Sprintf("~%.1fh", m/60)
+	}
 	return fmt.Sprintf("~%.0fm", m)
 }
 
-// Advise picks the best-value offer for an agent: the cheapest bid that starts within 10% (or 5
-// minutes) of the fastest one, unless the budget can't afford it.
-func Advise(menu []Offer, budget float64) string {
-	if len(menu) == 0 {
-		return ""
+// Advise is the one recommended action. It never says "outbid": a normal job takes the normal
+// tier; urgent only when the human waits on it (the agent's call, not the market's); spot or a
+// quiet window when the wait is long; spot when the budget can't cover it.
+func Advise(q Quote, urgent bool) string {
+	n, _ := q.Tier("normal")
+	s, hasSpot := q.Tier("spot")
+	switch {
+	case n.Cost > q.Budget && hasSpot:
+		return fmt.Sprintf("budget %.0f < %.0f: use spot (~%.0f) or wait for the refill (+%.0f/h)", q.Budget, n.Cost, s.Cost, q.Refill)
+	case urgent:
+		u, _ := q.Tier("urgent")
+		return fmt.Sprintf("urgent starts %s; keep it only if the human is waiting", inMin(u.StartsIn))
+	case n.StartsIn >= 60 && q.Quiet != "":
+		return fmt.Sprintf("queue it (starts %s), or spot if it can wait, or plan it for %s", inMin(n.StartsIn), strings.Fields(q.Quiet)[0])
+	case n.StartsIn >= 60 && hasSpot:
+		return fmt.Sprintf("queue it (starts %s); spot is ~%.0f if it can wait", inMin(n.StartsIn), s.Cost)
+	case n.StartsIn < 1:
+		return "run it now at normal"
 	}
-	fastest := menu[0]
-	for _, o := range menu {
-		if o.StartsIn < fastest.StartsIn {
-			fastest = o
-		}
-	}
-	best := fastest
-	for _, o := range menu {
-		if o.StartsIn <= fastest.StartsIn+math.Max(5, 0.1*fastest.StartsIn) && o.Cost < best.Cost {
-			best = o
-		}
-	}
-	if best.Cost > budget {
-		return fmt.Sprintf("budget %.0f is short of %.0f: run --spot or wait for the refill", budget, best.Cost)
-	}
-	return fmt.Sprintf("best value: bid %d (%s)", best.Bid, inMin(best.StartsIn))
+	return fmt.Sprintf("queue it at normal (starts %s); keep working meanwhile", inMin(n.StartsIn))
 }
 
 // HourOfWeek indexes the 168-slot occupancy history.
 func HourOfWeek(t time.Time) int { return int(t.Weekday())*24 + t.Hour() }
 
-// CheapestWindow finds the next start hour (within a day) with the lowest historical occupancy.
-func CheapestWindow(now time.Time, history []float64) string {
-	if len(history) != 168 {
+// QuietWindow suggests an upcoming quiet hour (within a day) from the occupancy history. To avoid
+// herding every agent into the same hour, each job gets its own pick among the near-quietest hours
+// (a hash of its id), and hours with announced plans are skipped.
+func QuietWindow(now time.Time, history []float64, samples []float64, planned map[int]bool, id string) string {
+	if len(history) != 168 || len(samples) != 168 {
 		return ""
 	}
-	best, at := 2.0, 0
+	type cand struct {
+		at int
+		v  float64
+	}
+	var cs []cand
+	best := 2.0
 	for h := 1; h <= 24; h++ {
-		if v := history[HourOfWeek(now.Add(time.Duration(h)*time.Hour))]; v < best-0.05 {
-			best, at = v, h
+		i := HourOfWeek(now.Add(time.Duration(h) * time.Hour))
+		if samples[i] < 3 || planned[i] {
+			continue // no history yet for that hour, or someone announced work then
+		}
+		cs = append(cs, cand{h, history[i]})
+		best = math.Min(best, history[i])
+	}
+	if best > 0.5 {
+		return ""
+	}
+	var near []cand
+	for _, c := range cs {
+		if c.v <= best+0.1 {
+			near = append(near, c)
 		}
 	}
-	if at == 0 || best > 0.5 {
-		return ""
-	}
-	return now.Add(time.Duration(at)*time.Hour).Format("15:00") + fmt.Sprintf(" (usually %.0f%% busy)", 100*best)
+	f := fnv.New32a()
+	f.Write([]byte(id))
+	c := near[int(f.Sum32())%len(near)]
+	return now.Add(time.Duration(c.at)*time.Hour).Format("15:00") + fmt.Sprintf(" (usually %.0f%% busy)", 100*c.v)
 }
 
 // Surcharge for a project whose jobs keep running longer than they declare (median ratio > 1.5).
@@ -167,7 +239,7 @@ func Surcharge(ratios []float64) float64 {
 	return 1
 }
 
-// Rank orders a hypothetical ticket among waiting ones at a given bid, for the menu.
+// Rank orders a hypothetical ticket among waiting ones, for the menu.
 func Rank(c config.Config, probe *Ticket, waiting []*Ticket, accts map[string]*Account, capy Capacity, now time.Time) int {
 	all := append([]*Ticket{probe}, waiting...)
 	for i, t := range Order(c, all, accts, capy, now, nil) {

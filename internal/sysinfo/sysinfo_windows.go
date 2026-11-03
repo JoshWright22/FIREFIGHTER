@@ -104,6 +104,17 @@ func foregroundFullscreen() string {
 	return n
 }
 
+// foregroundApp names the process that owns the focused window.
+func foregroundApp() string {
+	hwnd, _, _ := getForegroundWindow.Call()
+	if hwnd == 0 {
+		return ""
+	}
+	var pid uint32
+	getWindowThreadPid.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	return Name(int(pid))
+}
+
 // platformReader holds a PDH query on the GPU Engine and GPU Process Memory counters: the only
 // system-wide per-process GPU numbers under WDDM (nvidia-smi reports N/A there).
 type platformReader struct {

@@ -51,6 +51,7 @@ type job struct {
 	extended    float64
 	price       float64 // locked at grant: bid price x congestion x surcharge
 	adopted     bool    // auto-adopted: heavy work an agent started outside firefighter
+	backfilled  bool    // started ahead of a GPU head waiting on VRAM: can't extend its lease
 }
 
 func newJob(t *policy.Ticket) *job {
@@ -78,6 +79,7 @@ type Daemon struct {
 	gameWhy  string
 	gameTill time.Time
 	busyUser float64
+	utilEWMA float64 // GPU utilization smoothed over ~30 s: packing decisions ignore momentary dips
 	ramLow   time.Time
 	vramLow  time.Time
 	names    map[string]bool
@@ -121,7 +123,30 @@ func New(version string) *Daemon {
 	}
 	d.reloadConfig()
 	_ = os.MkdirAll(signalDir(), 0o755)
+	// Pause files left by a daemon that died mid-game would freeze cooperative jobs: clear them.
+	if ents, err := os.ReadDir(signalDir()); err == nil {
+		for _, e := range ents {
+			_ = os.Remove(filepath.Join(signalDir(), e.Name()))
+		}
+	}
+	// The harvester's state isn't known after a restart: stop it; it restarts after the idle wait.
+	go shell(d.cfg.Harvester.Stop)
 	return d
+}
+
+// release undoes everything the daemon holds over jobs before it exits: suspended jobs resume and
+// pause files go, so a restart or upgrade never leaves a job frozen.
+func (d *Daemon) release() {
+	for _, j := range d.jobs {
+		if !j.suspended.IsZero() {
+			d.each(j, sysinfo.Resume)
+			d.signalContainer(j, "unpause")
+		}
+		_ = os.Remove(PauseFile(j.ID))
+	}
+	if d.harvest.on {
+		shell(d.cfg.Harvester.Stop)
+	}
 }
 
 func signalDir() string { return filepath.Join(config.Home(), "signals") }
@@ -253,6 +278,11 @@ func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []
 	d.reloadConfig()
 	c := d.cfg
 	d.snap = snap
+	if dt > 0 {
+		d.utilEWMA += (1 - math.Exp(-dt.Seconds()/30)) * (snap.GPUUtil() - d.utilEWMA)
+	} else {
+		d.utilEWMA = snap.GPUUtil()
+	}
 	d.applyMeasurements(meas, now, dt)
 	d.observeOccupancy(now, dt)
 	d.senseUser(now)
@@ -388,8 +418,9 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
 	d.foreign, d.graphics = map[string]float64{}, map[string]float64{}
 	for pid, g := range d.snap.ProcGPU {
-		// Linux reports VRAM only: a non-job process holding over 1 GB counts as GPU work.
-		if jobPIDs[pid] || (g.Util < 1 && g.VRAMGB < 1) {
+		// Where per-process utilization is measured, only real use counts (a browser holding VRAM
+		// isn't GPU work). Where it isn't (Linux), holding over 1 GB of VRAM is the only sign.
+		if jobPIDs[pid] || (d.snap.ProcUtilKnown && g.Util < 1) || (!d.snap.ProcUtilKnown && g.VRAMGB < 1) {
 			continue
 		}
 		n := sysinfo.Name(pid)
@@ -415,7 +446,8 @@ func (d *Daemon) capacity() policy.Capacity {
 func (d *Daemon) account(project string, now time.Time) *policy.Account {
 	a := d.st.Accounts[project]
 	if a == nil {
-		a = &policy.Account{}
+		na := d.newAccount(project, now)
+		a = &na
 		d.st.Accounts[project] = a
 	}
 	a.Decay(now, d.cfg.Order.HalfLifeHours)
@@ -439,8 +471,10 @@ func (d *Daemon) senseUser(now time.Time) {
 			why = a
 		}
 	}
-	for n, u := range d.graphics { // 3D engine only: CUDA compute outside firefighter is load, not play
-		if u >= c.Reserve.ForeignGPUPct {
+	// Heavy 3D-engine use by the app in front is play (a game in a window); 3D use by background
+	// processes, and CUDA compute anywhere outside firefighter, is load, not the human.
+	for n, u := range d.graphics {
+		if u >= c.Reserve.ForeignGPUPct && (d.snap.ForegroundApp == "" || strings.EqualFold(n, d.snap.ForegroundApp)) && d.snap.ProcUtilKnown {
 			why = fmt.Sprintf("%s using %.0f%% of the 3D engine", n, u)
 		}
 	}
@@ -567,22 +601,30 @@ func (d *Daemon) ladder(now time.Time) {
 		}
 	}
 
-	// A spot GPU job yields to an in-budget GPU job only when that helps: the spot job has had its
-	// minimum runtime, and the waiting job is blocked by nothing but the GPU itself.
+	// A spot GPU job yields to the head of the in-budget GPU line only when that helps: the slots
+	// are full, the spot job has had its minimum runtime, and its VRAM is what the head lacks.
 	if !hold {
-		ram, _ := d.headroom(now)
-		for _, w := range d.jobs {
-			if w.State != "waiting" || !w.GPU || w.Band >= policy.BandSpot || w.NeedRAM > ram {
-				continue
+		ram, vram := d.headroom(now)
+		var head *policy.Ticket
+		for _, t := range d.waiting() {
+			if t.GPU && t.Band < policy.BandSpot {
+				head = t
+				break
 			}
+		}
+		slotsFull := d.gpuBusySlots() >= c.GPU.MaxJobs
+		if head != nil && head.NeedRAM <= ram {
+			var spot *job
 			for _, j := range d.running() {
 				if j.GPU && j.Band == policy.BandSpot && j.checkpoint.IsZero() && j.Evict != "never" &&
-					j.leaseUsed(now).Minutes() >= c.Ladder.MinRuntimeMinutes {
-					d.requestCheckpoint(j, now, "spot job yields to an in-budget job")
-					break
+					j.leaseUsed(now).Minutes() >= c.Ladder.MinRuntimeMinutes && (spot == nil || j.vramGB > spot.vramGB) {
+					spot = j
 				}
 			}
-			break
+			fits := head.NeedVRAM <= vram
+			if spot != nil && (slotsFull || !fits) && head.NeedVRAM <= vram+spot.vramGB+0.5 {
+				d.requestCheckpoint(spot, now, "spot job yields to "+head.Name)
+			}
 		}
 	}
 
@@ -740,21 +782,47 @@ func (d *Daemon) reap(now time.Time) {
 			d.finish(id, -1, "lost", "")
 		case j.State == "granted" && now.Sub(j.granted) > 2*time.Minute:
 			j.State = "waiting"
+			logf("%s: granted 2 min ago but never started; back to waiting", j.Name)
 		}
 	}
 }
 
-// refreshBands re-places waiting tickets as budgets drain and refill.
+// refreshBands re-places tickets as budgets drain and refill. A running job whose project's
+// budget runs out drops to the spot band (preempted first) until the refill.
 func (d *Daemon) refreshBands(now time.Time) {
 	for _, j := range d.jobs {
-		if j.State != "waiting" || j.Spot {
+		if j.Spot || j.adopted || j.State == "done" || j.State == "granted" {
 			continue
 		}
 		a := d.account(j.Project, now)
-		if b := policy.BandFor(j.Ticket, a.Left(d.cfg, d.cfg.Allowance(j.Project)) > 0); b != j.Band {
-			j.Band = b
+		inBudget := a.Left(d.cfg, d.cfg.Allowance(j.Project)) > 0
+		switch {
+		case j.State == "waiting":
+			j.Band = policy.BandFor(j.Ticket, inBudget)
+		case j.State == "running" && !inBudget && j.Band != policy.BandSpot:
+			j.Band = policy.BandSpot
+			logf("%s: %s is out of budget; job now spot (preempted first)", j.Name, j.Project)
+		case j.State == "running" && inBudget && j.Band == policy.BandSpot && !j.overrun:
+			j.Band = policy.BandFor(j.Ticket, true)
 		}
 	}
+}
+
+// gpuBusySlots counts GPU slots taken: firefighter GPU jobs (running or granted) plus heavy GPU
+// compute outside firefighter.
+func (d *Daemon) gpuBusySlots() int {
+	n := 0
+	for _, j := range d.jobs {
+		if j.GPU && (j.State == "running" || j.State == "granted") {
+			n++
+		}
+	}
+	for _, u := range d.foreign {
+		if u >= d.cfg.Reserve.ForeignGPUPct {
+			n++
+		}
+	}
+	return n
 }
 
 // ---- admission ----------------------------------------------------------------------------------
@@ -796,14 +864,10 @@ func (d *Daemon) admit(now time.Time) {
 			gpuRunning++
 		}
 	}
-	// GPU compute outside firefighter (another agent's unmanaged job, a local model server) holds a slot.
-	for _, u := range d.foreign {
-		if u >= c.Reserve.ForeignGPUPct {
-			gpuRunning++
-		}
-	}
+	gpuRunning = d.gpuBusySlots()
 	gpuBlocked := d.gpuHeld()
-	if gpuRunning > 0 && d.snap.GPUUtil() >= c.GPU.PackBelowUtil {
+	// Pack a second GPU job only while the smoothed (not momentary) utilization leaves room.
+	if gpuRunning > 0 && math.Max(d.utilEWMA, d.snap.GPUUtil()*0.5) >= c.GPU.PackBelowUtil {
 		gpuBlocked = true
 	}
 	changed := false
@@ -838,9 +902,11 @@ func (d *Daemon) admit(now time.Time) {
 		if t.GPU {
 			vram -= t.NeedVRAM
 			gpuRunning++
+			j.backfilled = headWaitsOnVRAM
 		}
 		j.State, j.granted = "granted", now
 		d.lockPrice(j, now)
+		logf("%s: granted (gpu jobs %d of %d, %.1f GB RAM / %.1f GB VRAM headroom left)", j.Name, gpuRunning, c.GPU.MaxJobs, ram, vram)
 		changed = true
 	}
 	if changed {

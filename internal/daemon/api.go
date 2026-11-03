@@ -87,6 +87,7 @@ func (d *Daemon) routes() http.Handler {
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			d.mu.Lock()
+			d.release()
 			_ = d.st.write()
 			d.mu.Unlock()
 			close(d.stop)
@@ -155,14 +156,17 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if t.Name == "" {
 		t.Name = t.Project
 	}
-	open := 0
+	open, total := 0, 0
 	for _, o := range d.jobs {
-		if o.Project == t.Project && o.State != "done" {
-			open++
+		if o.State != "done" && !o.adopted {
+			total++
+			if o.Project == t.Project {
+				open++
+			}
 		}
 	}
-	if open >= maxOpenPerProject && !req.Running {
-		fail(w, http.StatusTooManyRequests, fmt.Sprintf("project %s already has %d jobs queued or running; wait for some to finish", t.Project, open))
+	if !req.Running && (open >= maxOpenPerProject || total >= maxOpenTotal) {
+		fail(w, http.StatusTooManyRequests, fmt.Sprintf("too many open jobs (%d in %s, %d in all); wait for some to finish", open, t.Project, total))
 		return
 	}
 	if t.Bid == 0 {
@@ -183,6 +187,10 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	}
 	j := newJob(&t)
 	if req.Running {
+		// Re-registration after a daemon restart: undo any suspend the old daemon left behind.
+		for p := range sysinfo.Members(t.PID, j.rootCreated, nil) {
+			_ = sysinfo.Resume(p)
+		}
 		_ = sysinfo.Background(t.PID)
 		d.lockPrice(j, now)
 	}
@@ -193,7 +201,11 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	reply(w, d.view(j))
 }
 
-const maxOpenPerProject = 20 // queue-flood guard
+// Queue-flood guards: per project, and in all (so inventing project names doesn't get around it).
+const (
+	maxOpenPerProject = 20
+	maxOpenTotal      = 60
+)
 
 func histKey(t *policy.Ticket) string { return t.Project + "|" + t.CmdHash }
 
@@ -288,7 +300,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	switch verb {
 	case "start":
-		if j.State != "granted" && j.State != "waiting" {
+		if j.State != "granted" {
 			fail(w, http.StatusConflict, "job "+id+" is "+j.State+", not granted")
 			return
 		}
@@ -322,12 +334,12 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "extend by 1 to 1440 minutes")
 			return
 		}
-		j.extended += a.Minutes
-		if j.overrun {
-			j.overrun = false
-			a := d.account(j.Project, now)
-			j.Band = policy.BandFor(j.Ticket, a.Left(d.cfg, d.cfg.Allowance(j.Project)) > 0)
+		if j.backfilled {
+			fail(w, http.StatusConflict, "this job started early (backfill) on a short lease; it can't be extended. Requeue the rest with an honest --minutes")
+			return
 		}
+		// An extension pushes the lease out, but an overrun already charged at 2x stays that way.
+		j.extended += a.Minutes
 		logf("%s: lease extended by %.0f min", j.Name, a.Minutes)
 	case "done":
 		outcome := "ok"
@@ -372,7 +384,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 			h = &History{}
 			d.st.History[histKey(j.Ticket)] = h
 		}
-		if j.Minutes > 0 && outcome == "ok" {
+		if j.Minutes > 0 && outcome == "ok" && ran >= 0.5 { // sub-30 s runs say nothing about runtime
 			h.Ratios = append(h.Ratios, math.Max(0.05, ran/j.Minutes))
 			if len(h.Ratios) > 5 {
 				h.Ratios = h.Ratios[len(h.Ratios)-5:]
@@ -422,8 +434,9 @@ type View struct {
 	Why      string        `json:"why,omitempty"`      // what it's waiting for, or why it's paused
 	Paused   bool          `json:"paused,omitempty"`
 	Checkpt  bool          `json:"checkpoint,omitempty"`
-	Price    float64       `json:"price,omitempty"` // machine-minute price multiplier of its bid
-	Budget   float64       `json:"budget_left"`     // project's machine-minutes left
+	StartsIn float64       `json:"starts_in_min,omitempty"`
+	Tier     string        `json:"tier,omitempty"` // spot | normal | urgent
+	Budget   float64       `json:"budget_left"`    // project's machine-minutes left
 	Pred     float64       `json:"predicted_minutes,omitempty"`
 	Receipt  *Receipt      `json:"receipt,omitempty"`
 	Quote    *policy.Quote `json:"quote,omitempty"`
@@ -435,59 +448,26 @@ type View struct {
 
 func (d *Daemon) view(j *job) View {
 	now := time.Now()
-	a := d.account(j.Project, now)
-	v := View{ID: j.ID, Name: j.Name, Project: j.Project, State: j.State, Band: j.Band, Price: policy.Price(d.cfg, j.Bid),
+	a := d.peek(j.Project, now)
+	v := View{ID: j.ID, Name: j.Name, Project: j.Project, State: j.State, Band: j.Band, Tier: tierOf(j.Ticket),
 		Budget: round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(j.Project))))), Pred: round1(j.PredMinutes),
 		Receipt: j.receipt, Paused: !j.pausedAt.IsZero(), Checkpt: !j.checkpoint.IsZero(), Why: j.reason,
 		PauseF: PauseFile(j.ID), PausedF: PausedFile(j.ID), CheckF: CheckpointFile(j.ID)}
 	switch j.State {
 	case "waiting":
-		pos, eta, why := d.queueSpot(j, now)
-		v.Position, v.ETA, v.Why = pos, eta.Format("15:04"), why
+		// One source for every estimate: the market's schedule simulation, which counts the human
+		// holding the GPU and GPU work outside firefighter.
 		q := d.quote(*j.Ticket, now)
+		own, _ := q.Tier(tierOf(j.Ticket))
+		v.Position, v.Why = own.Position, d.blocker(j)
+		v.ETA = now.Add(time.Duration(own.StartsIn * float64(time.Minute))).Format("15:04")
+		v.StartsIn = own.StartsIn
 		v.Quote, v.Market = &q, q.Line()
 	case "running":
-		v.ETA = j.Started.Add(time.Duration((j.PredMinutes + j.extended) * float64(time.Minute))).Format("15:04")
+		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
+		v.ETA = now.Add(time.Duration(left * float64(time.Minute))).Format("15:04")
 	}
 	return v
-}
-
-// queueSpot estimates a waiting ticket's place, start time and what blocks it.
-func (d *Daemon) queueSpot(j *job, now time.Time) (int, time.Time, string) {
-	order := d.waiting()
-	slots := []time.Time{}
-	for _, r := range d.running() {
-		if r.GPU == j.GPU {
-			end := r.Started.Add(time.Duration((r.PredMinutes + r.extended) * float64(time.Minute)))
-			if end.Before(now) {
-				end = now.Add(time.Minute)
-			}
-			slots = append(slots, end)
-		}
-	}
-	if len(slots) == 0 {
-		slots = []time.Time{now}
-	}
-	pos := 0
-	for _, t := range order {
-		if t.GPU != j.GPU {
-			continue
-		}
-		pos++
-		// earliest slot
-		k := 0
-		for i := range slots {
-			if slots[i].Before(slots[k]) {
-				k = i
-			}
-		}
-		start := slots[k]
-		if t.ID == j.ID {
-			return pos, start, d.blocker(j)
-		}
-		slots[k] = start.Add(time.Duration(t.PredMinutes * float64(time.Minute)))
-	}
-	return pos, now, d.blocker(j)
 }
 
 func (d *Daemon) blocker(j *job) string {
@@ -505,6 +485,8 @@ func (d *Daemon) blocker(j *job) string {
 		return "GPU busy outside firefighter: " + strings.Join(d.busyOutside(), ", ")
 	case j.GPU:
 		return "GPU turn queue"
+	case j.Band == policy.BandSpot:
+		return "spot: leftovers only"
 	}
 	return "starting"
 }
@@ -554,7 +536,7 @@ func (d *Daemon) status() Status {
 	}
 	s.Market = map[string]policy.Quote{}
 	for _, gpu := range []bool{true, false} {
-		p := policy.Ticket{Project: "any", GPU: gpu, Minutes: 30}
+		p := policy.Ticket{Project: "default", GPU: gpu, Minutes: 30, Bid: policy.BidNormal}
 		d.fillNeeds(&p)
 		s.Market[map[bool]string{true: "gpu", false: "cpu"}[gpu]] = d.quote(p, now)
 	}
@@ -565,7 +547,7 @@ func (d *Daemon) status() Status {
 		s.Waiting = append(s.Waiting, d.view(d.jobs[t.ID]))
 	}
 	for p := range d.st.Accounts {
-		a := d.account(p, now)
+		a := d.peek(p, now)
 		s.Budgets[p] = round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(p)))))
 	}
 	for _, r := range d.st.Receipts {

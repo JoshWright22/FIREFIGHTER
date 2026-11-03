@@ -46,6 +46,11 @@ type Snapshot struct {
 	ProcGPU    map[int]ProcGPU
 	Idle       float64 // seconds since the human's last input; -1 unknown
 	Foreground string  // process name of a fullscreen foreground window, "" if none
+	// ForegroundApp is the process that owns the focused window ("" where unknown).
+	ForegroundApp string
+	// ProcUtilKnown: per-process GPU utilization is measured (Windows GPU counters). Without it
+	// (Linux nvidia-smi gives VRAM only) VRAM held is the only sign of foreign GPU work.
+	ProcUtilKnown bool
 }
 
 // MaxFreeVRAM is the most VRAM free on any single GPU (a job can't span cards), and that card's size.
@@ -102,11 +107,13 @@ func (r *Reader) Read() Snapshot {
 	}
 	s.GPUs = r.gpu
 	s.ProcGPU = r.platform.procGPU()
-	if len(s.ProcGPU) == 0 {
+	s.ProcUtilKnown = len(s.ProcGPU) > 0
+	if !s.ProcUtilKnown {
 		s.ProcGPU = nvidiaProcs()
 	}
 	s.Idle = idleSeconds()
 	s.Foreground = foregroundFullscreen()
+	s.ForegroundApp = foregroundApp()
 	applyFake(&s)
 	return s
 }
@@ -143,6 +150,10 @@ func applyFake(s *Snapshot) {
 	if f.GPUs != nil {
 		s.GPUs = f.GPUs
 		s.ProcGPU = map[int]ProcGPU{} // a scripted GPU has no real processes on it
+		s.ProcUtilKnown = true
+	}
+	if f.Foreground != nil {
+		s.ForegroundApp = *f.Foreground
 	}
 }
 

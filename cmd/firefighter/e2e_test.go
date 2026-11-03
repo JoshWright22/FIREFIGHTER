@@ -159,6 +159,13 @@ func (e *env) cleanup() {
 }
 
 func (e *env) setFake(m map[string]any) {
+	// Every update keeps the scripted human: a real fullscreen app on the test machine must never leak in.
+	if _, ok := m["idle"]; !ok {
+		m["idle"] = 9999.0
+	}
+	if _, ok := m["foreground"]; !ok {
+		m["foreground"] = ""
+	}
 	b, _ := json.Marshal(m)
 	if err := os.WriteFile(e.fake, b, 0o644); err != nil {
 		e.t.Fatal(err)
@@ -480,8 +487,8 @@ func TestMCPServer(t *testing.T) {
 	}
 	in.Write([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n"))
 	list := call(2, "tools/list", map[string]any{})
-	if n := len(list["result"].(map[string]any)["tools"].([]any)); n != 9 {
-		t.Fatalf("want 9 tools, got %d", n)
+	if n := len(list["result"].(map[string]any)["tools"].([]any)); n != 5 {
+		t.Fatalf("want 5 tools (config hidden from agents by default), got %d", n)
 	}
 	st := call(3, "tools/call", map[string]any{"name": "firefighter_status", "arguments": map[string]any{}})
 	if st["result"].(map[string]any)["isError"] == true {
@@ -491,29 +498,31 @@ func TestMCPServer(t *testing.T) {
 	cmdline := "echo mcp-job"
 	sub := call(4, "tools/call", map[string]any{"name": "firefighter_submit", "arguments": map[string]any{"command": cmdline, "cwd": cwd, "minutes": 1}})
 	text := sub["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
-	var got map[string]any
-	if err := json.Unmarshal([]byte(text), &got); err != nil || got["id"] == "" {
-		t.Fatalf("submit: %s", text)
+	fields := strings.Fields(text)
+	if len(fields) < 2 || (fields[0] != "queued" && fields[0] != "started") || len(text) > 400 {
+		t.Fatalf("submit should be one short line: %s", text)
 	}
+	id := fields[1]
 	var waitText string
-	for i := 0; i < 4 && !strings.Contains(waitText, `"state": "done"`); i++ {
-		w := call(5+i, "tools/call", map[string]any{"name": "firefighter_wait", "arguments": map[string]any{"id": got["id"], "timeout_s": 20}})
+	for i := 0; i < 4 && !strings.Contains(waitText, " done "); i++ {
+		w := call(5+i, "tools/call", map[string]any{"name": "firefighter_wait", "arguments": map[string]any{"id": id, "timeout_s": 20}})
 		waitText = w["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 	}
-	if !strings.Contains(waitText, `"outcome": "ok"`) || !strings.Contains(waitText, "mcp-job") {
+	if !strings.Contains(waitText, "done ok exit 0") || !strings.Contains(waitText, "mcp-job") {
 		t.Fatalf("wait:\n%s", waitText)
+	}
+	stat := call(19, "tools/call", map[string]any{"name": "firefighter_status", "arguments": map[string]any{"minutes": 20, "gpu": true}})
+	stText := stat["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(stText, "human:") || !strings.Contains(stText, "quote: gpu 20m") || !strings.Contains(stText, "do: ") || len(stText) > 1500 {
+		t.Fatalf("status:\n%s", stText)
 	}
 	cfg := call(20, "tools/call", map[string]any{"name": "firefighter_config", "arguments": map[string]any{"action": "set", "key": "budget.daily_minutes", "value": "99999"}})
 	if cfg["result"].(map[string]any)["isError"] != true {
 		t.Fatalf("agents must not be able to raise budgets by default: %v", cfg)
 	}
-	show := call(21, "tools/call", map[string]any{"name": "firefighter_config", "arguments": map[string]any{"action": "show"}})
-	if show["result"].(map[string]any)["isError"] == true {
-		t.Fatalf("agents must be able to read the policy: %v", show)
-	}
-	badBid := call(22, "tools/call", map[string]any{"name": "firefighter_submit", "arguments": map[string]any{"command": cmdline, "cwd": cwd, "minutes": 1, "bid": 7.5}})
-	if badBid["result"].(map[string]any)["isError"] != true {
-		t.Fatal("fractional bid must be rejected before spawning")
+	badCwd := call(22, "tools/call", map[string]any{"name": "firefighter_submit", "arguments": map[string]any{"command": cmdline, "cwd": "/no/such/dir", "minutes": 1}})
+	if badCwd["result"].(map[string]any)["isError"] != true {
+		t.Fatal("a missing cwd must be rejected before spawning")
 	}
 	bad := call(23, "nope", nil)
 	if bad["error"] == nil {
@@ -575,32 +584,36 @@ func TestMarketQuoteAndRebid(t *testing.T) {
 		t.Fatal(out)
 	}
 	var q struct {
-		Price float64
-		Busy  map[string]float64
-		Menu  []struct {
-			Bid      int
+		Busy map[string]float64
+		Menu []struct {
+			Tier     string
 			StartsIn float64 `json:"starts_in_min"`
 			Cost     float64
 		}
-		Advice string
+		Do string
 	}
 	if err := json.Unmarshal([]byte(out[strings.Index(out, "{"):]), &q); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if len(q.Menu) != 5 || q.Busy["15m"] == 0 || q.Advice == "" {
-		t.Fatalf("quote incomplete: %+v", q)
+	if len(q.Menu) != 3 || q.Busy["15m"] == 0 || q.Do == "" || strings.Contains(q.Do, "urgent") {
+		t.Fatalf("quote incomplete or escalating: %+v", q)
 	}
-	if q.Menu[4].StartsIn > q.Menu[0].StartsIn || q.Menu[4].Cost <= q.Menu[0].Cost {
-		t.Fatalf("bid 10 must start no later and cost more than bid 1: %+v", q.Menu)
+	spot, normal, urgent := q.Menu[0], q.Menu[1], q.Menu[2]
+	if urgent.StartsIn > normal.StartsIn || urgent.Cost <= normal.Cost || spot.Cost >= normal.Cost || spot.StartsIn < normal.StartsIn {
+		t.Fatalf("tiers out of order: %+v", q.Menu)
 	}
 	id := e.detach("exit:0", "--gpu", "--minutes", "5", "--bid", "1")
 	time.Sleep(time.Second)
 	if out, code := e.ff("bid", id, "9"); code != 0 || !strings.Contains(out, "bid 9") {
 		t.Fatalf("rebid: %d %s", code, out)
 	}
-	w, _ := e.ff("wait", id, "--timeout", "1")
-	if !strings.Contains(w, "market gpu") {
-		t.Fatalf("waiting job must carry the market line:\n%s", w)
+	start := time.Now()
+	w, code := e.ff("wait", id, "--timeout", "2")
+	if code != 124 || time.Since(start) > 10*time.Second {
+		t.Fatalf("wait --timeout must return on time with 124: %d after %s\n%s", code, time.Since(start), w)
+	}
+	if !strings.Contains(w, "waiting #1") || !strings.Contains(w, "gpu 5m: start") || !strings.Contains(w, "do: ") {
+		t.Fatalf("a waiting job must carry its market line:\n%s", w)
 	}
 	e.ff("cancel", hold)
 }

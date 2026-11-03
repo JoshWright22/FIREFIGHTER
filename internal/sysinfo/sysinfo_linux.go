@@ -16,6 +16,7 @@ type platformReader struct{}
 func newPlatformReader() *platformReader         { return &platformReader{} }
 func (*platformReader) procGPU() map[int]ProcGPU { return nil }
 func foregroundFullscreen() string               { return "" }
+func foregroundApp() string                      { return "" }
 
 // idleSeconds asks the desktop: GNOME/Mutter, then the freedesktop ScreenSaver interface (KDE and
 // most Wayland desktops), then xprintidle (X11). Headless machines report unknown (-1), which

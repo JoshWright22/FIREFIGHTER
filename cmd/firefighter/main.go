@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -32,14 +33,14 @@ var version = "dev"
 
 const usage = `firefighter: your agents start the fires, you stay the headliner.
 
-  firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--bid 1-10] [--name NAME] -- <command...>
+  firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
                                  wait for a turn, run the command here, print a receipt
       --detach                   queue it and return a job id at once (then: firefighter wait <id>)
       --evict never|graceful|force   what may happen if the human needs resources back
       --spot                     leftovers only: cheapest, preempted first
   firefighter quote [--gpu] --minutes N [--vram GB] [--ram GB]
                                  the market: price now, start time and cost per bid, busy odds
-  firefighter bid <id> <1-10>    re-bid a waiting job after reading the market
+  firefighter bid <id> <1-10>    change a waiting job's tier (5 normal, 10 urgent)
   firefighter wait <id>          block until a job ends; prints its receipt and log tail
   firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
   firefighter extend <id> <min>  lengthen a running job's lease
@@ -122,11 +123,11 @@ func main() {
 // ---- run --------------------------------------------------------------------------------------------
 
 type runFlags struct {
-	gpu, spot, detach, quiet bool
-	minutes, vram, ram       float64
-	bid                      int
-	name, project, evict     string
-	id, log                  string
+	gpu, spot, detach, quiet, urgent bool
+	minutes, vram, ram               float64
+	bid                              int
+	name, project, evict             string
+	id, log                          string
 }
 
 func parseRun(args []string) (*runFlags, []string, error) {
@@ -139,7 +140,8 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	fs.Float64Var(&r.minutes, "minutes", 0, "runtime estimate (lease)")
 	fs.Float64Var(&r.vram, "vram", 0, "peak VRAM GB")
 	fs.Float64Var(&r.ram, "ram", 0, "peak RAM GB")
-	fs.IntVar(&r.bid, "bid", 5, "urgency 1-10 (costs budget)")
+	fs.IntVar(&r.bid, "bid", 5, "1-10; prefer --urgent (10) or the default (5)")
+	fs.BoolVar(&r.urgent, "urgent", false, "the human is waiting on the result: starts sooner, costs 2x")
 	fs.StringVar(&r.name, "name", "", "job name")
 	fs.StringVar(&r.project, "project", "", "project (default: the git repo or folder name)")
 	fs.StringVar(&r.evict, "evict", "graceful", "never | graceful | force")
@@ -150,6 +152,9 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	}
 	if fs.NArg() == 0 {
 		return nil, nil, errors.New("nothing to run: firefighter run [flags] -- <command...>")
+	}
+	if r.urgent {
+		r.bid = 10
 	}
 	if r.evict != "never" && r.evict != "graceful" && r.evict != "force" {
 		return nil, nil, fmt.Errorf("--evict must be never, graceful or force")
@@ -301,15 +306,18 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		}
 	}()
 
-	last, lastMarket := "", time.Time{}
+	// Print only news: a new place in line, or a start estimate that moved by over 20% (and 5 min),
+	// so a waiting agent reading this output spends almost nothing.
+	lastPos, lastStart, lastMarket := -1, -1.0, time.Time{}
 	for v.State == "waiting" {
-		if line := fmt.Sprintf("#%d in line, on ~%s: %s", v.Position, v.ETA, v.Why); line != last && !quiet {
-			ui.Say(ui.Gold, "%s [%s] waiting in the wings %s", t.Name, ui.BandLabel(v.Band), line)
-			last = line
-		}
-		if v.Market != "" && !quiet && time.Since(lastMarket) > 5*time.Minute {
-			ui.Note("%s  (re-bid: firefighter bid %s <1-10>)", v.Market, t.ID)
-			lastMarket = time.Now()
+		moved := lastStart < 0 || math.Abs(v.StartsIn-lastStart) > math.Max(5, 0.2*lastStart)
+		if !quiet && (v.Position != lastPos || moved) {
+			ui.Say(ui.Gold, "%s %s waiting #%d, starts ~%s (in %s): %s", t.ID, t.Name, v.Position, v.ETA, mins(v.StartsIn), v.Why)
+			lastPos, lastStart = v.Position, v.StartsIn
+			if v.Market != "" && time.Since(lastMarket) > 15*time.Minute {
+				ui.Note("%s", v.Market)
+				lastMarket = time.Now()
+			}
 		}
 		if cancelled.Load() {
 			return 130, false, errors.New("cancelled while waiting")
@@ -464,7 +472,7 @@ func wait(args []string) (int, error) {
 	}
 	deadline := time.Now().Add(time.Duration(*timeout * float64(time.Second)))
 	v, err := c.GetSoon(id)
-	last := ""
+	last, shownMarket := "", false
 	// An evicted job requeues under the same id: keep waiting for the attempt that finishes.
 	for err == nil && (v.State != "done" || (v.Receipt != nil && v.Receipt.Requeue)) {
 		if v.State == "done" {
@@ -479,10 +487,19 @@ func wait(args []string) (int, error) {
 			ui.Note("%s", line)
 			last = line
 		}
-		if *timeout > 0 && time.Now().After(deadline) {
-			return 124, fmt.Errorf("still %s", v.State)
+		if v.Market != "" && !shownMarket {
+			ui.Note("%s", v.Market)
+			shownMarket = true
 		}
-		v, err = c.Get(id, v.State, 25)
+		poll := 25
+		if *timeout > 0 {
+			left := time.Until(deadline).Seconds()
+			if left <= 0 {
+				return 124, fmt.Errorf("still %s", v.State)
+			}
+			poll = int(math.Max(1, math.Min(25, math.Ceil(left))))
+		}
+		v, err = c.Get(id, v.State, poll)
 	}
 	if err != nil {
 		return 1, err
@@ -574,6 +591,7 @@ func quote(args []string) error {
 	fs := flag.NewFlagSet("quote", flag.ContinueOnError)
 	gpu := fs.Bool("gpu", false, "needs the GPU")
 	minutes := fs.Float64("minutes", 30, "runtime estimate")
+	urgent := fs.Bool("urgent", false, "price the urgent tier as the job's own")
 	vram := fs.Float64("vram", 0, "VRAM GB")
 	ram := fs.Float64("ram", 0, "RAM GB")
 	asJSON := fs.Bool("json", false, "JSON")
@@ -585,7 +603,7 @@ func quote(args []string) error {
 		return err
 	}
 	cwd, _ := os.Getwd()
-	q, err := c.Quote(*gpu, *minutes, *vram, *ram, projectOf(cwd), hashCmd(append([]string{""}, fs.Args()...)[1:]))
+	q, err := c.Quote(*gpu, *urgent, *minutes, *vram, *ram, projectOf(cwd), hashCmd(append([]string{""}, fs.Args()...)[1:]))
 	if err != nil {
 		return err
 	}
@@ -871,3 +889,13 @@ def firefighter_step(save_checkpoint=None):
             save_checkpoint()
         sys.exit(75)
 `
+
+func mins(m float64) string {
+	if m < 1 {
+		return "now"
+	}
+	if m >= 90 {
+		return fmt.Sprintf("%.1fh", m/60)
+	}
+	return fmt.Sprintf("%.0fm", m)
+}

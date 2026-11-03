@@ -57,7 +57,8 @@ type saved struct {
 	Receipts map[string]*Receipt        `json:"receipts"`
 	Plans    []*Plan                    `json:"plans"`
 	// Occupancy is how taken the GPU usually is, per hour of the week (0-1), for quotes.
-	Occupancy []float64 `json:"occupancy"`
+	Occupancy  []float64 `json:"occupancy"`
+	OccSamples []float64 `json:"occupancy_hours"` // hours of observation behind each slot
 }
 
 func statePath() string { return filepath.Join(config.Home(), "state.json") }

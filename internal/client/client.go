@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/JoshWright22/firefighter/internal/daemon"
 	"github.com/JoshWright22/firefighter/internal/policy"
@@ -39,8 +41,8 @@ func Connect() (*Client, error) {
 	if ep, err := read(); err == nil {
 		c.ep = ep
 		if c.ping() == nil {
-			if c.version == Version || Version == "dev" || c.version == "dev" {
-				return c, nil
+			if !newer(Version, c.version) {
+				return c, nil // same or newer daemon: an old client never replaces a newer daemon
 			}
 			_ = c.Shutdown() // an older daemon from before an upgrade
 			time.Sleep(500 * time.Millisecond)
@@ -153,9 +155,9 @@ func (c *Client) Status() (daemon.Status, error) {
 }
 
 // Quote asks the market maker what a job would cost and when it would start at each bid.
-func (c *Client) Quote(gpu bool, minutes, vram, ram float64, project, cmd string) (policy.Quote, error) {
+func (c *Client) Quote(gpu, urgent bool, minutes, vram, ram float64, project, cmd string) (policy.Quote, error) {
 	var q policy.Quote
-	return q, c.do("GET", fmt.Sprintf("/v1/quote?gpu=%t&minutes=%g&vram=%g&ram=%g&project=%s&cmd=%s", gpu, minutes, vram, ram, url.QueryEscape(project), cmd), nil, &q)
+	return q, c.do("GET", fmt.Sprintf("/v1/quote?gpu=%t&urgent=%t&minutes=%g&vram=%g&ram=%g&project=%s&cmd=%s", gpu, urgent, minutes, vram, ram, url.QueryEscape(project), cmd), nil, &q)
 }
 
 func (c *Client) Plan(p daemon.Plan) (daemon.Plan, error) {
@@ -192,4 +194,30 @@ func (c *Client) GetSoon(id string) (daemon.View, error) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// newer reports whether version a is newer than b ("v1.2.3"; "dev" is never newer or older).
+func newer(a, b string) bool {
+	if a == "dev" || b == "dev" || a == "" || b == "" {
+		return false
+	}
+	pa, pb := parts(a), parts(b)
+	for i := 0; i < 3; i++ {
+		if pa[i] != pb[i] {
+			return pa[i] > pb[i]
+		}
+	}
+	return false
+}
+
+func parts(v string) [3]int {
+	var out [3]int
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	for i, p := range strings.SplitN(v, ".", 3) {
+		out[i], _ = strconv.Atoi(p)
+	}
+	return out
 }

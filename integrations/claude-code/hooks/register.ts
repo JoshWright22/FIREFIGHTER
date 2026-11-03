@@ -1,5 +1,9 @@
 import type { Register } from 'claude-code'
 
+// A command already going through the queue: `firefighter run ...`, optionally after `cd x &&` or
+// environment assignments.
+const QUEUED = /^\s*(cd\s+\S+\s*&&\s*)?([A-Za-z_][A-Za-z0-9_]*=\S*\s+)*firefighter(\.exe)?\s+run\b/
+
 // Heavy work an agent should queue: training/eval/benchmark scripts, distributed launchers, and
 // GPU containers. Commands that already go through firefighter pass.
 const HEAVY =
@@ -45,7 +49,7 @@ export const register: Register = on => {
         deny:
           'firefighter: this looks like heavy work (GPU or long CPU) on a machine shared with other agents and a human who comes first. ' +
           `Run it through the queue as a background task instead: firefighter run --minutes <honest estimate> [--gpu] [--vram GB] -- ${cmd}  ` +
-          'It waits for a turn, prints a market line (start time and cost per bid), then runs here. If this really is light, prefix the command with FIREFIGHTER_LIGHT=1 to skip this check.',
+          'It waits for a turn, then runs here and prints a receipt; its replies end with a do: line to follow.',
       }
     }
     return next(e)

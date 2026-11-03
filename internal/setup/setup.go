@@ -23,29 +23,14 @@ const begin, end = "<!-- firefighter:begin -->", "<!-- firefighter:end -->"
 // Instructions is the block added to agents' global instruction files.
 const Instructions = begin + `
 ## Shared machine: firefighter
-
-This computer's CPU, GPU, RAM and VRAM are shared by several AI agents and the human, and the human
-always comes first. firefighter hands out turns. Follow this in every project:
-
-- Run heavy work through it: anything on the GPU, and CPU work longer than about a minute (training,
-  evals, builds, renders, batch scripts, ` + "`docker run`" + `). Start it as a background task:
-  ` + "`firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--bid 1-10] --name \"<project> <what>\" -- <command>`" + `
-  It waits for a turn, runs the command in your current environment (venv, conda, uv, docker all
-  work), then prints a receipt. Don't start heavy work outside it, even when it waits.
-- Always pass ` + "`--minutes`" + `, your honest estimate. It's a lease: past 1.25x it drops to the spot
-  band and is charged double unless you run ` + "`firefighter extend <id> <minutes>`" + `.
-- firefighter is the market maker. Every answer it gives (the waiting line of ` + "`run`" + `,
-  ` + "`firefighter quote`" + `, the MCP tools) carries a "market" line: the price now, what each bid
-  buys (start time and cost), and the odds the GPU/CPU is busy over the next 2 hours. Take the bid it
-  calls best value unless the human is waiting on the result; re-bid a waiting job with
-  ` + "`firefighter bid <id> <1-10>`" + `. Bids spend your project's budget; quiet hours cost less.
-- Check ` + "`firefighter status`" + ` before heavy work: what's busy until when, the queue, your budget.
-  Announce big work coming later: ` + "`firefighter plan \"<what>\" --when \"<when>\" --minutes N --gpu PCT --vram GB --ram GB`" + `.
-- When your job waits, tell the human its place and start time from the output; don't work around it.
-- Long GPU loops should honor the pause and checkpoint files (` + "`firefighter protocol`" + ` shows a
-  10-line helper). Heavy work started outside firefighter is adopted anyway, charged, and
-  preempted first. The MCP tools (firefighter_status, _quote, _submit, _wait, _bid, _extend,
-  _cancel, _plan, _config) do the same as the CLI.
+This PC's CPU, GPU and RAM are shared by several AI agents and a human who always comes first.
+- Run every GPU job, and any CPU job over ~1 min, through firefighter as a background task:
+  ` + "`firefighter run [--gpu] --minutes N [--vram GB] --name \"<project> <what>\" -- <cmd>`" + `
+  It waits its turn, then runs here (venv/conda/docker work) and prints a receipt.
+- ` + "`--minutes`" + ` is a lease: give your high-end guess. Past 1.25x it is billed 2x and preempted first unless you run ` + "`firefighter extend <id> <min>`" + `.
+- Every reply ends with ` + "`do: ...`" + `. Follow it. Add ` + "`--urgent`" + ` only when the human is waiting on the result (2x price); ` + "`--spot`" + ` for work that can wait (1/3 price, paused first).
+- Tell the human the start time it shows. Don't run heavy work outside it or change its config: outside work is found, billed 1.5x and preempted first.
+- Heavy work later: ` + "`firefighter plan \"<what>\" --when HH:MM --minutes N --gpu 90`" + `. Long GPU loops: ` + "`firefighter protocol`" + `.
 ` + end + "\n"
 
 type Step struct {
