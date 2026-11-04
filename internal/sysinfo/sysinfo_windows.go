@@ -375,7 +375,8 @@ var getConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 // run, the MCP server) the child gets none either, so nothing flashes over the user's screen. A
 // `cmd /c <line>` goes to cmd.exe verbatim: Go's C-runtime quoting breaks cmd's own parsing.
 func PrepareChild(cmd *exec.Cmd, argv []string) {
-	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP)
+	// Suspended until Started: it joins the job object before it can start any child of its own.
+	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED)
 	if w, _, _ := getConsoleWindow.Call(); w == 0 {
 		flags |= 0x08000000 // CREATE_NO_WINDOW
 	}
@@ -575,3 +576,6 @@ func Packaged() bool {
 	r, _, _ := getCurrentPackageFullName.Call(uintptr(unsafe.Pointer(&n)), 0)
 	return r != 15700 // APPMODEL_ERROR_NO_PACKAGE
 }
+
+// Started lets a child made by PrepareChild run (it was created suspended).
+func Started(pid int) { _ = Resume(pid) }

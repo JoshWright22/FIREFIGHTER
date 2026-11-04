@@ -173,7 +173,9 @@ func (c *Client) Plan(p daemon.Plan) (daemon.Plan, error) {
 	return out, c.do("POST", "/v1/plans", p, &out)
 }
 
-func (c *Client) Unplan(id string) error { return c.do("DELETE", "/v1/plans/"+id, nil, nil) }
+func (c *Client) Unplan(id string) error {
+	return c.do("DELETE", "/v1/plans/"+url.PathEscape(id), nil, nil)
+}
 
 // Connect0 finds a running daemon without starting one.
 func Connect0() (*Client, error) {

@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-141216" alt="MIT"></a>
 </p>
 
-<h3 align="center">Your AI agents won't set your GPU on fire. Or your CPU, or your RAM.</h3>
+<h3 align="center">Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your network.</h3>
 
 <p align="center"><b>firefighter</b> is a local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents
 (<b>Claude Code, Codex, Gemini CLI, Cursor, Grok, OpenCode, Kimi, Antigravity, Copilot, T3 Code</b> and more) that share one computer.<br>

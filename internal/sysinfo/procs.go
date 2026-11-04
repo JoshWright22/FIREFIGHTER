@@ -147,6 +147,9 @@ func systemExe(p *process.Process) bool {
 		return false // an sshd or login anyone can start: only the system's (root's) counts
 	}
 	e := strings.ToLower(filepath.ToSlash(exe))
+	if n, _ := p.Name(); !sameProgram(n, e) {
+		return false // launched through a symlink, or renamed (prctl): the name isn't the program's
+	}
 	trusted := false
 	for _, dir := range []string{"c:/program files/", "c:/program files (x86)/", "c:/windows/system32/", "c:/windows/syswow64/",
 		"/usr/", "/bin/", "/sbin/", "/opt/", "/applications/", "/system/", "/snap/"} {
@@ -177,6 +180,16 @@ func rootLogin(p *process.Process) bool {
 	pn, _ := parent.Name()
 	uids, err := parent.Uids()
 	return err == nil && len(uids) > 0 && uids[0] == 0 && loginName(pn)
+}
+
+// sameProgram: the process name is its program file's name (Linux truncates names to 15 bytes).
+func sameProgram(name, exe string) bool {
+	name = strings.TrimSuffix(strings.ToLower(name), ".exe")
+	base := strings.TrimSuffix(filepath.Base(exe), ".exe")
+	if name == "" || base == "" {
+		return false
+	}
+	return name == base || (len(name) >= 15 && strings.HasPrefix(base, name))
 }
 
 func loginName(n string) bool {

@@ -81,9 +81,10 @@ jobs:
         env:
           npm_config_ignore_scripts: "true"
         run: |
+          npm ci --ignore-scripts --prefix integrations/mcpb   # mcpb and its dependencies from the lockfile
           node integrations/mcpb/build.mjs stage "${GITHUB_REF_NAME#v}" dist
           for d in dist/mcpb/firefighter_*/; do
-            npx -y @anthropic-ai/mcpb@2.1.2 pack "$d" "dist/mcpb/$(basename "$d").mcpb"
+            integrations/mcpb/node_modules/.bin/mcpb pack "$d" "dist/mcpb/$(basename "$d").mcpb"
           done
           ls -l dist/mcpb/*.mcpb
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -105,6 +106,22 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: mcpb
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: binaries
+          path: dist
+      - name: each bundle carries goreleaser's binary, byte for byte (npm code packed it)
+        run: |
+          set -eu
+          for b in firefighter_*.mcpb; do
+            os_arch=${b#firefighter_}; os_arch=${os_arch%.mcpb}; os=${os_arch%_*}; arch=${os_arch#*_}
+            exe=firefighter; [ "$os" = windows ] && exe=firefighter.exe
+            src=$(ls dist/*_"${os}"_"${arch}"*/* | head -n1)
+            want=$(sha256sum "$src" | cut -d' ' -f1)
+            got=$(unzip -p "$b" "server/$exe" | sha256sum | cut -d' ' -f1)
+            [ "$want" = "$got" ] || { echo "$b: binary differs from $src"; exit 1; }
+            echo "$b ok"
+          done
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |

@@ -35,7 +35,7 @@ import (
 
 var version = "dev"
 
-const usage = `firefighter: your agents won't set your GPU on fire.
+const usage = `firefighter: your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your network.
 
   firefighter run [--gpu] [--net] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
                                  wait for a turn, run the command here, print a receipt
@@ -452,12 +452,19 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		return 127, false, err
 	}
 	release, _ := sysinfo.Contain(cmd.Process.Pid)
-	var spare func(int) bool // set once the job ended normally: build servers it started live on
+	sysinfo.Started(cmd.Process.Pid) // Windows: it started suspended, so nothing it spawns escapes the job object
+	var spare func(int) bool         // set once the job ended normally: build servers it started live on
 	defer func() { release(spare) }()
 	_, err = c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid})
 	for try := 0; err != nil && try < 3 && !strings.Contains(err.Error(), "not granted"); try++ {
 		time.Sleep(time.Second) // a transient failure (the guard couldn't tell who asked): ask again
 		_, err = c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid})
+	}
+	if err != nil && strings.Contains(err.Error(), " is done,") {
+		// Cancelled (or finished) while it was starting: that's final, not a lapsed turn.
+		_ = sysinfo.Kill(cmd.Process.Pid)
+		_ = cmd.Wait()
+		return 1, false, fmt.Errorf("job %s was cancelled before it started", t.ID)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "not granted") {

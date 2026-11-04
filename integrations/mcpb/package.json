@@ -1,0 +1,8 @@
+{
+  "name": "firefighter-mcpb-tools",
+  "private": true,
+  "description": "Pinned tools that pack firefighter's MCP bundles in CI (installed with npm ci from the lockfile).",
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2"
+  }
+}
