@@ -84,14 +84,18 @@ def poster(w, h, size, rows, gap=0.32, stroke=1.6):
 
 
 def icon(S=256):
-    """FF from bars, a ring at the foot of the second F."""
+    """FF from bars (cream, then black), a ring at the foot of the second F."""
     u = S / 10
     bars = [(2, 2, 1.3, 6), (2, 2, 2.8, 1.3), (2, 4.4, 2.2, 1.2),
             (5.5, 2, 1.3, 6), (5.5, 2, 2.8, 1.3), (5.5, 4.4, 2.2, 1.2)]
-    out = [f'<rect width="{S}" height="{S}" fill="{MAGENTA}"/>', f'<g fill="{CREAM}">']
-    out += [f'<rect x="{x*u:g}" y="{y*u:g}" width="{bw*u:g}" height="{bh*u:g}"/>' for x, y, bw, bh in bars]
-    out += ['</g>', f'<circle cx="{8.1*u:g}" cy="{7.1*u:g}" r="{0.75*u:g}" fill="none" stroke="{CREAM}" '
-                    f'stroke-width="{0.55*u:g}"/>']
+    # one cream F, one black F, like the cream + black pair in the logo
+    out = [f'<rect width="{S}" height="{S}" fill="{MAGENTA}"/>']
+    for color, part in ((CREAM, bars[:3]), (INK, bars[3:])):
+        out += [f'<g fill="{color}">']
+        out += [f'<rect x="{x*u:g}" y="{y*u:g}" width="{bw*u:g}" height="{bh*u:g}"/>' for x, y, bw, bh in part]
+        out += ['</g>']
+    out += [f'<circle cx="{8.1*u:g}" cy="{7.1*u:g}" r="{0.75*u:g}" fill="none" stroke="{INK}" '
+            f'stroke-width="{0.55*u:g}"/>']
     return out
 
 

@@ -5,9 +5,11 @@
   <rect x="51.2" y="51.2" width="33.28" height="153.6"/>
   <rect x="51.2" y="51.2" width="71.68" height="33.28"/>
   <rect x="51.2" y="112.64" width="56.32" height="30.72"/>
+  </g>
+  <g fill="#141216">
   <rect x="140.8" y="51.2" width="33.28" height="153.6"/>
   <rect x="140.8" y="51.2" width="71.68" height="33.28"/>
   <rect x="140.8" y="112.64" width="56.32" height="30.72"/>
   </g>
-  <circle cx="207.36" cy="181.76" r="19.2" fill="none" stroke="#fff3e8" stroke-width="14.08"/>
+  <circle cx="207.36" cy="181.76" r="19.2" fill="none" stroke="#141216" stroke-width="14.08"/>
 </svg>
