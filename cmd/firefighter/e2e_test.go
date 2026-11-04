@@ -859,7 +859,7 @@ func TestNetworkJobsTakeTurns(t *testing.T) {
 	}
 }
 
-// A download frozen for a game, past the suspend limit, that then meets a RAM shortage is thawed
+// A download frozen for a game that then meets a RAM shortage is thawed by the RAM pressure rule
 // and asked to save (it checkpoints and is requeued), never killed outright.
 func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 	v, _ := mem.VirtualMemory()

@@ -762,19 +762,15 @@ func (d *Daemon) ladder(now time.Time) {
 				d.suspend(j)
 				logf("%s: acked the pause but kept the GPU at %.0f%%; suspended", j.Name, j.gpuUtil)
 			}
-		case hold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.Evict != "never" &&
+		case hold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.Evict != "never" && j.GPU &&
 			now.Sub(j.suspended) > dur(c.Ladder.SuspendMaxSeconds) &&
-			((ramShort && j.ramGB > 0.5) || (j.GPU && vramCard >= 0 && d.onCard(j, vramCard))):
-			// Suspended past the limit and holding memory the human is short of (VRAM only counts
-			// for GPU jobs). A download frozen for the game was never asked to pause: thaw it and
-			// let it save (requestCheckpoint). A GPU job that ignored the pause file can't
-			// checkpoint: resuming it would only let it compute through the game. Stop it (requeued).
-			if j.Net && !j.GPU {
-				d.requestCheckpoint(j, now, "the human is short of memory during a game")
-			} else {
-				j.reason = "suspended past the limit, holding memory the human needs"
-				d.killJob(j, now)
-			}
+			((ramShort && j.ramGB > 0.5) || (vramCard >= 0 && d.onCard(j, vramCard))):
+			// A GPU job suspended past the limit and holding memory the human is short of. It ignored
+			// the pause file, so it can't checkpoint: resuming it would only let it compute through
+			// the game. Stop it (requeued). A download frozen for the game is left to the RAM
+			// pressure rule, which picks the job whose RAM covers the shortfall and thaws it to save.
+			j.reason = "suspended past the limit, holding memory the human needs"
+			d.killJob(j, now)
 		case !hold && !j.pausedAt.IsZero():
 			d.unpause(j, now)
 			logf("%s: resumed", j.Name)
@@ -1262,7 +1258,7 @@ const netMeasure = 30 * time.Second
 func (d *Daemon) netFree() bool { return d.netWhy() == "" }
 
 // netWhy says what holds a network job back ("" when nothing does). Between two downloads it waits
-// ~10 s, so the human's own traffic is measured again (it can't be told apart while one runs).
+// netMeasure (30 s), so the human's own traffic is measured again (it can't be told apart while one runs).
 func (d *Daemon) netWhy() string {
 	c := d.cfg.Network
 	n := 0
