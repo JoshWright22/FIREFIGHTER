@@ -410,6 +410,15 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		}
 		return 1, true, nil // closed under us (daemon restart): get back in line
 	}
+	if v.State != "granted" {
+		// Only a granted turn starts the command (a job someone else marked running, or anything
+		// unexpected, never makes it run): get back in line under a fresh attempt.
+		if !quiet {
+			ui.Note("the turn isn't ours (%s); back in line", v.State)
+		}
+		time.Sleep(time.Second)
+		return 1, true, nil
+	}
 	if !quiet {
 		ui.Say(ui.Hot, "%s: spotlight's yours (lease %.0f min, budget left %.1f)", t.Name, t.Minutes, v.Budget)
 	}

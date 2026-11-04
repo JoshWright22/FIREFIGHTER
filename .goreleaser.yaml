@@ -6,6 +6,7 @@ builds:
     goarch: [amd64, arm64]
     # Keep the symbol table (-w only drops DWARF): fully stripped Go binaries (-s -w) trip
     # Windows Defender's machine-learning detection (Bearfoos.A!ml) on install.
+    flags: ["-trimpath"]
     ldflags: ["-w -X main.version={{.Version}}"]
 archives:
   - name_template: "firefighter_{{ .Os }}_{{ .Arch }}"
