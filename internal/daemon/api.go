@@ -615,6 +615,9 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	rec := &Receipt{ID: id, Project: j.Project, Name: j.Name, Exit: exit, Outcome: outcome, Minutes: round1(ran),
 		Declared: j.Minutes, Waited: round1(waited), Charged: round1(j.charged), PeakVRAM: round1(j.peakVRAM),
 		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted"}
+	if outcome == "evicted" || outcome == "killed" || outcome == "lost" {
+		rec.Reason = j.reason
+	}
 	j.receipt = rec
 	j.State = "done"
 	d.st.Receipts[id] = rec

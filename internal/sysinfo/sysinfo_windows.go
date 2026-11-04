@@ -519,3 +519,18 @@ func setCPUSets(pid int, cpus []int) error {
 
 // Elevated says whether this process runs with an administrator token.
 func Elevated() bool { return windows.GetCurrentProcessToken().IsElevated() }
+
+var generateConsoleCtrlEvent = kernel32.NewProc("GenerateConsoleCtrlEvent")
+
+// Interrupt sends Ctrl+Break to a job started in its own process group (PrepareChild does that)
+// from the client that shares its console: the polite stop most programs handle (Python raises
+// KeyboardInterrupt, Node and build tools exit cleanly).
+func Interrupt(pid int) error {
+	if err := guard(pid); err != nil {
+		return err
+	}
+	if r, _, e := generateConsoleCtrlEvent.Call(1, uintptr(pid)); r == 0 { // CTRL_BREAK_EVENT
+		return e
+	}
+	return nil
+}

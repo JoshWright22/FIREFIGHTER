@@ -376,8 +376,8 @@ func TestRAMPressureCheckpointsAndRequeues(t *testing.T) {
 	e.setFake(map[string]any{"idle": 9999.0, "foreground": ""})
 	select {
 	case out := <-done:
-		if !strings.Contains(out, "back in line") {
-			t.Fatalf("evicted job should requeue:\n%s", out)
+		if !strings.Contains(out, "back in line") || !strings.Contains(out, "RAM below the human") {
+			t.Fatalf("evicted job should be told why and requeue:\n%s", out)
 		}
 		if !strings.Contains(readFile(log), "finished") {
 			t.Fatalf("requeued job didn't finish:\n%s", readFile(log))

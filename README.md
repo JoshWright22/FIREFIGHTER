@@ -50,6 +50,10 @@ crawl, your game stutters, audio crackles, and nobody knows who's using what or 
   first), leases over 24 h, extensions after a short backfill, and one agent cancelling or
   re-bidding another agent session's job (you, from a terminal or editor, can manage any job). Text an agent sends (plans, names) is stripped of control
   characters before other agents or your terminal see it.
+- 🫡 **Graceful for the agent.** When you need the machine back, the job's own client says why,
+  gives it time to save (checkpoint protocol), then stops it politely (Ctrl+Break / SIGINT, which
+  most programs handle cleanly) before anything harsher; it's requeued under the same id and the
+  agent is told why and that there's nothing to resubmit.
 - ⏸️ **Polite preemption.** The ladder goes: shrink the job's CPU set → cooperative pause at a step
   boundary → suspend (for jobs that ignore the pause) → checkpoint-and-exit with automatic requeue
   when you need the memory back → kill, but only when RAM is critical.

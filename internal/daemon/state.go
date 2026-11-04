@@ -37,6 +37,7 @@ type Receipt struct {
 	Log      string    `json:"log,omitempty"`
 	Ended    time.Time `json:"ended"`
 	Requeue  bool      `json:"requeue"`
+	Reason   string    `json:"reason,omitempty"` // why firefighter stopped it (evicted/killed jobs)
 }
 
 // Plan is an announcement of heavy work coming later; it reserves nothing, it tells others.

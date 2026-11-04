@@ -224,7 +224,11 @@ func jobLine(v daemon.View) string {
 		}
 		next := ""
 		if r.Requeue {
-			next = " | requeued, call wait again"
+			why := r.Reason
+			if why == "" {
+				why = "the human needed the machine"
+			}
+			next = " | stopped because " + why + "; requeued automatically (same id), it restarts when there's room | do: call firefighter_wait again; nothing to resubmit"
 		}
 		return fmt.Sprintf("%s done %s exit %d | ran %.0fm (declared %.0f) waited %.0fm | charged %.0f | peak %.1fGB VRAM %.1fGB RAM%s",
 			v.ID, r.Outcome, r.Exit, r.Minutes, r.Declared, r.Waited, r.Charged, r.PeakVRAM, r.PeakRAM, next)

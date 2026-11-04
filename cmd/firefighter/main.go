@@ -346,7 +346,7 @@ func run(args []string) (int, error) {
 		if err != nil || !requeue {
 			return code, err
 		}
-		ui.Say(ui.Coral, "evicted to make room (checkpointed); back in line, attempt %d", attempt+1)
+		ui.Say(ui.Coral, "stopped to give the human the machine back; back in line automatically (attempt %d). Nothing to do: it restarts when there's room", attempt+1)
 	}
 }
 
@@ -471,6 +471,8 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	keepalive := time.NewTicker(5 * time.Second)
+	var askedAt time.Time
+	interrupted := false
 	defer keepalive.Stop()
 	var werr error
 loop:
@@ -484,7 +486,23 @@ loop:
 				_ = sysinfo.Kill(cmd.Process.Pid)
 			}
 		case <-keepalive.C: // re-register if the daemon restarted, so the job stays governed
-			if _, err := c.Get(t.ID, "", 0); errors.Is(err, client.ErrNotFound) {
+			cur, err := c.Get(t.ID, "", 0)
+			if err == nil && cur.Checkpt && askedAt.IsZero() {
+				// The human needs the machine back. Say why now; a job that follows the checkpoint
+				// protocol saves and exits on its own (it's requeued under the same id).
+				askedAt = time.Now()
+				if !quiet {
+					ui.Say(ui.Hot, "%s: firefighter needs it to stop (%s); it gets time to save and exit, then it's requeued", t.Name, cur.Why)
+				}
+			}
+			if !askedAt.IsZero() && !interrupted && time.Since(askedAt) >= 30*time.Second {
+				// Still running half-way through the grace period: it doesn't read the checkpoint
+				// file, so stop it politely (Ctrl+Break / SIGINT, which most programs handle cleanly)
+				// before the daemon escalates to SIGTERM and then a kill.
+				interrupted = true
+				_ = sysinfo.Interrupt(cmd.Process.Pid)
+			}
+			if errors.Is(err, client.ErrNotFound) {
 				t2 := t
 				t2.PID = cmd.Process.Pid
 				t2.Device, t2.Vendor = v.Device, v.Vendor // back on the same card
@@ -514,6 +532,9 @@ loop:
 		}
 		ui.Say(color, "%s: curtain call, %s (exit %d) in %.1f min (declared %.0f), waited %.1f, charged %.1f machine-min, peak %.1f GB RAM / %.1f GB VRAM",
 			t.Name, rec.Outcome, rec.Exit, time.Since(start).Minutes(), rec.Declared, rec.Waited, rec.Charged, rec.PeakRAM, rec.PeakVRAM)
+		if rec.Requeue && rec.Reason != "" && askedAt.IsZero() {
+			ui.Say(ui.Hot, "%s: stopped because %s", t.Name, rec.Reason)
+		}
 		return code, rec.Requeue, nil
 	}
 	return code, v.Receipt != nil && v.Receipt.Requeue, nil

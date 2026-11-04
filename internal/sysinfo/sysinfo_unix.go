@@ -20,6 +20,9 @@ func Resume(pid int) error    { return send(pid, syscall.SIGCONT) }
 func Kill(pid int) error      { return send(pid, syscall.SIGKILL) }
 func Terminate(pid int) error { return send(pid, syscall.SIGTERM) }
 
+// Interrupt sends SIGINT (what Ctrl+C sends): the polite stop most programs handle.
+func Interrupt(pid int) error { return send(pid, syscall.SIGINT) }
+
 // send never signals pid 0, 1, a negative pid ("my group", init, "everything") or itself.
 func send(pid int, sig syscall.Signal) error {
 	if pid <= 1 || pid == os.Getpid() {
