@@ -288,8 +288,11 @@ func logicalCPUs() int {
 // also carries (WSL's vEthernet mirrors Ethernet), so counting them would double it.
 func virtualIface(name string) bool {
 	l := strings.ToLower(name)
-	for _, p := range []string{"lo", "loopback", "vethernet", "docker", "br-", "veth", "virbr", "vmnet", "vboxnet",
-		"virtualbox", "hyper-v", "wsl", "tun", "tap", "utun", "wg", "tailscale", "zt", "ppp", "isatap", "teredo",
+	if l == "lo" || l == "lo0" || strings.HasPrefix(l, "loopback") { // exact: "Local Area Connection" is real
+		return true
+	}
+	for _, p := range []string{"vethernet", "docker", "br-", "veth", "virbr", "vmnet", "vboxnet",
+		"virtualbox", "hyper-v", "wsl", "tun", "tap", "utun", "wg", "tailscale", "zt", "isatap", "teredo",
 		"bluetooth", "npcap", "awdl", "llw", "anpi", "bridge"} {
 		if l == p || strings.HasPrefix(l, p) {
 			return true

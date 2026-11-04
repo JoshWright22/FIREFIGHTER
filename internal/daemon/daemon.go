@@ -100,7 +100,8 @@ type Daemon struct {
 	gpuSeen       bool                 // a GPU has reported since start (a missed reading isn't "no GPU")
 	netCap        float64              // the most network throughput seen (Mbps), slowly forgotten: the link's size
 	netHuman      float64              // network use while no network job runs (Mbps, smoothed): the human's
-	netQuietFrom  time.Time            // when the last network job ended (the human's traffic is measured after)
+	netQuietFrom  time.Time            // when the last network job ended, or the daemon started (the human's traffic is measured after)
+	netWasBusy    bool                 // a network job ran last tick
 	gpuMax        int                  // most GPUs seen in one reading
 	gpuShortSince time.Time            // since when readings show fewer
 	gpuDegraded   bool                 // this reading is partial: no GPU grants
@@ -131,15 +132,16 @@ type Daemon struct {
 
 func New(version string) *Daemon {
 	d := &Daemon{
-		jobs:    map[string]*job{},
-		reader:  sysinfo.NewReader(),
-		st:      load(),
-		notify:  make(chan struct{}),
-		rng:     rand.New(rand.NewSource(time.Now().UnixNano())),
-		started: time.Now(),
-		user:    "present",
-		Version: version,
-		stop:    make(chan struct{}),
+		jobs:         map[string]*job{},
+		reader:       sysinfo.NewReader(),
+		st:           load(),
+		notify:       make(chan struct{}),
+		rng:          rand.New(rand.NewSource(time.Now().UnixNano())),
+		started:      time.Now(),
+		netQuietFrom: time.Now(), // measure the human's traffic before the first download
+		user:         "present",
+		Version:      version,
+		stop:         make(chan struct{}),
 	}
 	d.reloadConfig()
 	_ = os.MkdirAll(signalDir(), 0o700)
@@ -489,13 +491,13 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		for _, j := range d.running() {
 			netJob = netJob || j.Net
 		}
-		if netJob {
-			d.netQuietFrom = now.Add(time.Hour) // reset when the last one ends
-		} else if d.netQuietFrom.After(now) {
-			d.netQuietFrom = now
+		if d.netWasBusy && !netJob {
+			d.netQuietFrom = now // the last network job just ended: measure the human from here
 		}
+		d.netWasBusy = netJob
 		if !netJob {
-			d.netHuman += (1 - math.Exp(-dt.Seconds()/20)) * (d.snap.NetMbps - d.netHuman)
+			// ~10 s smoothing: within the 30 s measuring gap it settles to ~95% of the real rate.
+			d.netHuman += (1 - math.Exp(-dt.Seconds()/10)) * (d.snap.NetMbps - d.netHuman)
 		}
 	}
 	// A reading with fewer GPUs than usual is a vendor tool missing a beat, not a card removed:
@@ -968,7 +970,12 @@ func (d *Daemon) requestCheckpoint(j *job, now time.Time, why string) {
 	if !j.checkpoint.IsZero() || !j.killedAt.IsZero() {
 		return
 	}
-	if !j.suspended.IsZero() {
+	if !j.suspended.IsZero() && j.Net && !j.GPU {
+		// A download frozen for a game (never asked to pause): thaw it so it can save and exit in
+		// its grace period like any job; a few seconds of traffic beat losing the download.
+		d.resume(j)
+		j.suspended = time.Time{}
+	} else if !j.suspended.IsZero() {
 		// Suspended means it ignored the pause file, so it won't read the checkpoint file either:
 		// resuming it would only let it compute (through the human's game) until the grace ends.
 		j.reason = why
@@ -1241,6 +1248,10 @@ func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 	return need
 }
 
+// netMeasure is how long the human's own traffic is measured, with no network job running, before
+// the next download may start (after the last one ends, and after the daemon starts).
+const netMeasure = 30 * time.Second
+
 // netFree says whether a network job may start now: a network turn is free, no game holds the
 // machine, and the human isn't already using much of the link.
 func (d *Daemon) netFree() bool { return d.netWhy() == "" }
@@ -1260,8 +1271,8 @@ func (d *Daemon) netWhy() string {
 		return "network turn: another download has it"
 	case d.user == "game" && c.PauseInGame:
 		return "network: the human is gaming (latency)"
-	case time.Since(d.netQuietFrom) < 10*time.Second:
-		return "network: measuring the human's own traffic after the last download"
+	case n == 0 && time.Since(d.netQuietFrom) < netMeasure:
+		return "network: measuring the human's own traffic first (30 s)"
 	case d.netCap > 1 && d.netHuman > d.netCap*c.HumanBusyPct/100:
 		return fmt.Sprintf("network: the human is using %.0f of ~%.0f Mbps", d.netHuman, d.netCap)
 	}
