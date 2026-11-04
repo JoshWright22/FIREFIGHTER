@@ -51,7 +51,7 @@ func jsonMCP(path, key string, entry func(string) map[string]any) func(string, b
 func agents() []agent {
 	h := home()
 	oc := filepath.Join(cfgHome(), "opencode")
-	return []agent{
+	list := []agent{
 		{name: "Antigravity", dirs: []string{filepath.Join(h, ".gemini", "config"), filepath.Join(h, ".gemini", "antigravity")},
 			mcp: jsonMCP(filepath.Join(h, ".gemini", "config", "mcp_config.json"), "mcpServers", stdio)},
 		// rules: ~/.gemini/GEMINI.md, written for Gemini CLI, is read by Antigravity too
@@ -115,6 +115,7 @@ func agents() []agent {
 		{name: "Droid", dirs: []string{filepath.Join(h, ".factory")},
 			rules: []string{filepath.Join(h, ".agents", "AGENTS.md")}},
 	}
+	return append(list, t3Agents()...)
 }
 
 func (a agent) installed() bool {

@@ -212,6 +212,20 @@ func Home() string {
 	if h := os.Getenv("FIREFIGHTER_HOME"); h != "" {
 		return h
 	}
+	return DefaultHome()
+}
+
+// IsDefaultHome says whether Home is the real, per-user one (not a test's or a sandbox's).
+func IsDefaultHome() bool {
+	a, b := filepath.Clean(Home()), filepath.Clean(DefaultHome())
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// DefaultHome is where firefighter keeps its state when FIREFIGHTER_HOME isn't set.
+func DefaultHome() string {
 	switch runtime.GOOS {
 	case "windows":
 		if d := os.Getenv("LOCALAPPDATA"); d != "" {
@@ -301,7 +315,7 @@ func Set(key, value string) error {
 	if _, err := build(raw); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(Home(), 0o755); err != nil {
+	if err := os.MkdirAll(Home(), 0o700); err != nil {
 		return err
 	}
 	var buf bytes.Buffer
@@ -309,7 +323,7 @@ func Set(key, value string) error {
 	if err := toml.NewEncoder(&buf).Encode(raw); err != nil {
 		return err
 	}
-	return os.WriteFile(Path(), buf.Bytes(), 0o644)
+	return os.WriteFile(Path(), buf.Bytes(), 0o600)
 }
 
 // Unset removes a key so its default (or preset value) applies again.
@@ -336,7 +350,7 @@ func Unset(key string) error {
 	if err := toml.NewEncoder(&buf).Encode(raw); err != nil {
 		return err
 	}
-	return os.WriteFile(Path(), buf.Bytes(), 0o644)
+	return os.WriteFile(Path(), buf.Bytes(), 0o600)
 }
 
 // Show renders the effective config as TOML.

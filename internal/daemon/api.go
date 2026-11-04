@@ -261,7 +261,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if !req.Running && (open >= maxOpenPerProject || total >= maxOpenTotal) {
+	if !req.Running && !human && (open >= maxOpenPerProject || total >= maxOpenTotal) {
 		fail(w, http.StatusTooManyRequests, fmt.Sprintf("too many open jobs (%d in %s, %d in all); wait for some to finish", open, t.Project, total))
 		return
 	}
@@ -392,7 +392,7 @@ func (d *Daemon) get(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			rec := d.st.Receipts[id]
 			d.mu.Unlock()
-			if rec != nil && from == "" {
+			if rec != nil {
 				reply(w, View{ID: id, State: "done", Receipt: rec})
 				return
 			}
@@ -545,6 +545,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 		if j.State == "waiting" {
 			j.Bid = max(1, min(10, int(a.Minutes)))
+			if j.Spot && j.Bid >= policy.BidNormal {
+				j.Spot = false // asking for a normal turn: its band follows the budget again
+				j.Band = policy.BandFor(j.Ticket, d.account(j.Project, now).Left(d.cfg, d.cfg.Allowance(j.Project)) > 0)
+			}
 			logf("%s: re-bid %d", j.Name, j.Bid)
 		}
 	case "extend":
@@ -572,9 +576,6 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 		if !j.checkpoint.IsZero() || a.Exit == 75 { // 75 = checkpointed, requeue me (EX_TEMPFAIL)
 			outcome = "evicted"
-		}
-		if !j.killedAt.IsZero() && j.Evict == "force" {
-			outcome = "killed"
 		}
 		d.finish(id, a.Exit, outcome, a.Log)
 	case "cancel":
@@ -648,6 +649,14 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		rec.Reason = j.reason
 	}
 	j.receipt = rec
+	if d.backoff == nil {
+		d.backoff = map[string]backoff{}
+	}
+	if outcome == "evicted" {
+		d.backoff[id] = backoff{n: d.backoff[id].n + 1, at: now}
+	} else {
+		delete(d.backoff, id)
+	}
 	if j.Net && j.State == "running" {
 		last := true
 		for _, o := range d.jobs {
@@ -820,6 +829,11 @@ func (d *Daemon) status() Status {
 	for _, j := range d.running() {
 		s.Running = append(s.Running, d.view(j))
 	}
+	for _, j := range d.jobs {
+		if j.State == "granted" { // starting: it holds its turn already
+			s.Running = append(s.Running, d.view(j))
+		}
+	}
 	for _, t := range d.waiting() {
 		s.Waiting = append(s.Waiting, d.view(d.jobs[t.ID]))
 	}
@@ -865,7 +879,7 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 			mine++
 		}
 	}
-	if mine >= 10 || len(d.st.Plans) >= 100 {
+	if !planHuman && (mine >= 10 || len(d.st.Plans) >= 100) {
 		fail(w, http.StatusTooManyRequests, "too many plans; remove some with `firefighter plan --done`")
 		return
 	}

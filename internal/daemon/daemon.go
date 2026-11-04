@@ -106,6 +106,7 @@ type Daemon struct {
 	netQuietFrom  time.Time            // when the last network job ended, or the daemon started (the human's traffic is measured after)
 	netWasBusy    bool                 // a network job ran last tick
 	prevOpen      map[string]OpenJob   // running jobs the previous daemon granted, until re-registered
+	backoff       map[string]backoff   // job id -> evictions in a row: a requeued job waits longer each time
 	gpuMax        int                  // most GPUs seen in one reading
 	gpuShortSince time.Time            // since when readings show fewer
 	gpuDegraded   bool                 // this reading is partial: no GPU grants
@@ -148,6 +149,12 @@ func New(version string) *Daemon {
 		stop:         make(chan struct{}),
 	}
 	d.reloadConfig()
+	if os.Getenv("FIREFIGHTER_FAKE_FILE") != "" && config.IsDefaultHome() {
+		// Scripted readings are for tests in their own home: the real guard (the one every client
+		// uses) always reads the real machine, so no one can blind it to the human.
+		_ = os.Unsetenv("FIREFIGHTER_FAKE_FILE")
+		logf("FIREFIGHTER_FAKE_FILE ignored: fake readings only work with a separate FIREFIGHTER_HOME")
+	}
 	if runtime.GOOS != "windows" {
 		// Tools the daemon runs to tell who's calling (lsof on macOS) come from the system, never
 		// from a folder an agent could put first on the PATH it was started with.
@@ -196,6 +203,23 @@ func (d *Daemon) openJobs(now time.Time) map[string]OpenJob {
 		}
 	}
 	return open
+}
+
+// backoff: how often in a row a job was stopped for the human, and when it last was.
+type backoff struct {
+	n  int
+	at time.Time
+}
+
+// backingOff says whether a requeued job still waits out its back-off: 1, 2, 4, ... up to 30
+// minutes after its last eviction, so a job that can't fit beside the human doesn't cycle.
+func (d *Daemon) backingOff(id string, now time.Time) bool {
+	b, ok := d.backoff[id]
+	if !ok {
+		return false
+	}
+	wait := time.Duration(math.Min(30, math.Pow(2, float64(b.n-1)))) * time.Minute
+	return now.Sub(b.at) < wait
 }
 
 // shortJob: a job that may backfill ahead of a blocked head. Both what it declares and what its
@@ -621,8 +645,10 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		if n == "" || contains(c.Reserve.IgnoreGPUApps, n) {
 			continue
 		}
-		if strings.HasPrefix(strings.ToLower(n), "vmmem") && d.containerGPUJob() {
-			continue // a container job's GPU work, seen through the WSL VM: the job's, not an outsider's
+		if d.containerGPUJob() && (strings.HasPrefix(strings.ToLower(n), "vmmem") || underContainerRuntime(pid)) {
+			// A container job's GPU work, seen through the WSL VM (Windows) or under the runtime's
+			// shim (Linux): firefighter's own, not an outsider's.
+			continue
 		}
 		u := g.Util
 		if u < 1 {
@@ -651,6 +677,18 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 			d.outSince[n] = time.Now()
 		}
 	}
+}
+
+// underContainerRuntime says whether a process runs inside a container (a container runtime's
+// shim is among its ancestors).
+func underContainerRuntime(pid int) bool {
+	for _, a := range sysinfo.Ancestors(pid) {
+		n := strings.ToLower(sysinfo.Name(a))
+		if strings.HasPrefix(n, "containerd-shim") || n == "conmon" || n == "crun" || n == "runc" {
+			return true
+		}
+	}
+	return false
 }
 
 // containerGPUJob says whether a GPU job is running in a container.
@@ -1145,7 +1183,7 @@ func (d *Daemon) reap(now time.Time) {
 		if j.State == "done" {
 			continue
 		}
-		clientGone := j.ClientPID > 1 && !sysinfo.Alive(j.ClientPID)
+		clientGone := j.ClientPID > 1 && (!sysinfo.Alive(j.ClientPID) || (j.clientAt != 0 && !sysinfo.Same(j.ClientPID, j.clientAt)))
 		jobGone := j.PID <= 1 || !sysinfo.Same(j.PID, j.rootCreated)
 		switch {
 		case j.State == "granted" && clientGone:
@@ -1481,6 +1519,9 @@ func (d *Daemon) admit(now time.Time) {
 		if t.Net && !d.netFree() {
 			continue // network turn taken, a game holds the machine, or the human is using the link
 		}
+		if d.backingOff(t.ID, now) {
+			continue // stopped for the human recently: give it a while before trying again
+		}
 		if t.GPU {
 			if gpuBlocked {
 				continue
@@ -1497,6 +1538,11 @@ func (d *Daemon) admit(now time.Time) {
 			}
 			left -= d.res.VRAMGB
 			need := d.needOn(t, card)
+			if card >= 0 && need < t.NeedVRAM-0.05 && d.user != "away" {
+				// It needs more than this card frees beside the human's reserve: it would only be
+				// stopped again. It gets the card at its emptiest while the human is away.
+				continue
+			}
 			if vt > 0 && card >= 0 && need > left {
 				headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
 				continue
@@ -1529,6 +1575,9 @@ func (d *Daemon) admit(now time.Time) {
 			card, _ := d.cardFor(t)
 			vram -= t.NeedVRAM
 			gpuRunning++
+			if len(d.snap.GPUs) == 0 && gpuRunning >= c.GPU.MaxJobs {
+				gpuBlocked = true // no card readings: one machine-wide count, and it's now full
+			}
 			j.backfilled = headWaitsOnVRAM
 			if len(d.snap.GPUs) > 1 {
 				j.device = card // and the client pins it there, in that vendor's numbering

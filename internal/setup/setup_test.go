@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -106,5 +107,43 @@ func TestCodexTOML(t *testing.T) {
 	b, _ = os.ReadFile(p)
 	if strings.Contains(string(b), "firefighter") || !strings.Contains(string(b), "model") {
 		t.Fatalf("codex remove:\n%s", b)
+	}
+}
+
+// T3 Code's private agent homes (Antigravity's GEMINI_HOME, a Claude instance's homePath) get the
+// rules and the MCP server like the usual ones.
+func TestT3CodeHomesAreTaught(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("T3CODE_HOME", state)
+	prof := filepath.Join(state, "providers", "antigravity", "abc")
+	claude := filepath.Join(state, "claude-alt")
+	for _, d := range []string{prof, claude} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	settings := `{"providerInstances":{"c2":{"driver":"claudeAgent","config":{"homePath":` + strconv.Quote(claude) + `}}}}`
+	if err := os.WriteFile(filepath.Join(state, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, a := range t3Agents() {
+		if !a.installed() {
+			t.Fatalf("%s: home exists but isn't seen", a.name)
+		}
+		for _, r := range a.rules {
+			got[r] = true
+		}
+		if err := a.mcp("ff.exe", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !got[filepath.Join(prof, "GEMINI.md")] || !got[filepath.Join(claude, "CLAUDE.md")] {
+		t.Fatalf("rules files: %v", got)
+	}
+	for _, f := range []string{filepath.Join(prof, "config", "mcp_config.json"), filepath.Join(claude, ".claude.json")} {
+		if b, err := os.ReadFile(f); err != nil || !strings.Contains(string(b), "ff.exe") {
+			t.Fatalf("%s: %v %s", f, err, b)
+		}
 	}
 }

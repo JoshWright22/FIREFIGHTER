@@ -172,9 +172,10 @@ func agentAbove(p *process.Process, agents, agentHosts []string, match func(stri
 func AgentAncestor(pid int, names []string) string {
 	p, err := process.NewProcess(int32(pid))
 	for depth := 0; err == nil && depth < 20; depth++ {
+		child := p
 		p, err = p.Parent()
-		if err != nil || p == nil {
-			return ""
+		if err != nil || p == nil || p.Pid <= 0 || youngerThan(p, child) {
+			return "" // a "parent" started after its child is a reused pid, not the real parent
 		}
 		n, _ := p.Name()
 		n = printable(strings.TrimSuffix(strings.ToLower(n), ".exe"))

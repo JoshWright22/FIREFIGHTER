@@ -60,6 +60,11 @@ func (d *Daemon) line(gpu bool, exclude string, now time.Time) (running []policy
 		left := policy.Remaining(r.PredMinutes+r.extended, r.leaseUsed(now).Minutes())
 		running = append(running, policy.Slot{ID: r.ID, EndsIn: left, Running: true})
 	}
+	for _, r := range d.jobs {
+		if r.State == "granted" && r.GPU == gpu && r.ID != exclude { // about to start: its whole run is ahead
+			running = append(running, policy.Slot{ID: r.ID, EndsIn: math.Max(1, r.PredMinutes+r.extended), Running: true})
+		}
+	}
 	if gpu {
 		// Unmanaged GPU work: its end is unknown, so assume 30 minutes at first and, past that, as long
 		// again as it has already run (heavy tail): a 2-hour training run isn't "done in 30".

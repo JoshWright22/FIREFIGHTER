@@ -451,7 +451,12 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	release, _ := sysinfo.Contain(cmd.Process.Pid)
 	var spare func(int) bool // set once the job ended normally: build servers it started live on
 	defer func() { release(spare) }()
-	if _, err := c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid}); err != nil {
+	_, err = c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid})
+	for try := 0; err != nil && try < 3 && !strings.Contains(err.Error(), "not granted"); try++ {
+		time.Sleep(time.Second) // a transient failure (the guard couldn't tell who asked): ask again
+		_, err = c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid})
+	}
+	if err != nil {
 		if strings.Contains(err.Error(), "not granted") {
 			// The turn lapsed (the machine slept between grant and start): don't run ungoverned;
 			// stop the just-started command and get back in line.
@@ -462,9 +467,12 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 			}
 			return 1, true, nil
 		}
-		if !quiet {
-			ui.Note("couldn't register with the guard: %v", err)
-		}
+		// The guard didn't take it: it would run ungoverned (never paused for a game, never
+		// stopped for the human) while still holding its turn. Stop it and give the turn back.
+		_ = sysinfo.Kill(cmd.Process.Pid)
+		_ = cmd.Wait()
+		_, _ = c.Act(t.ID, "cancel", daemon.Act{Project: t.Project})
+		return 1, false, fmt.Errorf("the guard didn't accept the job's start (%v); not running it ungoverned", err)
 	}
 	if container != "" {
 		engine := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe")

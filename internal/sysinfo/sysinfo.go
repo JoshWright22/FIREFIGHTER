@@ -222,7 +222,28 @@ func (r *Reader) readGPUs() []GPU {
 	for _, g := range gs {
 		have[g.Vendor] = true
 	}
-	return append(gs, r.platform.gpus(have)...)
+	gs = append(gs, r.platform.gpus(have)...)
+	for i := range gs {
+		gs[i].PerProc = runtime.GOOS == "windows" || gs[i].Vendor == "nvidia"
+	}
+	// One order whatever answered (a missed nvidia-smi reading falls back to DXGI's display
+	// order): by vendor, then the vendor's own device number.
+	rank := map[string]int{"nvidia": 0, "amd": 1, "intel": 2}
+	sort.SliceStable(gs, func(a, b int) bool {
+		ra, ok := rank[gs[a].Vendor]
+		if !ok {
+			ra = 3
+		}
+		rb, ok := rank[gs[b].Vendor]
+		if !ok {
+			rb = 3
+		}
+		if ra != rb {
+			return ra < rb
+		}
+		return gs[a].Index < gs[b].Index
+	})
+	return gs
 }
 
 func nvidiaGPUs() []GPU {

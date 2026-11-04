@@ -184,7 +184,7 @@ Steps run in order, and each one fires only if the trigger is still there:
    has run its 10-minute minimum and an in-budget job is waiting on what it holds, firefighter lifts
    any pause and creates `FIREFIGHTER_CHECKPOINT_FILE`. The job gets 60 s to save and exit. On Unix it then gets a
    SIGTERM, and 10 s later it's killed. A job that exits with 75, or exits at all after the
-   request, is put back in line under the same id. `--evict force` jobs are killed at once.
+   request, is put back in line under the same id. `--evict force` jobs are killed at once (and put back in line the same way).
 5. **Kill:** if available RAM drops under 3%, one job is killed at once, even mid-grace, and the
    next only after 5 s (memory takes a moment to come back).
 
@@ -325,8 +325,10 @@ tests both one-command installers.
   started from it, tmux and screen don't count either (an agent can open those silently); from
   them, add `--force` for other projects' jobs and for `adopt`. Anything else, including detached helpers
   and agents hosted in node or an IDE, is an agent session limited to its own work and its project;
-  from an IDE terminal, add `--force` to manage another project's job. These are guardrails against
-  accidents, not a boundary against a hostile agent with your shell.
+  from an IDE terminal, add `--force` to manage another project's job. An agent that opens a window
+  in a terminal you already have running (`wt.exe`, `open -a Terminal`, a silent `ssh localhost`)
+  passes for you there too. These are guardrails against accidents, not a boundary against a hostile
+  agent with your shell.
 - `firefighter_submit` runs a command as you, outside an agent's own sandbox; its MCP annotations
   say so, so hosts can ask for approval as they do for a shell.
 - Releases are built by GitHub Actions with SHA-pinned actions, the Go toolchain from go.mod, a
