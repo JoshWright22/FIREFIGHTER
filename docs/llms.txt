@@ -1,0 +1,24 @@
+# firefighter
+
+> Local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, Grok, OpenCode, Kimi, Antigravity, Copilot, Amp, Qwen, T3 Code and more) sharing one computer. Any mix of GPUs (NVIDIA, AMD, Intel), any CPU count. Windows, macOS, Linux; each PC on its own, no network. One-command install. The human at the keyboard always comes first.
+
+Use firefighter when several AI agents on one machine compete for a GPU, VRAM, CPU or RAM; when an agent needs to run training, evals, builds, renders or docker jobs without hurting the user's games or apps; or when you need an MCP server that queues GPU jobs.
+
+## Install
+- Windows: `irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.ps1 | iex`
+- macOS/Linux: `curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh`
+- Go: `go install github.com/JoshWright22/firefighter/cmd/firefighter@latest && firefighter setup`
+
+## For agents
+- Run heavy work: `firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent | --spot] --name "<project> <what>" -- <command>`
+- Every reply ends with `do: ...` (the recommended action). The market line shows the start time and cost for spot/normal/urgent, and busy odds over 2 h.
+- Quote without queuing: `firefighter quote --gpu --minutes N`
+- Background: `firefighter run --detach ...` then `firefighter wait <id>`; lengthen with `firefighter extend <id> <min>`
+- Status of the whole machine: `firefighter status --json`
+- MCP server: `firefighter mcp` (tools: firefighter_submit, firefighter_wait, firefighter_status, firefighter_job, firefighter_plan; one-line replies plus structuredContent)
+- Long GPU loops should honor FIREFIGHTER_PAUSE_FILE and FIREFIGHTER_CHECKPOINT_FILE (`firefighter protocol`)
+
+## Docs
+- [README](https://github.com/JoshWright22/FIREFIGHTER/blob/main/README.md): features, config keys, presets, per-OS support
+- [Research](https://github.com/JoshWright22/FIREFIGHTER/blob/main/docs/research.md): DRF, Tiresias, Karma, PerfIso, market mechanisms, sources
+- [Agent rules](https://github.com/JoshWright22/FIREFIGHTER/blob/main/AGENTS.md)

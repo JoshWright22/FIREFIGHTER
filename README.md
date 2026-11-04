@@ -260,6 +260,19 @@ about half of this, and none on all three OSes. Details: [docs/research.md](docs
 firefighter. New sessions read the rule block and register the MCP server, so they queue GPU work
 through `firefighter run` or `firefighter_submit` and wait their turn.
 
+**Why do I get CUDA out of memory when two AI agents train at once?** Each agent sees the whole
+card free and starts its own job, so together they ask for more VRAM than the card has. firefighter
+starts a GPU job only when its VRAM need fits on one card next to what's already running and your
+reserve; the need is learned from that command's past runs.
+
+**Can several AI agents share one GPU?** Yes. They take turns, or run side by side when the card
+has room (`gpu.max_jobs` per card). With more than one GPU, each card takes jobs on its own and a job
+goes to the least busy card that fits.
+
+**Is there an MCP server for queuing GPU jobs?** `firefighter mcp`, registered for every agent setup
+finds. Tools: `firefighter_submit`, `firefighter_wait`, `firefighter_status`, `firefighter_job`,
+`firefighter_plan`.
+
 **Will it slow down my games?** It's designed to do the opposite. Fullscreen apps and 3D-engine use
 switch you to the "game" state (on macOS and Linux, list your games in `reserve.exclusive_apps`).
 Running GPU jobs get a cooperative pause; jobs that ignore it are suspended. If your game then needs
