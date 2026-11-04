@@ -2,6 +2,7 @@ package sysinfo
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -142,6 +143,9 @@ func systemExe(p *process.Process) bool {
 		uids, uerr := parent.Uids()
 		return uerr == nil && len(uids) > 0 && uids[0] == 0 && loginName(pn)
 	}
+	if n, _ := p.Name(); loginName(n) && !rootLogin(p) {
+		return false // an sshd or login anyone can start: only the system's (root's) counts
+	}
 	e := strings.ToLower(filepath.ToSlash(exe))
 	trusted := false
 	for _, dir := range []string{"c:/program files/", "c:/program files (x86)/", "c:/windows/system32/", "c:/windows/syswow64/",
@@ -155,6 +159,24 @@ func systemExe(p *process.Process) bool {
 	// system (root / TrustedInstaller, SYSTEM, Administrators) and not writable by others. A
 	// folder an agent made in a writable system area, even made read-only, is still its own.
 	return trusted && adminOwned(exe)
+}
+
+// rootLogin: a login process run by root, or a session child of a root sshd/login (privilege
+// separation runs the session as the user). An agent's own sshd runs as the user, under init.
+func rootLogin(p *process.Process) bool {
+	if runtime.GOOS == "windows" {
+		return true // Windows' sshd is a service: adminOwned covers it
+	}
+	if uids, err := p.Uids(); err == nil && len(uids) > 0 && uids[0] == 0 {
+		return true
+	}
+	parent, err := p.Parent()
+	if err != nil || parent == nil || parent.Pid <= 1 {
+		return false
+	}
+	pn, _ := parent.Name()
+	uids, err := parent.Uids()
+	return err == nil && len(uids) > 0 && uids[0] == 0 && loginName(pn)
 }
 
 func loginName(n string) bool {

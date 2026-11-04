@@ -52,7 +52,10 @@ func Tail(path string, n int64) string {
 		return ""
 	}
 	defer f.Close()
-	fi, _ := f.Stat()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
 	off := fi.Size() - n
 	if off < 0 {
 		off = 0

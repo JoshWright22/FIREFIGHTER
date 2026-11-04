@@ -404,7 +404,7 @@ func autostart(exe string) error {
 <key>Label</key><string>dev.firefighter</string>
 <key>ProgramArguments</key><array><string>%s</string><string>daemon</string></array>
 <key>RunAtLoad</key><true/>
-<key>KeepAlive</key><true/>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 `, xmlEscape(exe))

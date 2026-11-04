@@ -45,7 +45,10 @@ func Connect() (*Client, error) {
 				return c, nil // same or newer daemon: an old client never replaces a newer daemon
 			}
 			_ = c.Shutdown() // an older daemon from before an upgrade
-			time.Sleep(500 * time.Millisecond)
+			for i := 0; i < 50 && c.ping() == nil; i++ {
+				time.Sleep(100 * time.Millisecond) // until it has let go of its lock
+			}
+			time.Sleep(300 * time.Millisecond)
 		}
 	}
 	if err := StartDaemon(); err != nil {

@@ -210,8 +210,17 @@ func (d *Daemon) openJobs(now time.Time) map[string]OpenJob {
 // waitsForAway: a GPU job that needs more than its card frees beside the human's reserve would
 // only be stopped again; it gets the card at its emptiest while the human is away.
 func (d *Daemon) waitsForAway(t *policy.Ticket) bool {
+	if d.nobodyAtKeyboard() || time.Since(t.Created).Minutes() >= d.cfg.Order.MaxWaitMinutes {
+		return false // no one to wait for, or it waited its 45 minutes
+	}
 	card, _ := d.cardFor(t)
-	return card >= 0 && d.needOn(t, card) < t.NeedVRAM-0.05 && d.user != "away"
+	return card >= 0 && d.needOn(t, card) < t.NeedVRAM-0.05
+}
+
+// nobodyAtKeyboard: the human is away, or input can't be read at all (a headless box, a desktop
+// without an idle source) and no game or fullscreen app is up: there's no one to make room for.
+func (d *Daemon) nobodyAtKeyboard() bool {
+	return d.user == "away" || (d.snap.Idle < 0 && d.user != "game")
 }
 
 // backoff: how often in a row a job was stopped for the human, and when it last was.
@@ -412,7 +421,15 @@ func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []
 		// A tick 30 s late: the machine slept (or the daemon was frozen). Nothing ran meanwhile, so
 		// it isn't lease time.
 		for _, j := range d.running() {
-			j.pausedTotal += dt
+			if j.pausedAt.IsZero() {
+				j.pausedTotal += dt // a paused job's pause already covers it
+			}
+			if !j.checkpoint.IsZero() {
+				j.checkpoint = j.checkpoint.Add(dt) // its grace to save and exit starts over from now
+			}
+			if !j.termAt.IsZero() {
+				j.termAt = j.termAt.Add(dt)
+			}
 		}
 		dt = 0
 	}
@@ -931,7 +948,12 @@ func (d *Daemon) ladder(now time.Time) {
 	}
 	if !d.vramLow.IsZero() && now.Sub(d.vramLow) > dur(c.Ladder.PressureSeconds) {
 		card := vramCard
-		if v := d.victim(func(j *job) bool { return j.GPU && d.onCard(j, card) }, true, false, d.res.VRAMGB, func(j *job) float64 { return j.vramGB }); v != nil {
+		short := d.res.VRAMGB
+		if card >= 0 && card < len(d.snap.GPUs) {
+			g := d.snap.GPUs[card]
+			short = math.Max(0.1, d.res.VRAMGB-(g.VRAMGB-g.UsedGB)) // what the human is missing, not the whole reserve
+		}
+		if v := d.victim(func(j *job) bool { return j.GPU && d.onCard(j, card) }, true, false, short, func(j *job) float64 { return j.vramGB }); v != nil {
 			d.requestCheckpoint(v, now, fmt.Sprintf("VRAM below the human's %.1f GB reserve", d.res.VRAMGB))
 		}
 	}
@@ -1090,7 +1112,7 @@ func (d *Daemon) vramShortCard() int {
 	}
 	// Away with nobody waiting for VRAM: a job that fills the card by design (TensorFlow's default)
 	// hurts no one, so don't evict it in a loop.
-	if d.user == "away" && !waitingGPU {
+	if d.nobodyAtKeyboard() && !waitingGPU {
 		return -1
 	}
 	for i, g := range d.snap.GPUs {
@@ -1464,6 +1486,12 @@ func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 // the next download may start (after the last one ends, and after the daemon starts).
 const netMeasure = 30 * time.Second
 
+// netHumanOnly: the only thing holding network jobs back is the human's measured share of the link
+// (its size is learned from peaks, so it may be too small until a download has run once).
+func (d *Daemon) netHumanOnly() bool {
+	return strings.HasPrefix(d.netWhy(), "network: the human is using")
+}
+
 // netFree says whether a network job may start now: a network turn is free, no game holds the
 // machine, and the human isn't already using much of the link.
 func (d *Daemon) netFree() bool { return d.netWhy() == "" }
@@ -1537,7 +1565,7 @@ func (d *Daemon) admit(now time.Time) {
 		if d.st.History[histKey(t)] == nil && now.Sub(d.unknownAt[t.GPU]) < 5*time.Second {
 			continue // first-time commands (no learned peaks) start 5 s apart, so their real use shows
 		}
-		if t.Net && !d.netFree() {
+		if t.Net && !d.netFree() && !(overdue && d.netHumanOnly()) {
 			continue // network turn taken, a game holds the machine, or the human is using the link
 		}
 		if d.backingOff(t.ID, now) {

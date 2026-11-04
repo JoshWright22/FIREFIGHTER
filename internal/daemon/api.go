@@ -491,6 +491,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "couldn't tell which process is asking (half-closed or foreign connection)")
 		return
 	}
+	if verb == "done" && j.ClientPID > 1 && caller != j.ClientPID && !callerHuman && !a.Force {
+		// Closing a job someone else is running would leave its process ungoverned: cancel it instead.
+		fail(w, http.StatusForbidden, "only the job's own client reports it done; use cancel to stop it")
+		return
+	}
 	switch verb {
 	case "start":
 		if j.State != "granted" {
@@ -548,6 +553,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 				fail(w, http.StatusForbidden, "container "+a.Container+" isn't labeled firefighter.job="+j.ID)
 				return
 			}
+			if j.State == "done" || !j.killedAt.IsZero() {
+				d.docker(a.Engine, "kill", full) // stopped while we looked: its container goes too
+				fail(w, http.StatusConflict, "job "+id+" was stopped")
+				return
+			}
 			// Later pause/kill calls use the full id: a name or prefix could point at another
 			// container once this one is gone.
 			j.container, j.engine = full, a.Engine
@@ -557,7 +567,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "bid must be 1-10")
 			return
 		}
-		if j.State == "waiting" {
+		if j.State != "waiting" {
+			fail(w, http.StatusConflict, "job "+id+" is "+j.State+"; a bid only changes a waiting job")
+			return
+		}
+		{
 			j.Bid = max(1, min(10, int(a.Minutes)))
 			if j.Spot && j.Bid >= policy.BidNormal {
 				j.Spot = false // asking for a normal turn: its band follows the budget again
@@ -591,7 +605,8 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		if !j.checkpoint.IsZero() || a.Exit == 75 { // 75 = checkpointed, requeue me (EX_TEMPFAIL)
 			outcome = "evicted"
 		}
-		d.finish(id, a.Exit, outcome, a.Log)
+		// Shown to other agents in status: one short, printable line, like every text an agent sends.
+		d.finish(id, a.Exit, outcome, cleanText(a.Log, 500))
 	case "cancel":
 		if j.State == "running" {
 			j.reason = "cancelled"
@@ -623,8 +638,9 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 			h = &History{}
 			d.st.History[histKey(j.Ticket)] = h
 		}
-		if j.Minutes > 0 && outcome == "ok" && ran >= 0.5 { // sub-30 s runs say nothing about runtime
-			h.Ratios = append(h.Ratios, math.Max(0.05, ran/j.Minutes))
+		worked := j.leaseUsed(now).Minutes()                   // paused, suspended and asleep time isn't runtime
+		if j.Minutes > 0 && outcome == "ok" && worked >= 0.5 { // sub-30 s runs say nothing about runtime
+			h.Ratios = append(h.Ratios, math.Max(0.05, worked/j.Minutes))
 			if len(h.Ratios) > 5 {
 				h.Ratios = h.Ratios[len(h.Ratios)-5:]
 			}

@@ -142,6 +142,10 @@ func newEnv(t *testing.T, fake map[string]any) *env {
 		fake["foreground"] = ""
 	}
 	e.setFake(fake)
+	// A test daemon scans the real machine: it must never adopt real agents' work.
+	if err := os.WriteFile(filepath.Join(home, "firefighter.toml"), []byte("[guard]\nauto_adopt = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	e.vars = append(os.Environ(), "FIREFIGHTER_HOME="+home, "FIREFIGHTER_FAKE_FILE="+e.fake, "NO_COLOR=1",
 		"FIREFIGHTER_NO_AUTOSTART=1", "FIREFIGHTER_NO_CLI_REGISTER=1")
 	t.Cleanup(e.cleanup)
@@ -634,17 +638,18 @@ func TestRogueHeavyProcessIsAdopted(t *testing.T) {
 	e := newEnv(t, nil)
 	self, _ := os.Executable()
 	e.ff("config", "set", "guard.agent_parents", "["+strings.TrimSuffix(filepath.Base(self), ".exe")+"]")
+	e.ff("config", "set", "guard.auto_adopt", "true") // off by default in tests: this one adopts its own helper
 	e.ff("config", "set", "guard.heavy_seconds", "2")
-	e.ff("config", "set", "guard.heavy_cpus", "0.5")
+	e.ff("config", "set", "guard.heavy_cpus", "0.2") // the suite may run under a real guard that squeezes it
 	e.status()
 	// Started straight from the test (an "agent"), not through firefighter, and burning CPU.
 	c := exec.Command(self)
-	c.Env = append(os.Environ(), "FF_HELPER=burn:25")
+	c.Env = append(os.Environ(), "FF_HELPER=burn:70")
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer c.Process.Kill()
-	eventually(t, "adoption", 40*time.Second, func() bool {
+	eventually(t, "adoption", 60*time.Second, func() bool {
 		r, _ := e.status()["running"].([]any)
 		for _, x := range r {
 			if strings.Contains(fmt.Sprint(x), "unmanaged") && strings.Contains(fmt.Sprint(x), "band:3") {
@@ -884,16 +889,17 @@ func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 		r, _ := e.status()["running"].([]any)
 		return len(r) == 1
 	})
-	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe"})
+	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "net_mbps": 0.0})
 	eventually(t, "frozen for the game", 20*time.Second, func() bool { out, _ := e.ff("status"); return strings.Contains(out, "gaming") })
 	time.Sleep(3 * time.Second) // past suspend_max_seconds
-	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "ram_avail_gb": total * 0.02})
+	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "ram_avail_gb": total * 0.02, "net_mbps": 0.0})
 	eventually(t, "asked to save, not killed", 30*time.Second, func() bool { return strings.Contains(readFile(log), "checkpointed") })
-	e.setFake(map[string]any{"idle": 9999.0, "foreground": ""})
+	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "net_mbps": 0.0}) // keep the real network out of it
 	select {
 	case <-done:
-	case <-time.After(120 * time.Second):
-		t.Fatal("download never finished")
+	case <-time.After(240 * time.Second): // requeued: a 1 min back-off, then the 30 s measuring gap
+		out, _ := e.ff("status")
+		t.Fatalf("download never finished:\n%s", out)
 	}
 }
 
