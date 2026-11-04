@@ -449,7 +449,8 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		return 127, false, err
 	}
 	release, _ := sysinfo.Contain(cmd.Process.Pid)
-	defer release()
+	var spare func(int) bool // set once the job ended normally: build servers it started live on
+	defer func() { release(spare) }()
 	if _, err := c.Act(t.ID, "start", daemon.Act{PID: cmd.Process.Pid}); err != nil {
 		if strings.Contains(err.Error(), "not granted") {
 			// The turn lapsed (the machine slept between grant and start): don't run ungoverned;
@@ -534,6 +535,9 @@ loop:
 	v, err = c.Act(t.ID, "done", daemon.Act{Exit: code, Project: t.Project})
 	if err != nil {
 		return code, false, nil
+	}
+	if cfg, err := config.Load(); err == nil {
+		spare = func(p int) bool { return daemon.KeepAlive(cfg.Guard.KeepAlive, sysinfo.Name(p)) }
 	}
 	if rec := v.Receipt; rec != nil && !quiet {
 		color := ui.Hot

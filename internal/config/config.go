@@ -47,7 +47,7 @@ type Config struct {
 	} `toml:"budget"`
 
 	GPU struct {
-		MaxJobs       int     `toml:"max_jobs"`        // GPU jobs at once
+		MaxJobs       int     `toml:"max_jobs"`        // GPU jobs at once on each card
 		PackBelowUtil float64 `toml:"pack_below_util"` // a second GPU job joins only below this GPU %
 		VRAMMargin    float64 `toml:"vram_margin"`     // learned peak VRAM is multiplied by this
 		DefaultVRAMGB float64 `toml:"default_vram_gb"` // need assumed for a GPU job with no history

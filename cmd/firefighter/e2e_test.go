@@ -18,6 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JoshWright22/firefighter/internal/client"
+	"github.com/JoshWright22/firefighter/internal/daemon"
+	"github.com/JoshWright22/firefighter/internal/policy"
+
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
@@ -888,5 +892,53 @@ func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 	case <-done:
 	case <-time.After(120 * time.Second):
 		t.Fatal("download never finished")
+	}
+}
+
+// A job id belongs to the client that ran it: another client can't reuse it (and take over its
+// receipt and waiters). A running process the guard never granted can't re-register as a normal
+// job: it's taken in as adopted outside work (spot band).
+func TestJobIDsAndReRegistrationAreOwned(t *testing.T) {
+	e := newEnv(t, nil)
+	id := e.detach("sleep:200", "--minutes", "1")
+	if out, code := e.ff("wait", id, "--timeout", "60"); code != 0 {
+		t.Fatalf("first job: %d\n%s", code, out)
+	}
+	if out, code := e.job("sleep:100", "--id", id, "--minutes", "1"); code == 0 || !strings.Contains(out, "belongs to another client") {
+		t.Fatalf("reusing another client's id must fail: %d\n%s", code, out)
+	}
+	t.Setenv("FIREFIGHTER_HOME", e.home)
+	c, err := client.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(os.Args[0])
+	child.Env = append(os.Environ(), "FF_HELPER=sleep:20000:"+filepath.Join(e.home, "fake-reg.txt"))
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+	v, err := c.Create(daemon.Request{Ticket: policy.Ticket{Project: "p", Name: "fake", Minutes: 5, PID: child.Process.Pid}, Running: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Band != policy.BandSpot {
+		t.Fatalf("a re-registration the guard never granted must be adopted at the spot band, got band %d", v.Band)
+	}
+}
+
+// Each card takes turns on its own: a card at 95% load doesn't hold back a job that fits on an
+// idle one, and the job goes to the idle card even when the busy one has more VRAM free.
+func TestBusyCardDoesNotBlockTheIdleOne(t *testing.T) {
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{
+		{"index": 0, "name": "Busy", "vendor": "nvidia", "vram_gb": 24, "used_gb": 2, "util": 95},
+		{"index": 1, "name": "Idle", "vendor": "nvidia", "vram_gb": 24, "used_gb": 6, "util": 0},
+	}})
+	out := filepath.Join(e.home, "env.txt")
+	if o, code := e.job("env:CUDA_VISIBLE_DEVICES:"+out, "--gpu", "--minutes", "1", "--vram", "4"); code != 0 {
+		t.Fatalf("job failed %d:\n%s", code, o)
+	}
+	if got := readFile(out); !strings.Contains(got, "CUDA_VISIBLE_DEVICES=1") {
+		t.Fatalf("job should run on the idle card 1:\n%s", got)
 	}
 }

@@ -401,30 +401,55 @@ func PrepareChild(cmd *exec.Cmd, argv []string) {
 func RestoreForeground() {}
 
 // Contain puts a started child in a Job Object that kills the whole tree when the client exits, so
-// no orphaned workers survive a crashed or killed `firefighter run`.
-func Contain(pid int) (func(), error) {
+// no orphaned workers survive a crashed or killed `firefighter run`. The release it returns takes
+// spare: nil kills everything left; otherwise the leftovers spare doesn't keep are killed and the
+// rest (shared build servers) live on outside it.
+func Contain(pid int) (func(spare func(pid int) bool), error) {
+	none := func(func(int) bool) {}
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		return func() {}, err
+		return none, err
 	}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		windows.CloseHandle(job)
-		return func() {}, err
+		return none, err
 	}
 	h, err := open(pid, windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE)
 	if err != nil {
 		windows.CloseHandle(job)
-		return func() {}, err
+		return none, err
 	}
 	defer windows.CloseHandle(h)
 	if err := windows.AssignProcessToJobObject(job, h); err != nil {
 		windows.CloseHandle(job)
-		return func() {}, err
+		return none, err
 	}
-	return func() { windows.CloseHandle(job) }, nil
+	return func(spare func(int) bool) {
+		defer windows.CloseHandle(job)
+		if spare == nil {
+			return // closing the handle kills the whole tree
+		}
+		var list struct {
+			Assigned, InList uint32
+			IDs              [1024]uintptr
+		}
+		if windows.QueryInformationJobObject(job, windows.JobObjectBasicProcessIdList,
+			uintptr(unsafe.Pointer(&list)), uint32(unsafe.Sizeof(list)), nil) != nil {
+			return
+		}
+		for _, p := range list.IDs[:min(int(list.InList), len(list.IDs))] {
+			if !spare(int(p)) {
+				_ = Kill(int(p))
+			}
+		}
+		// What's left is spared: let it outlive the job.
+		info.BasicLimitInformation.LimitFlags = 0
+		_, _ = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
+	}, nil
 }
 
 // Detach starts a process with no console and no tie to the caller (for the daemon and detached

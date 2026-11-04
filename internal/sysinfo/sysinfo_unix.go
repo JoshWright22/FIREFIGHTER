@@ -71,7 +71,7 @@ func RestoreForeground() {
 }
 
 // Contain is a no-op on Unix: the process group plus the client's exit handler cover the tree.
-func Contain(int) (func(), error) { return func() {}, nil }
+func Contain(int) (func(spare func(pid int) bool), error) { return func(func(int) bool) {}, nil }
 
 func Detach(cmd *exec.Cmd, _ bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

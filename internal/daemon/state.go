@@ -37,7 +37,17 @@ type Receipt struct {
 	Log      string    `json:"log,omitempty"`
 	Ended    time.Time `json:"ended"`
 	Requeue  bool      `json:"requeue"`
-	Reason   string    `json:"reason,omitempty"` // why firefighter stopped it (evicted/killed jobs)
+	Reason   string    `json:"reason,omitempty"`    // why firefighter stopped it (evicted/killed jobs)
+	Client   int       `json:"client,omitempty"`    // the client that ran it: only it may reuse the id
+	ClientAt int64     `json:"client_at,omitempty"` // its start time (a reused pid isn't the same client)
+}
+
+// OpenJob is a running job's client, kept so that after a daemon restart only jobs this guard
+// really granted can re-register as running (anything else is adopted: spot band, 1.5x).
+type OpenJob struct {
+	Client   int       `json:"client"`
+	ClientAt int64     `json:"client_at"`
+	Seen     time.Time `json:"seen"`
 }
 
 // Plan is an announcement of heavy work coming later; it reserves nothing, it tells others.
@@ -63,6 +73,8 @@ type saved struct {
 	// Frozen: processes the daemon suspended (pid -> start time), so a daemon that dies mid-game
 	// can thaw them on its next start even when no client re-registers them (adopted work).
 	Frozen map[int]int64 `json:"frozen,omitempty"`
+	// Open: running jobs by id, so their clients can re-register them after a restart.
+	Open map[string]OpenJob `json:"open,omitempty"`
 	// Newcomers: the budget never-seen projects draw from, refilled daily (guard.new_project_minutes).
 	Newcomers   float64   `json:"newcomers"`
 	NetLinkMbps float64   `json:"net_link_mbps,omitempty"` // the network link's learned size, kept across restarts

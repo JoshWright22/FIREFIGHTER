@@ -96,6 +96,7 @@ func (d *Daemon) routes() http.Handler {
 			time.Sleep(100 * time.Millisecond)
 			d.mu.Lock()
 			d.release()
+			d.st.Open = d.openJobs(time.Now())
 			_ = d.st.write()
 			d.mu.Unlock()
 			close(d.stop)
@@ -180,14 +181,12 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
 		return
 	}
-	if caller == 0 || (req.Running && caller < 0 && req.Adopt) {
-		fail(w, http.StatusForbidden, "couldn't tell which process is asking; adopt from a normal terminal")
+	if caller == 0 || (req.Running && caller < 0) {
+		// Registering a running process needs to know who asks: never act on a claimed pid.
+		fail(w, http.StatusForbidden, "couldn't tell which process is asking; run it from a normal terminal")
 		return
 	}
 	reg := caller
-	if reg < 0 { // no connection table here: trust the client's claim for its own job only
-		reg = t.ClientPID
-	}
 	if req.Running && !req.Adopt && (reg <= 1 || !sysinfo.DescendantOf(t.PID, reg)) {
 		// Re-registration after a daemon restart comes from the job's own client.
 		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't a job this client started", t.PID))
@@ -214,9 +213,34 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if !req.Running {
 		t.PID = 0 // only `start` sets the job's pid, after the turn is granted
 	}
+	clientAt := int64(0)
+	if t.ClientPID > 1 {
+		clientAt = sysinfo.Created(t.ClientPID)
+	}
 	if old, ok := d.jobs[t.ID]; ok && old.State != "done" {
 		reply(w, d.view(old)) // re-registration after a daemon restart or a retry
 		return
+	}
+	// An id that already ran belongs to its client: only it may run it again (a requeue), so no
+	// one else can take over its receipt or its waiters.
+	prevClient, prevAt := 0, int64(0)
+	if old, ok := d.jobs[t.ID]; ok {
+		prevClient, prevAt = old.ClientPID, old.clientAt
+	} else if rc, ok := d.st.Receipts[t.ID]; ok {
+		prevClient, prevAt = rc.Client, rc.ClientAt
+	}
+	if prevClient > 1 && (prevClient != t.ClientPID || (prevAt != 0 && prevAt != clientAt)) {
+		fail(w, http.StatusConflict, "job id "+t.ID+" belongs to another client; leave the id out to get a new one")
+		return
+	}
+	// Running and not adopted: a re-registration after a daemon restart. Only a job the previous
+	// daemon granted to this same client counts; anything else is outside work brought in.
+	reclaim := false
+	if req.Running && !req.Adopt {
+		if o, ok := d.prevOpen[t.ID]; ok && o.Client == caller && (o.ClientAt == 0 || o.ClientAt == clientAt) {
+			reclaim = true
+			delete(d.prevOpen, t.ID)
+		}
 	}
 	t.Project, t.Name = cleanText(t.Project, 100), cleanText(t.Name, 120)
 	if t.Project == "" {
@@ -288,7 +312,8 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	}
 	j := newJob(&t)
 	j.ownerAgent, j.ownerCreated = owner, sysinfo.Created(owner)
-	if req.Running && req.Adopt {
+	j.clientAt = clientAt
+	if req.Running && !reclaim {
 		// Work started outside the queue and brought in: priced and placed like any adopted
 		// process (1.5x, spot, preempted first), so start-then-adopt never beats queueing.
 		j.adopted = true
@@ -465,8 +490,9 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		starter := caller
-		if starter < 0 { // the connection table isn't available on this system
-			starter = j.ClientPID
+		if starter < 0 {
+			fail(w, http.StatusServiceUnavailable, "couldn't tell which process is asking; try again")
+			return
 		}
 		if j.ClientPID > 1 && starter != j.ClientPID {
 			fail(w, http.StatusForbidden, "only the client that queued this job can start it")
@@ -494,8 +520,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			logf("%s: background priority: %v", j.Name, err)
 		}
 		logf("%s: started pid %d after %.1f min", j.Name, a.PID, now.Sub(j.Created).Minutes())
+		d.st.Open = d.openJobs(now) // now: a daemon that dies before the next save still knows it
+		_ = d.st.write()
 	case "container":
-		if a.Container == "" || (j.ClientPID > 1 && caller != j.ClientPID && caller >= 0) {
+		if a.Container == "" || caller < 0 || (j.ClientPID > 1 && caller != j.ClientPID) {
 			fail(w, http.StatusForbidden, "only the job's own client can name its container")
 			return
 		}
@@ -599,7 +627,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	// are shared build servers (guard.keep_alive) the human's own builds reuse.
 	if !j.adopted && j.State == "running" {
 		for p, created := range j.pids {
-			if p != j.PID && sysinfo.Same(p, created) && !keepAlive(d.cfg.Guard.KeepAlive, sysinfo.Name(p)) {
+			if p != j.PID && sysinfo.Same(p, created) && !KeepAlive(d.cfg.Guard.KeepAlive, sysinfo.Name(p)) {
 				_ = sysinfo.Kill(p)
 			}
 		}
@@ -614,7 +642,8 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	waited := now.Sub(j.Created).Minutes() - ran
 	rec := &Receipt{ID: id, Project: j.Project, Name: j.Name, Exit: exit, Outcome: outcome, Minutes: round1(ran),
 		Declared: j.Minutes, Waited: round1(waited), Charged: round1(j.charged), PeakVRAM: round1(j.peakVRAM),
-		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted"}
+		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted",
+		Client: j.ClientPID, ClientAt: j.clientAt}
 	if outcome == "evicted" || outcome == "killed" || outcome == "lost" {
 		rec.Reason = j.reason
 	}
@@ -635,7 +664,9 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 
 func round1(f float64) float64 { return math.Round(f*10) / 10 }
 
-func keepAlive(names []string, name string) bool {
+// KeepAlive says whether a process name is a shared build server (guard.keep_alive) that outlives
+// the job that started it.
+func KeepAlive(names []string, name string) bool {
 	n := strings.ToLower(strings.TrimSuffix(strings.ToLower(name), ".exe"))
 	for _, k := range names {
 		if k != "" && strings.Contains(n, strings.ToLower(k)) {
@@ -955,7 +986,10 @@ func callerPID(r *http.Request) int {
 	lp, _ := strconv.Atoi(lport)
 	conns, err := psnet.Connections("tcp")
 	if err != nil || len(conns) == 0 {
-		return -1
+		time.Sleep(50 * time.Millisecond) // one retry: a transient failure shouldn't refuse a job
+		if conns, err = psnet.Connections("tcp"); err != nil || len(conns) == 0 {
+			return -1
+		}
 	}
 	for _, c := range conns {
 		if c.Pid > 0 && c.Pid != int32(os.Getpid()) && strings.EqualFold(c.Status, "ESTABLISHED") &&
@@ -979,7 +1013,7 @@ func (d *Daemon) sessionOf(caller int) (session int, human bool) {
 	if caller <= 1 {
 		return 0, false
 	}
-	g := d.cfg.Guard
+	g := d.cfgShared.Load().Guard // outside the lock: never the field the loop swaps
 	if a := sysinfo.AgentAncestorPID(caller, g.AgentParents); a != 0 {
 		return a, false
 	}

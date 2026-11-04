@@ -104,7 +104,7 @@ var baseTools = []tool{
 	})},
 }
 
-var configTool = tool{"firefighter_config", "Change firefighter's policy (the human allowed agents to). action: show | set | unset. Keys like order.policy, budget.projects.<name>, gpu.max_jobs, preset.", obj(map[string]any{
+var configTool = tool{"firefighter_config", "Change firefighter's policy (the human allowed agents to). action: show | set | unset. Keys like order.policy, pricing.policy, gpu.max_jobs.", obj(map[string]any{
 	"action": str("show | set | unset"), "key": str("Dotted key"), "value": str("New value"),
 }, "action")}
 
@@ -431,7 +431,7 @@ func configCall(a map[string]any) (string, error) {
 			return "", fmt.Errorf("only the human changes firefighter's policy")
 		}
 		if !agentKey(s(a, "key")) {
-			return "", fmt.Errorf("agents may only change scheduling policy (preset, order.*, pricing.*, gpu.*); the rest is the human's")
+			return "", fmt.Errorf("agents may only change scheduling policy (order.*, pricing.*, gpu.*); the rest, presets included, is the human's")
 		}
 	}
 	switch act {
@@ -448,10 +448,11 @@ func configCall(a map[string]any) (string, error) {
 }
 
 // agentKey: settings an agent may change when guard.agents_can_configure is on. Never guard.*
-// (the human's protections), harvester.* (shell commands the daemon runs), budget.* or reserve.*.
+// (the human's protections), harvester.* (shell commands the daemon runs), budget.*, reserve.* or
+// preset (a preset sets reserves).
 func agentKey(k string) bool {
 	k = strings.ToLower(strings.TrimSpace(k))
-	return k == "preset" || strings.HasPrefix(k, "order.") || strings.HasPrefix(k, "pricing.") || strings.HasPrefix(k, "gpu.")
+	return strings.HasPrefix(k, "order.") || strings.HasPrefix(k, "pricing.") || strings.HasPrefix(k, "gpu.")
 }
 
 func jobID(id string) bool {
