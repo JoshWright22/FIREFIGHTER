@@ -86,6 +86,7 @@ var baseTools = []tool{
 		"ram_gb":     num("Peak RAM GB, if known"),
 		"urgent":     boo("Only when the human waits on the result; 2x price"),
 		"spot":       boo("Leftover time only; 1/3 price, paused first"),
+		"net":        boo("Network-heavy (downloads, uploads); known installers and downloads are detected"),
 		"gpu_vendor": str("GPUs the job can use: nvidia, amd, intel or any (default NVIDIA if present)"),
 		"name":       str("'<project> <what>'"),
 	}, "command", "cwd", "minutes")},
@@ -277,7 +278,7 @@ func call(name string, a map[string]any) (string, any, error) {
 			return "", nil, fmt.Errorf("cwd %q isn't a folder", s(a, "cwd"))
 		}
 		args := []string{"--minutes", fmt.Sprint(f(a, "minutes"))}
-		for _, k := range []string{"gpu", "spot", "urgent"} {
+		for _, k := range []string{"gpu", "spot", "urgent", "net"} {
 			if b(a, k) {
 				args = append(args, "--"+k)
 			}

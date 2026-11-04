@@ -250,6 +250,9 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	t.Bid = max(1, min(10, t.Bid))
 	delete(d.st.Receipts, t.ID) // a new attempt under the same id (requeue) replaces the old receipt
 	t.Created = now
+	if t.NetAuto && !d.cfg.Network.AutoDetect {
+		t.Net = false // detected, not declared, and detection is off
+	}
 	if v := strings.ToLower(t.WantVendor); t.GPU && v != "" && v != "any" {
 		if v != "nvidia" && v != "amd" && v != "intel" {
 			fail(w, 400, "gpu vendor must be nvidia, amd, intel or any")
@@ -457,9 +460,15 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "job "+id+" is "+j.State+", not granted")
 			return
 		}
-		if a.PID <= 1 || !sysinfo.Alive(a.PID) {
-			fail(w, 400, fmt.Sprintf("pid %d isn't a running process", a.PID))
+		if a.PID <= 1 {
+			fail(w, 400, fmt.Sprintf("pid %d isn't a process", a.PID))
 			return
+		}
+		if !sysinfo.Alive(a.PID) {
+			// It already finished (a quick command beats its own start report): nothing to govern;
+			// its client reports done next.
+			j.State, j.Started = "running", now
+			break
 		}
 		starter := caller
 		if starter < 0 { // the connection table isn't available on this system
@@ -686,6 +695,8 @@ func (d *Daemon) view(j *job) View {
 func (d *Daemon) blocker(j *job) string {
 	ram, _ := d.headroom(time.Now())
 	switch {
+	case j.Net && !d.netFree():
+		return fmt.Sprintf("network turn: %.0f Mbps in use by the human of ~%.0f, a game, or another download", d.netHuman, d.netCap)
 	case j.GPU && d.gpuHeld():
 		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:
@@ -744,6 +755,7 @@ func (d *Daemon) status() Status {
 		Reserve: map[string]float64{"cpus": d.res.CPUs, "ram_pct": d.res.RAMPct, "vram_gb": d.res.VRAMGB},
 		Machine: map[string]float64{"cpus": float64(d.snap.CPUs), "cpu_busy": round1(d.snap.CPUBusy), "user_cpus": round1(d.busyUser),
 			"ram_total_gb": round1(d.snap.RAMTotalGB), "ram_avail_gb": round1(d.snap.RAMAvailGB),
+			"net_mbps": round1(d.snap.NetMbps), "net_human_mbps": round1(d.netHuman), "net_link_mbps": round1(d.netCap),
 			"vram_total_gb": round1(vt), "vram_used_gb": round1(vu), "gpu_util": d.snap.GPUUtil(), "idle_s": math.Round(d.snap.Idle)},
 		Policy: map[string]string{"preset": d.cfg.Preset, "order": d.cfg.Order.Policy, "pricing": d.cfg.Pricing.Policy, "budget": d.cfg.Budget.Policy}}
 	if d.user == "game" {

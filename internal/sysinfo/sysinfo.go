@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	psnet "github.com/shirou/gopsutil/v4/net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,7 @@ type Snapshot struct {
 	CPUBusy    float64 // logical CPUs busy, machine-wide
 	RAMTotalGB float64
 	RAMAvailGB float64
+	NetMbps    float64 // network throughput, received + sent, all non-loopback interfaces (megabits/s)
 	GPUs       []GPU
 	ProcGPU    map[int]ProcGPU
 	Idle       float64 // seconds since the human's last input; -1 unknown
@@ -91,6 +93,8 @@ type Reader struct {
 	procAt   time.Time
 	idle     float64
 	idleAt   time.Time
+	netBytes uint64
+	netAt    time.Time
 	platform *platformReader
 }
 
@@ -105,6 +109,19 @@ func (r *Reader) Read() Snapshot {
 	if v, err := mem.VirtualMemory(); err == nil {
 		s.RAMTotalGB = gb(v.Total)
 		s.RAMAvailGB = gb(v.Available)
+	}
+	if c, err := psnet.IOCounters(true); err == nil {
+		var total uint64
+		for _, n := range c {
+			if l := strings.ToLower(n.Name); l == "lo" || strings.HasPrefix(l, "loopback") || strings.HasPrefix(l, "lo0") {
+				continue
+			}
+			total += n.BytesRecv + n.BytesSent
+		}
+		if dt := time.Since(r.netAt).Seconds(); !r.netAt.IsZero() && dt > 0 && total >= r.netBytes {
+			s.NetMbps = float64(total-r.netBytes) * 8 / 1e6 / dt
+		}
+		r.netBytes, r.netAt = total, time.Now()
 	}
 	if time.Since(r.gpuAt) > 2*time.Second {
 		r.gpu = r.readGPUs()
@@ -151,6 +168,7 @@ func applyFake(s *Snapshot) {
 		Idle       *float64 `json:"idle"`
 		Foreground *string  `json:"foreground"`
 		RAMAvailGB *float64 `json:"ram_avail_gb"`
+		NetMbps    *float64 `json:"net_mbps"`
 		GPUs       []GPU    `json:"gpus"`
 	}
 	if json.Unmarshal(b, &f) != nil {
@@ -164,6 +182,9 @@ func applyFake(s *Snapshot) {
 	}
 	if f.RAMAvailGB != nil {
 		s.RAMAvailGB = *f.RAMAvailGB
+	}
+	if f.NetMbps != nil {
+		s.NetMbps = *f.NetMbps
 	}
 	if f.GPUs != nil {
 		s.GPUs = f.GPUs

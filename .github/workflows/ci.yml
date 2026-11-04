@@ -51,9 +51,19 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: stable
-      - name: build
+      - name: build (same flags as the release)
         shell: bash
-        run: go build -o "$RUNNER_TEMP/firefighter$([ "$RUNNER_OS" = Windows ] && echo .exe)" ./cmd/firefighter
+        run: go build -trimpath -ldflags "-w -X main.version=0.0.0-ci" -o "$RUNNER_TEMP/firefighter$([ "$RUNNER_OS" = Windows ] && echo .exe)" ./cmd/firefighter
+      - name: Windows Defender finds nothing (a flagged binary is an install-time popup for users)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          if (-not (Test-Path $mp)) { Write-Host 'Defender not on this runner; skipped'; exit 0 }
+          & $mp -SignatureUpdate | Out-Null
+          $out = & $mp -Scan -ScanType 3 -File (Join-Path $env:RUNNER_TEMP "firefighter.exe") -DisableRemediation 2>&1 | Out-String
+          Write-Host $out
+          if ($out -match 'found \d+ threat|Threat\s*:') { throw 'Windows Defender flags the build' }
       - name: install.sh
         if: runner.os != 'Windows'
         run: |

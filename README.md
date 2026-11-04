@@ -53,6 +53,9 @@ crawl, your game stutters, audio crackles, and nobody knows who's using what or 
 - ⏸️ **Polite preemption.** The ladder goes: shrink the job's CPU set → cooperative pause at a step
   boundary → suspend (for jobs that ignore the pause) → checkpoint-and-exit with automatic requeue
   when you need the memory back → kill, but only when RAM is critical.
+- 🌐 **Network too.** Downloads and uploads (`docker pull`, pip/npm/cargo installs, `git clone`,
+  model and dataset downloads; detected automatically, or `--net`) take turns, wait while you're
+  using the link (a call, a stream: `network.human_busy_pct`), and pause while you game.
 - 🧮 **Any machine.** Any number of GPUs from any vendor (NVIDIA, AMD, Intel; mixed is fine), any
   CPU count (Windows processor groups past 64 included), any RAM size. Each GPU job is placed on the
   card it was admitted on, in that vendor's own numbering. On mixed machines a job goes to the

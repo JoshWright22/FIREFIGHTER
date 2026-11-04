@@ -102,6 +102,15 @@ type Config struct {
 		NewProjectMinutes float64 `toml:"new_project_minutes"`
 	} `toml:"guard"`
 
+	// Network: downloads and uploads (docker pull, pip/npm installs, dataset and model downloads)
+	// take turns and give way to the human's own traffic and online games.
+	Network struct {
+		MaxJobs      int     `toml:"max_jobs"`       // network-heavy jobs at once
+		HumanBusyPct float64 `toml:"human_busy_pct"` // new network jobs wait while the human uses more than this share of the link
+		PauseInGame  bool    `toml:"pause_in_game"`  // pause network jobs while a game holds the machine (latency)
+		AutoDetect   bool    `toml:"auto_detect"`    // treat known download/install commands as network jobs
+	} `toml:"network"`
+
 	Harvester struct { // band 4: something that only runs when nothing else wants the GPU (Salad, BOINC, ...)
 		Start       string  `toml:"start"`
 		Stop        string  `toml:"stop"`
@@ -148,6 +157,10 @@ func Defaults() Config {
 	c.Ladder.OverrunFactor = 1.25
 	c.Ladder.MaxLeaseMinutes = 24 * 60
 	c.Harvester.IdleSeconds = 180
+	c.Network.MaxJobs = 1
+	c.Network.HumanBusyPct = 50
+	c.Network.PauseInGame = true
+	c.Network.AutoDetect = true
 	c.Guard.AutoAdopt = true
 	// Agent CLIs only: IDEs (Cursor, Windsurf, VS Code) also host the human's own terminals.
 	c.Guard.AgentParents = []string{"claude", "codex", "gemini", "aider", "goose", "opencode", "cline", "grok", "kimi",

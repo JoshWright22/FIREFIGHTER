@@ -34,7 +34,7 @@ var version = "dev"
 
 const usage = `firefighter: your agents won't set your GPU on fire.
 
-  firefighter run [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
+  firefighter run [--gpu] [--net] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
                                  wait for a turn, run the command here, print a receipt
       --detach                   queue it and return a job id at once (then: firefighter wait <id>)
       --evict never|graceful|force   what may happen if the human needs resources back
@@ -124,11 +124,11 @@ func main() {
 // ---- run --------------------------------------------------------------------------------------------
 
 type runFlags struct {
-	gpu, spot, detach, quiet, urgent bool
-	minutes, vram, ram               float64
-	bid                              int
-	name, project, evict, vendor     string
-	id, log                          string
+	gpu, spot, detach, quiet, urgent, net bool
+	minutes, vram, ram                    float64
+	bid                                   int
+	name, project, evict, vendor          string
+	id, log                               string
 }
 
 func parseRun(args []string) (*runFlags, []string, error) {
@@ -143,6 +143,7 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	fs.Float64Var(&r.ram, "ram", 0, "peak RAM GB")
 	fs.IntVar(&r.bid, "bid", 5, "1-10; prefer --urgent (10) or the default (5)")
 	fs.BoolVar(&r.urgent, "urgent", false, "the human is waiting on the result: starts sooner, costs 2x")
+	fs.BoolVar(&r.net, "net", false, "network-heavy (downloads, uploads); known installers and downloads are detected")
 	fs.StringVar(&r.vendor, "gpu-vendor", "", "GPUs the job can use: nvidia, amd, intel or any (default: NVIDIA if present)")
 	fs.StringVar(&r.name, "name", "", "job name")
 	fs.StringVar(&r.project, "project", "", "project (default: the git repo or folder name)")
@@ -286,6 +287,9 @@ func detachArgs(r *runFlags, argv []string) []string {
 	if r.vendor != "" {
 		out = append(out, "--gpu-vendor", r.vendor)
 	}
+	if r.net {
+		out = append(out, "--net")
+	}
 	if r.vram > 0 {
 		out = append(out, "--vram", fmt.Sprint(r.vram))
 	}
@@ -336,7 +340,7 @@ func run(args []string) (int, error) {
 	}
 	argv, container := dockerize(argv, r.id)
 	t := policy.Ticket{ID: r.id, Project: r.project, Name: r.name, Cwd: cwd, Command: strings.Join(argv, " "), CmdHash: hashCmd(argv),
-		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, ClientPID: os.Getpid(), WantVendor: r.vendor}
+		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, ClientPID: os.Getpid(), WantVendor: r.vendor, Net: r.net || netCommand(argv), NetAuto: !r.net && netCommand(argv)}
 	for attempt := 1; ; attempt++ {
 		code, requeue, err := turn(c, t, argv, container, r.quiet)
 		if err != nil || !requeue {
@@ -1108,4 +1112,49 @@ func validJobID(id string) bool {
 		}
 	}
 	return true
+}
+
+// netCommand recognizes commands that are mostly network traffic: image pulls, package installs,
+// clones, downloads. (`firefighter config set network.auto_detect false` turns this off; the
+// daemon ignores the flag then.)
+func netCommand(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	words := argv
+	if len(argv) >= 3 {
+		switch strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe") {
+		case "sh", "bash", "zsh", "cmd", "powershell", "pwsh":
+			words = strings.Fields(argv[len(argv)-1])
+		}
+	}
+	if len(words) == 0 {
+		return false
+	}
+	prog := strings.TrimSuffix(strings.ToLower(filepath.Base(words[0])), ".exe")
+	sub := ""
+	for _, w := range words[1:] {
+		if !strings.HasPrefix(w, "-") {
+			sub = strings.ToLower(w)
+			break
+		}
+	}
+	switch prog {
+	case "curl", "wget", "aria2c", "rsync", "scp", "huggingface-cli", "hf", "gsutil", "rclone":
+		return true
+	case "docker", "podman":
+		return sub == "pull" || sub == "push" || sub == "build"
+	case "git":
+		return sub == "clone" || sub == "fetch" || sub == "pull" || sub == "lfs"
+	case "pip", "pip3", "npm", "pnpm", "yarn", "bun", "cargo", "conda", "mamba", "brew", "winget", "choco", "scoop", "apt", "apt-get", "dnf", "ollama":
+		return sub == "install" || sub == "i" || sub == "ci" || sub == "add" || sub == "pull" || sub == "fetch" || sub == "update" || sub == "upgrade" || sub == "sync"
+	case "uv":
+		return sub == "pip" || sub == "sync" || sub == "add"
+	case "go":
+		return sub == "get" || sub == "mod"
+	case "python", "python3", "py":
+		j := strings.Join(words, " ")
+		return strings.Contains(j, "-m pip install") || strings.Contains(j, "huggingface_hub")
+	}
+	return false
 }

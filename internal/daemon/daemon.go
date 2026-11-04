@@ -98,6 +98,8 @@ type Daemon struct {
 	unknownAt     map[bool]time.Time   // last grant of a never-seen command, per kind (GPU/CPU)
 	cardFloor     []float64            // the least VRAM each card has had in use lately: the emptiest it gets
 	gpuSeen       bool                 // a GPU has reported since start (a missed reading isn't "no GPU")
+	netCap        float64              // the most network throughput seen (Mbps), slowly forgotten: the link's size
+	netHuman      float64              // network use while no network job runs (Mbps, smoothed): the human's
 	gpuMax        int                  // most GPUs seen in one reading
 	gpuShortSince time.Time            // since when readings show fewer
 	gpuDegraded   bool                 // this reading is partial: no GPU grants
@@ -474,6 +476,18 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 	}
 	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
 	d.gpuSeen = d.gpuSeen || len(d.snap.GPUs) > 0
+	// The link's size is learned from the most it has carried (forgotten over about a week, so a
+	// slower network later is noticed); while no network job runs, its traffic is the human's.
+	if dt > 0 {
+		d.netCap = math.Max(d.snap.NetMbps, d.netCap*math.Exp(-dt.Hours()/168))
+		netJob := false
+		for _, j := range d.running() {
+			netJob = netJob || j.Net
+		}
+		if !netJob {
+			d.netHuman += (1 - math.Exp(-dt.Seconds()/20)) * (d.snap.NetMbps - d.netHuman)
+		}
+	}
 	// A reading with fewer GPUs than usual is a vendor tool missing a beat, not a card removed:
 	// until it lasts a minute, no GPU grants, and the per-card history is kept.
 	switch n := len(d.snap.GPUs); {
@@ -703,11 +717,12 @@ func (d *Daemon) ladder(now time.Time) {
 	// The human's state holds the GPU (game by default): cooperative pause, then suspend. A job
 	// stays suspended while the human needs the GPU; it is only evicted if the memory it holds is
 	// what's short (and --evict never jobs never are, short of critical RAM).
-	hold := d.gpuHeld()
+	gpuHold, netHold := d.gpuHeld(), d.user == "game" && c.Network.PauseInGame
 	for _, j := range d.running() {
-		if !j.GPU || !j.killedAt.IsZero() {
+		if (!j.GPU && !j.Net) || !j.killedAt.IsZero() {
 			continue
 		}
+		hold := (j.GPU && gpuHold) || (j.Net && netHold)
 		acked := exists(PausedFile(j.ID))
 		switch {
 		case hold && j.pausedAt.IsZero() && j.checkpoint.IsZero():
@@ -775,7 +790,7 @@ func (d *Daemon) ladder(now time.Time) {
 			leaving = true
 		}
 	}
-	if !hold && !leaving {
+	if !gpuHold && !leaving {
 		ram, vram := d.headroom(now)
 		var head *policy.Ticket
 		for _, t := range d.waiting() {
@@ -1209,6 +1224,27 @@ func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 	return need
 }
 
+// netFree says whether a network job may start now: a network turn is free, no game holds the
+// machine, and the human isn't already using much of the link.
+func (d *Daemon) netFree() bool {
+	c := d.cfg.Network
+	n := 0
+	for _, j := range d.jobs {
+		if j.Net && (j.State == "running" || j.State == "granted") {
+			n++
+		}
+	}
+	switch {
+	case c.MaxJobs > 0 && n >= c.MaxJobs:
+		return false
+	case d.user == "game" && c.PauseInGame:
+		return false
+	case d.netCap > 1 && d.netHuman > d.netCap*c.HumanBusyPct/100:
+		return false
+	}
+	return true
+}
+
 // cardLeft is the VRAM a job of this vendor would find on its card, after the human's reserve.
 func (d *Daemon) cardLeft(t *policy.Ticket) float64 {
 	_, left := d.cardFor(t)
@@ -1251,6 +1287,9 @@ func (d *Daemon) admit(now time.Time) {
 		overdue := now.Sub(t.Created).Minutes() >= c.Order.MaxWaitMinutes
 		if d.st.History[histKey(t)] == nil && now.Sub(d.unknownAt[t.GPU]) < 5*time.Second {
 			continue // first-time commands (no learned peaks) start 5 s apart, so their real use shows
+		}
+		if t.Net && !d.netFree() {
+			continue // network turn taken, a game holds the machine, or the human is using the link
 		}
 		if t.GPU {
 			if gpuBlocked || gpuRunning >= c.GPU.MaxJobs {

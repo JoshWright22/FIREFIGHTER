@@ -44,6 +44,8 @@ type Ticket struct {
 	// WantVendor: which GPUs the job can use: nvidia | amd | intel | any. Empty: NVIDIA cards when
 	// the machine has any (most GPU code is CUDA), else any.
 	WantVendor string `json:"want_vendor,omitempty"`
+	Net        bool   `json:"net,omitempty"`      // network-heavy (downloads, uploads, installs)
+	NetAuto    bool   `json:"net_auto,omitempty"` // Net was detected from the command, not declared
 
 	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: max(declared, learned peak x margin)
 	NeedRAM     float64 `json:"need_ram_gb"`

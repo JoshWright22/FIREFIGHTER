@@ -817,3 +817,41 @@ func TestDeclaredVRAMWaitsForABigEnoughCard(t *testing.T) {
 		t.Fatalf("--vram larger than every card must be refused: %d %s", code, out)
 	}
 }
+
+// Network-heavy jobs take turns (network.max_jobs 1), declared with --net or detected from the
+// command (here a curl call is detected even without --net).
+func TestNetworkJobsTakeTurns(t *testing.T) {
+	e := newEnv(t, map[string]any{"net_mbps": 0.0})
+	log := filepath.Join(e.home, "net.txt")
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e.job(fmt.Sprintf("sleep:1500:%s", log), "--net", "--minutes", "1")
+		}()
+	}
+	wg.Wait()
+	var spans [][2]int64
+	for _, line := range strings.Split(strings.TrimSpace(readFile(log)), "\n") {
+		f := strings.Fields(line)
+		n, _ := strconv.ParseInt(f[1], 10, 64)
+		if f[0] == "start" {
+			spans = append(spans, [2]int64{n, 0})
+		} else {
+			spans[len(spans)-1][1] = n
+		}
+	}
+	if len(spans) != 3 {
+		t.Fatalf("want 3 runs, log:\n%s", readFile(log))
+	}
+	for i := 1; i < len(spans); i++ {
+		if spans[i][0] < spans[i-1][1] {
+			t.Fatalf("network jobs overlapped with network.max_jobs=1:\n%s", readFile(log))
+		}
+	}
+	if !netCommand([]string{"curl", "-L", "-o", "x", "https://example.com"}) || !netCommand([]string{"docker", "pull", "img"}) ||
+		!netCommand([]string{"cmd", "/c", "pip install torch"}) || netCommand([]string{"python", "train.py"}) {
+		t.Fatal("network command detection")
+	}
+}
