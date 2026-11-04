@@ -28,7 +28,7 @@ firefighter status   # should print the machine, the queue and a "do:" line
 ```
 
 A new terminal may be needed before `firefighter` is on the PATH; until then use the full path:
-Windows `& "$env:LOCALAPPDATA\Programsirefighterirefighter.exe" setup`, macOS/Linux `~/.local/bin/firefighter setup`.
+Windows `& "$env:LOCALAPPDATA\Programs\firefighter\firefighter.exe" setup`, macOS/Linux `~/.local/bin/firefighter setup`.
 
 ## 3. Add the MCP server
 
