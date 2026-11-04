@@ -1,7 +1,7 @@
 {
   "name": "firefighter",
-  "displayName": "firefighter: GPU/CPU/RAM queue for AI agents",
-  "description": "firefighter, the coordinator and scheduler for unmanaged AI agents: see who is using your GPU, CPU and RAM, the agent job queue and the market, right in the status bar. Works in VS Code, Cursor and Windsurf.",
+  "displayName": "FIREFIGHTER: GPU/CPU/RAM queue for AI agents",
+  "description": "FIREFIGHTER, the coordinator and scheduler for unmanaged AI agents: see who is using your GPU, CPU and RAM, the agent job queue and the market, right in the status bar. Works in VS Code, Cursor and Windsurf.",
   "version": "0.1.0",
   "publisher": "JoshWright22",
   "license": "MIT",
@@ -34,19 +34,19 @@
     "commands": [
       {
         "command": "firefighter.status",
-        "title": "firefighter: Show status"
+        "title": "FIREFIGHTER: Show status"
       },
       {
         "command": "firefighter.quote",
-        "title": "firefighter: Quote a GPU job"
+        "title": "FIREFIGHTER: Quote a GPU job"
       },
       {
         "command": "firefighter.cancel",
-        "title": "firefighter: Cancel a job"
+        "title": "FIREFIGHTER: Cancel a job"
       }
     ],
     "configuration": {
-      "title": "firefighter",
+      "title": "FIREFIGHTER",
       "properties": {
         "firefighter.path": {
           "type": "string",

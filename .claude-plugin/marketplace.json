@@ -1,5 +1,5 @@
 {
   "name": "firefighter",
   "owner": { "name": "Josh Wright" },
-  "plugins": [{ "name": "firefighter", "source": "./integrations/claude-code", "description": "firefighter status line, /firefighter command and heavy-work guard for Claude Code" }]
+  "plugins": [{ "name": "firefighter", "source": "./integrations/claude-code", "description": "FIREFIGHTER status line, /firefighter command and heavy-work guard for Claude Code" }]
 }

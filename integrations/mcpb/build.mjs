@@ -24,13 +24,13 @@ function manifest(goos, exe) {
   return {
     manifest_version: "0.3",
     name: "firefighter",
-    display_name: "firefighter",
+    display_name: "FIREFIGHTER",
     version,
     description: "The coordinator and scheduler for unmanaged AI agents sharing one computer.",
     long_description:
       "Agents queue heavy work (training, evals, builds, renders, docker jobs) with firefighter_submit and " +
       "firefighter_wait instead of colliding on the GPU, VRAM, CPU or RAM, and jobs pause or checkpoint when " +
-      "you need the machine back. The bundle starts the local firefighter daemon on first use. For start at " +
+      "you need the machine back. The bundle starts the local FIREFIGHTER daemon on first use. For start at " +
       "logon, the `firefighter` CLI on your PATH and rules for your other agents, install it too: see " +
       `${REPO}#install-one-command.`,
     author: { name: "Josh Wright", url: "https://github.com/JoshWright22" },

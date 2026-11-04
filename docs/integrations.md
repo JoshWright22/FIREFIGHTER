@@ -1,6 +1,6 @@
 # Editor and tool integrations
 
-firefighter works with any editor or agent app through four layers. Use whichever your tool supports.
+FIREFIGHTER works with any editor or agent app through four layers. Use whichever your tool supports.
 
 ## 1. Agents: MCP + rules (automatic)
 
@@ -48,7 +48,7 @@ the easiest way for any editor plugin (including a T3 Code or Zed extension) to 
 - a live status-line entry, refreshed every 5 s
 - a `/firefighter` command that shows the full status
 - a guard on the Bash tool: obviously heavy commands (training/eval scripts, `torchrun`,
-  `deepspeed`, `accelerate launch`, `docker run --gpus`) that don't go through firefighter are
+  `deepspeed`, `accelerate launch`, `docker run --gpus`) that don't go through FIREFIGHTER are
   sent back to the agent with the exact `firefighter run` command to use instead.
   `FIREFIGHTER_LIGHT=1` in front of a command skips the guard.
 

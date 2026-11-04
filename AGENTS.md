@@ -1,6 +1,6 @@
 # AGENTS.md
 
-## Using firefighter (any project, any agent)
+## Using FIREFIGHTER (any project, any agent)
 
 If `firefighter` is installed, the machine is shared and the human comes first. Run anything heavy
 (GPU work, or CPU work over about a minute) through `firefighter run --minutes N [--gpu] -- <cmd>`.

@@ -35,7 +35,7 @@ import (
 
 var version = "dev"
 
-const usage = `firefighter: the coordinator and scheduler for unmanaged AI agents.
+const usage = `FIREFIGHTER: the coordinator and scheduler for unmanaged AI agents.
 Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your network.
 
   firefighter run [--gpu] [--net] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
@@ -521,7 +521,7 @@ loop:
 				// protocol saves and exits on its own (it's requeued under the same id).
 				askedAt = time.Now()
 				if !quiet {
-					ui.Say(ui.Hot, "%s: firefighter needs it to stop (%s); it gets time to save and exit, then it's requeued", t.Name, cur.Why)
+					ui.Say(ui.Hot, "%s: FIREFIGHTER needs it to stop (%s); it gets time to save and exit, then it's requeued", t.Name, cur.Why)
 				}
 			}
 			if err == nil && cur.Checkpt && !interrupted && runtime.GOOS != "windows" && cur.StopIn > 0 && cur.StopIn <= 10 {
@@ -616,7 +616,7 @@ func wait(args []string) (int, error) {
 		id = fs.Arg(0)
 	}
 	if id != "" && !validJobID(id) {
-		return 2, fmt.Errorf("%q isn't a firefighter job id (8 hex characters)", id)
+		return 2, fmt.Errorf("%q isn't a FIREFIGHTER job id (8 hex characters)", id)
 	}
 	if id == "" {
 		return 2, errors.New("usage: firefighter wait <id> [--timeout s]")
@@ -685,7 +685,7 @@ func status(args []string) error {
 		return nil
 	}
 	p := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
-	p("%s  human: %s %s", ui.Bold(ui.Paint(ui.Hot, "firefighter")), ui.UserLabel(s.User), s.UserWhy)
+	p("%s  human: %s %s", ui.Bold(ui.Paint(ui.Hot, "FIREFIGHTER")), ui.UserLabel(s.User), s.UserWhy)
 	p("  reserve for the human: %.0f CPUs, %.0f%% RAM, %.1f GB VRAM", s.Reserve["cpus"], s.Reserve["ram_pct"], s.Reserve["vram_gb"])
 	m := s.Machine
 	p("  CPU %.1f/%.0f busy (%.1f human+other)  RAM %.1f/%.1f GB free  GPU %.0f%%  VRAM %.1f/%.1f GB",
@@ -970,7 +970,7 @@ func install(args []string) error {
 	} else {
 		ui.Say(ui.Hot, "guard running")
 	}
-	ui.Note("new agent sessions will queue heavy work through firefighter. Try: firefighter status")
+	ui.Note("new agent sessions will queue heavy work through FIREFIGHTER. Try: firefighter status")
 	if failed > 0 {
 		return fmt.Errorf("%d setup step(s) failed", failed)
 	}

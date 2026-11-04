@@ -1,6 +1,6 @@
-# Installing firefighter (for AI agents)
+# Installing FIREFIGHTER (for AI agents)
 
-firefighter is one binary: a local daemon plus an MCP server (`firefighter mcp`, stdio). No API keys,
+FIREFIGHTER is one binary: a local daemon plus an MCP server (`firefighter mcp`, stdio). No API keys,
 no admin rights, no network service. Windows 10/11, macOS 12+ or Linux, x64 or arm64.
 
 ## 1. Install the binary

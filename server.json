@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.joshwright22/firefighter",
-  "title": "firefighter",
+  "title": "FIREFIGHTER",
   "description": "The coordinator and scheduler for unmanaged AI agents sharing one computer.",
   "repository": {
     "url": "https://github.com/JoshWright22/FIREFIGHTER",
