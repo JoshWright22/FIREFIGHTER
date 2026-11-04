@@ -34,6 +34,15 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+      # The bare binaries, for the MCP bundles (packed below by a job without a write token).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binaries
+          path: |
+            dist/artifacts.json
+            dist/*_amd64_*/*
+            dist/*_arm64_*/*
+          if-no-files-found: error
   vscode:
     needs: release
     runs-on: ubuntu-latest
@@ -54,8 +63,36 @@ jobs:
         with:
           name: vsix
           path: integrations/vscode/firefighter-vscode.vsix
+  mcpb:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # runs the mcpb CLI from npm: no write token here
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: binaries
+          path: dist
+      - name: pack one MCP bundle per OS/arch (the registry has no Go type; manifests override per OS only)
+        env:
+          npm_config_ignore_scripts: "true"
+        run: |
+          node integrations/mcpb/build.mjs stage "${GITHUB_REF_NAME#v}" dist
+          for d in dist/mcpb/firefighter_*/; do
+            npx -y @anthropic-ai/mcpb@2.1.2 pack "$d" "dist/mcpb/$(basename "$d").mcpb"
+          done
+          ls -l dist/mcpb/*.mcpb
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mcpb
+          path: dist/mcpb/*.mcpb
+          if-no-files-found: error
   attach:
-    needs: vscode
+    needs: [vscode, mcpb]
     runs-on: ubuntu-latest
     permissions:
       contents: write       # upload one file; runs no third-party code
@@ -65,10 +102,44 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: vsix
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: mcpb
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: firefighter-vscode.vsix
-      - name: attach the extension to the release
-        run: gh release upload "$GITHUB_REF_NAME" firefighter-vscode.vsix --clobber --repo "$GITHUB_REPOSITORY"
+          subject-path: |
+            firefighter-vscode.vsix
+            firefighter_*.mcpb
+      - name: attach the extension and the MCP bundles to the release
+        run: gh release upload "$GITHUB_REF_NAME" firefighter-vscode.vsix firefighter_*.mcpb --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # List the release in the official MCP Registry (registry.modelcontextprotocol.io). Off with the repo
+  # variable MCP_REGISTRY_PUBLISH=false; a failure here never fails the release.
+  registry:
+    needs: attach
+    if: startsWith(github.ref, 'refs/tags/v') && vars.MCP_REGISTRY_PUBLISH != 'false'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # GitHub OIDC login to the registry (io.github.joshwright22/*)
+    env:
+      MCP_PUBLISHER: v1.8.7
+      MCP_PUBLISHER_SHA256: 00b21004149a4ce66f0782508ae4a2bce67d1bea395a8da0bd8028159fb59579 # linux_amd64, from registry_1.8.7_checksums.txt
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: mcpb
+          path: mcpb
+      - name: version and sha256 of each bundle into server.json
+        run: node integrations/mcpb/build.mjs server-json "${GITHUB_REF_NAME#v}" mcpb && cat server.json
+      - name: install mcp-publisher (pinned, checksum verified)
+        run: |
+          curl -fsSLo mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+      - run: ./mcp-publisher validate server.json
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish server.json

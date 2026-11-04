@@ -1,4 +1,7 @@
-// firefighter: lets AI agents share one computer's GPU, CPU and RAM while the human always comes first.
+// Command firefighter lets AI agents share one computer's GPU, CPU and RAM while the human always comes first.
+//
+// It is a single binary: a local scheduler daemon, the CLI agents queue heavy work through
+// (firefighter run), and an MCP server over stdio (firefighter mcp). See https://github.com/JoshWright22/FIREFIGHTER.
 package main
 
 import (
