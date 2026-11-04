@@ -479,7 +479,11 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 	// The link's size is learned from the most it has carried (forgotten over about a week, so a
 	// slower network later is noticed); while no network job runs, its traffic is the human's.
 	if dt > 0 {
+		if d.netCap == 0 {
+			d.netCap = d.st.NetLinkMbps // learned before the last restart
+		}
 		d.netCap = math.Max(d.snap.NetMbps, d.netCap*math.Exp(-dt.Hours()/168))
+		d.st.NetLinkMbps = d.netCap
 		netJob := false
 		for _, j := range d.running() {
 			netJob = netJob || j.Net

@@ -65,6 +65,7 @@ type saved struct {
 	Frozen map[int]int64 `json:"frozen,omitempty"`
 	// Newcomers: the budget never-seen projects draw from, refilled daily (guard.new_project_minutes).
 	Newcomers   float64   `json:"newcomers"`
+	NetLinkMbps float64   `json:"net_link_mbps,omitempty"` // the network link's learned size, kept across restarts
 	NewcomersAt time.Time `json:"newcomers_at"`
 	// Occupancy is how taken the GPU usually is, per hour of the week (0-1), for quotes.
 	Occupancy  []float64 `json:"occupancy"`
