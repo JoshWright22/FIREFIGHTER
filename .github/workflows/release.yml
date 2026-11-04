@@ -40,8 +40,8 @@ jobs:
           name: binaries
           path: |
             dist/artifacts.json
-            dist/*_amd64_*/*
-            dist/*_arm64_*/*
+            dist/*_amd64*/*
+            dist/*_arm64*/*
           if-no-files-found: error
   vscode:
     needs: release

@@ -433,8 +433,8 @@ func Members(root int, rootCreated int64, known map[int]int64) map[int]int64 {
 		}
 		kids, _ := p.Children()
 		for _, k := range kids {
-			kc, err := k.CreateTime()
-			if err != nil || kc < created {
+			kc := Created(int(k.Pid)) // the same clock as every other identity (start ticks on Linux)
+			if kc == 0 || kc < created {
 				continue
 			}
 			out[int(k.Pid)] = kc
