@@ -267,7 +267,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if t.GPU && t.VRAMGB > 0 && len(d.snap.GPUs) > 0 {
 		biggest := 0.0
 		for _, g := range d.snap.GPUs {
-			if v := strings.ToLower(t.WantVendor); v == "" || v == "any" || g.Vendor == v || (v == "" && g.Vendor == "nvidia") {
+			if v := d.vendorFor(t.WantVendor); v == "" || g.Vendor == v { // the cards it would really get
 				biggest = math.Max(biggest, g.VRAMGB)
 			}
 		}
@@ -690,10 +690,10 @@ func (d *Daemon) blocker(j *job) string {
 		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:
 		return "spot band (over budget or --spot): runs on leftovers only"
-	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.WantVendor); return c < 0 }():
+	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.Ticket); return c < 0 }():
 		return "waiting for a " + j.WantVendor + " GPU (none is reporting right now)"
-	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.WantVendor):
-		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), math.Max(0, d.cardLeft(j.WantVendor)))
+	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.Ticket):
+		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), math.Max(0, d.cardLeft(j.Ticket)))
 	case j.NeedRAM > ram:
 		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram))
 	case j.GPU && len(d.busyOutside()) > 0:
@@ -963,6 +963,6 @@ func (d *Daemon) sessionOf(caller int) (session int, human bool) {
 
 // jobNeed is a job's VRAM need on the card it would get (see needOn).
 func (d *Daemon) jobNeed(j *job) float64 {
-	card, _ := d.cardFor(j.WantVendor)
+	card, _ := d.cardFor(j.Ticket)
 	return d.needOn(j.Ticket, card)
 }

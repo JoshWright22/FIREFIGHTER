@@ -73,37 +73,40 @@ func newJob(t *policy.Ticket) *job {
 }
 
 type Daemon struct {
-	mu        sync.Mutex
-	cfg       config.Config
-	cfgMod    time.Time
-	cfgErr    string
-	st        saved
-	jobs      map[string]*job
-	reader    *sysinfo.Reader
-	snap      sysinfo.Snapshot
-	res       policy.ReserveCtl
-	user      string
-	gameWhy   string
-	gameTill  time.Time
-	busyUser  float64
-	utilEWMA  float64 // GPU utilization smoothed over ~30 s: packing decisions ignore momentary dips
-	ramLow    time.Time
-	vramLow   time.Time
-	names     map[string]bool
-	namesAt   time.Time
-	foreign   map[string]float64   // non-job GPU users -> %
-	outSince  map[string]time.Time // when each busy non-job GPU user was first seen busy
-	lastKill  time.Time            // critical-RAM kills wait for the last one to free its memory
-	stopping  atomic.Bool          // shutdown requested (once)
-	unknownAt map[bool]time.Time   // last grant of a never-seen command, per kind (GPU/CPU)
-	cardFloor []float64            // the least VRAM each card has had in use lately: the emptiest it gets
-	gpuSeen   bool                 // a GPU has reported since start (a missed reading isn't "no GPU")
-	dockerQ   chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
-	graphics  map[string]float64   // non-job 3D-engine users -> % (games, video)
-	others    []sysinfo.Container
-	notify    chan struct{}
-	rng       *rand.Rand
-	harvest   struct {
+	mu            sync.Mutex
+	cfg           config.Config
+	cfgMod        time.Time
+	cfgErr        string
+	st            saved
+	jobs          map[string]*job
+	reader        *sysinfo.Reader
+	snap          sysinfo.Snapshot
+	res           policy.ReserveCtl
+	user          string
+	gameWhy       string
+	gameTill      time.Time
+	busyUser      float64
+	utilEWMA      float64 // GPU utilization smoothed over ~30 s: packing decisions ignore momentary dips
+	ramLow        time.Time
+	vramLow       time.Time
+	names         map[string]bool
+	namesAt       time.Time
+	foreign       map[string]float64   // non-job GPU users -> %
+	outSince      map[string]time.Time // when each busy non-job GPU user was first seen busy
+	lastKill      time.Time            // critical-RAM kills wait for the last one to free its memory
+	stopping      atomic.Bool          // shutdown requested (once)
+	unknownAt     map[bool]time.Time   // last grant of a never-seen command, per kind (GPU/CPU)
+	cardFloor     []float64            // the least VRAM each card has had in use lately: the emptiest it gets
+	gpuSeen       bool                 // a GPU has reported since start (a missed reading isn't "no GPU")
+	gpuMax        int                  // most GPUs seen in one reading
+	gpuShortSince time.Time            // since when readings show fewer
+	gpuDegraded   bool                 // this reading is partial: no GPU grants
+	dockerQ       chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
+	graphics      map[string]float64   // non-job 3D-engine users -> % (games, video)
+	others        []sysinfo.Container
+	notify        chan struct{}
+	rng           *rand.Rand
+	harvest       struct {
 		on        bool
 		quietFrom time.Time
 	}
@@ -471,13 +474,27 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 	}
 	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
 	d.gpuSeen = d.gpuSeen || len(d.snap.GPUs) > 0
-	if len(d.cardFloor) != len(d.snap.GPUs) {
+	// A reading with fewer GPUs than usual is a vendor tool missing a beat, not a card removed:
+	// until it lasts a minute, no GPU grants, and the per-card history is kept.
+	switch n := len(d.snap.GPUs); {
+	case n >= d.gpuMax:
+		d.gpuMax, d.gpuShortSince, d.gpuDegraded = n, time.Time{}, false
+	case d.gpuShortSince.IsZero():
+		d.gpuShortSince, d.gpuDegraded = now, true
+	case now.Sub(d.gpuShortSince) > time.Minute:
+		d.gpuMax, d.gpuShortSince, d.gpuDegraded = n, time.Time{}, false
+		d.cardFloor = nil // the set of cards really changed
+	}
+	if !d.gpuDegraded && len(d.cardFloor) != len(d.snap.GPUs) {
 		d.cardFloor = make([]float64, len(d.snap.GPUs))
 		for i, g := range d.snap.GPUs {
 			d.cardFloor[i] = g.UsedGB
 		}
 	}
 	for i, g := range d.snap.GPUs {
+		if d.gpuDegraded || i >= len(d.cardFloor) {
+			break
+		}
 		jobUse := 0.0
 		for _, j := range d.running() {
 			if j.GPU && d.onCard(j, i) {
@@ -770,14 +787,14 @@ func (d *Daemon) ladder(now time.Time) {
 		slotsFull := d.gpuBusySlots() >= c.GPU.MaxJobs
 		card := -1
 		if head != nil {
-			card, _ = d.cardFor(head.WantVendor)
+			card, _ = d.cardFor(head)
 		}
 		if head != nil && head.NeedRAM <= ram && (card >= 0 || len(d.snap.GPUs) == 0) {
 			// Only a spot job on the card the head would use can make room for it, and the head's
 			// need there is the clamped one.
 			need, left := d.needOn(head, card), vram
 			if card >= 0 {
-				left = d.cardLeft(head.WantVendor)
+				left = d.cardLeft(head)
 			}
 			fits := need <= left || len(d.snap.GPUs) == 0 // no discrete GPU: VRAM is RAM, admitted as RAM
 			// When the head fits its card and only a slot is missing, a spot job on any card frees
@@ -1108,24 +1125,53 @@ func (d *Daemon) freestCard() (int, float64) {
 
 // cardFor picks the GPU a job should use: among the vendor it wants (see policy.Ticket.WantVendor),
 // the one with the most VRAM left after jobs' unclaimed needs. Returns -1 with no GPU.
-func (d *Daemon) cardFor(want string) (int, float64) {
+// vendorFor resolves which GPUs a job can use: its --gpu-vendor, else NVIDIA when there is one
+// (most GPU code is CUDA), else any ("").
+func (d *Daemon) vendorFor(want string) string {
 	want = strings.ToLower(want)
-	has := map[string]bool{}
-	for _, g := range d.snap.GPUs {
-		has[g.Vendor] = true
-	}
-	if want == "" && has["nvidia"] {
-		want = "nvidia"
-	}
 	if want == "any" {
-		want = ""
+		return ""
 	}
-	if want != "" && !has[want] {
-		return -1, 0 // the vendor it needs isn't reporting right now: wait for it
+	if want == "" {
+		for _, g := range d.snap.GPUs {
+			if g.Vendor == "nvidia" {
+				return "nvidia"
+			}
+		}
 	}
-	best, bestLeft := -1, 0.0
+	return want
+}
+
+// capacityOf is the most VRAM card i ever offers: its size, less the human's reserve, less the
+// least others have held lately.
+func (d *Daemon) capacityOf(i int) float64 {
+	g := d.snap.GPUs[i]
+	floor := 0.0
+	if i < len(d.cardFloor) {
+		floor = d.cardFloor[i]
+	}
+	return g.VRAMGB - d.res.VRAMGB - floor
+}
+
+// capFor is how much of card i a ticket can count on: for a need its own --vram covers, the card's
+// size less the human's reserve (it waits for others to leave); for a learned need, what the card
+// has actually freed lately (capacityOf).
+func (d *Daemon) capFor(i int, t *policy.Ticket) float64 {
+	if t.VRAMGB > 0 && t.NeedVRAM <= t.VRAMGB {
+		return d.snap.GPUs[i].VRAMGB - d.res.VRAMGB
+	}
+	return d.capacityOf(i)
+}
+
+// cardFor picks the GPU for a ticket: among the cards of the vendor it can use, the freest one that
+// can hold it (capFor); if none can, the one that offers the most (needOn then clamps the need to
+// it). Returns the card and its VRAM left after jobs' unclaimed needs; -1 with no card.
+func (d *Daemon) cardFor(t *policy.Ticket) (int, float64) {
+	want, need := t.WantVendor, t.NeedVRAM
+	v := d.vendorFor(want)
+	best, bestLeft, bestFits := -1, 0.0, false
 	for i, g := range d.snap.GPUs {
-		if want != "" && g.Vendor != want {
+		if v != "" && g.Vendor != v {
 			continue
 		}
 		left := g.VRAMGB - g.UsedGB
@@ -1134,9 +1180,15 @@ func (d *Daemon) cardFor(want string) (int, float64) {
 				left -= math.Max(0, j.NeedVRAM-j.vramGB)
 			}
 		}
-		if best < 0 || left > bestLeft {
-			best, bestLeft = i, left
+		fits := d.capFor(i, t) >= need
+		switch {
+		case best < 0, fits && !bestFits:
+		case fits && bestFits && left > bestLeft: // among cards that fit: the freest
+		case !fits && !bestFits && d.capFor(i, t) > d.capFor(best, t): // none fits: the biggest
+		default:
+			continue
 		}
+		best, bestLeft, bestFits = i, left, fits
 	}
 	return best, bestLeft
 }
@@ -1148,19 +1200,18 @@ func (d *Daemon) cardFor(want string) (int, float64) {
 // --vram is never shrunk.
 func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 	need := t.NeedVRAM
-	if card >= 0 && card < len(d.cardFloor) && card < len(d.snap.GPUs) {
-		// The most this card ever frees. A need above it (learned, or a declared --vram within
-		// the card's size: queue time refuses larger) starts when the card is at its emptiest.
-		g := d.snap.GPUs[card]
-		most := g.VRAMGB - d.res.VRAMGB - d.cardFloor[card]
-		need = math.Min(need, math.Max(0.5, most))
+	if card >= 0 && card < len(d.snap.GPUs) && need > d.capFor(card, t) {
+		// More than this card can ever give it (no card can: cardFor prefers one that can). It
+		// starts when the card is at its emptiest instead of waiting forever; queue time already
+		// refused a --vram larger than every card.
+		need = math.Max(0.5, d.capacityOf(card))
 	}
 	return need
 }
 
 // cardLeft is the VRAM a job of this vendor would find on its card, after the human's reserve.
-func (d *Daemon) cardLeft(want string) float64 {
-	_, left := d.cardFor(want)
+func (d *Daemon) cardLeft(t *policy.Ticket) float64 {
+	_, left := d.cardFor(t)
 	return left - d.res.VRAMGB
 }
 
@@ -1205,7 +1256,10 @@ func (d *Daemon) admit(now time.Time) {
 			if gpuBlocked || gpuRunning >= c.GPU.MaxJobs {
 				continue
 			}
-			card, left := d.cardFor(t.WantVendor) // already less the jobs granted this tick
+			if d.gpuDegraded {
+				continue // fewer GPUs answered than usual: no GPU grant on a partial reading
+			}
+			card, left := d.cardFor(t) // already less the jobs granted this tick
 			if card < 0 && len(d.snap.GPUs) > 0 {
 				continue // no card of the vendor it needs right now
 			}
@@ -1240,7 +1294,7 @@ func (d *Daemon) admit(now time.Time) {
 			d.unknownAt[t.GPU] = now
 		}
 		if t.GPU {
-			card, _ := d.cardFor(t.WantVendor)
+			card, _ := d.cardFor(t)
 			vram -= t.NeedVRAM
 			gpuRunning++
 			j.backfilled = headWaitsOnVRAM
@@ -1249,7 +1303,7 @@ func (d *Daemon) admit(now time.Time) {
 			}
 		}
 		if t.GPU {
-			if card, _ := d.cardFor(t.WantVendor); d.needOn(t, card) < t.NeedVRAM-0.05 {
+			if card, _ := d.cardFor(t); d.needOn(t, card) < t.NeedVRAM-0.05 {
 				logf("%s: needs %.1f GB, more than this card ever frees; starting at its emptiest (%.1f GB)", j.Name, t.NeedVRAM, d.needOn(t, card))
 			}
 		}

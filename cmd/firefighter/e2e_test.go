@@ -799,3 +799,21 @@ func TestDockerImageAt(t *testing.T) {
 		t.Fatalf("the user's --name before the image is the container's name: %q %v", name, argv)
 	}
 }
+
+// A declared need waits for a card that can hold it rather than starting, shrunk, on a smaller
+// idle one: 24 GB busy + 12 GB idle, --vram 20 waits for the 24 GB card.
+func TestDeclaredVRAMWaitsForABigEnoughCard(t *testing.T) {
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{
+		{"index": 0, "name": "Big", "vendor": "nvidia", "vram_gb": 24, "used_gb": 20, "util": 0},
+		{"index": 1, "name": "Small", "vendor": "nvidia", "vram_gb": 12, "used_gb": 0, "util": 0},
+	}})
+	id := e.detach("exit:0", "--gpu", "--minutes", "1", "--vram", "20")
+	time.Sleep(3 * time.Second)
+	if st := e.mustWaitState(id); !strings.Contains(st, "waiting") {
+		t.Fatalf("a 20 GB job must not start on the 12 GB card: %s", st)
+	}
+	out, code := e.ff("run", "--gpu", "--minutes", "1", "--vram", "40", "--", "x")
+	if code == 0 || !strings.Contains(out, "no GPU here has that much") {
+		t.Fatalf("--vram larger than every card must be refused: %d %s", code, out)
+	}
+}

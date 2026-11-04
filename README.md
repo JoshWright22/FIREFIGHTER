@@ -311,7 +311,8 @@ tests both one-command installers.
   agent CLI, script runtime (node) or IDE in between (`guard.human_hosts`, `guard.agent_hosts`).
   The terminal must be installed by an administrator: the program and every folder above it owned
   by the system (root on macOS/Linux; TrustedInstaller, SYSTEM or Administrators on Windows), or a
-  real sshd/login session started by root. A terminal installed just for your user (a kitty or
+  real sshd session started by root (a Linux text-console login, whose parent is init, doesn't
+  count: an agent's detached process ends up there too). A terminal installed just for your user (a kitty or
   WezTerm download, Scoop, an app you dragged into /Applications, a Nix profile) doesn't count. The desktop shell, a classic console
   started from it, tmux and screen don't count either (an agent can open those silently); from
   them, add `--force` for other projects' jobs and for `adopt`. Anything else, including detached helpers
