@@ -1,8 +1,10 @@
 package sysinfo
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
@@ -130,13 +132,40 @@ func systemExe(p *process.Process) bool {
 		return false
 	}
 	e := strings.ToLower(filepath.ToSlash(exe))
-	for _, dir := range []string{"c:/program files/", "c:/program files (x86)/", "c:/windows/", "/usr/", "/bin/", "/sbin/",
-		"/opt/", "/applications/", "/system/", "/nix/store/", "/snap/"} {
+	trusted := false
+	for _, dir := range []string{"c:/program files/", "c:/program files (x86)/", "c:/windows/system32/", "c:/windows/syswow64/",
+		"/usr/", "/bin/", "/sbin/", "/opt/", "/applications/", "/system/", "/nix/store/", "/snap/"} {
 		if strings.HasPrefix(e, dir) {
-			return true
+			trusted = true
+			break
 		}
 	}
-	return false
+	// Belt and braces: whatever the path, a program in a folder this user can write to isn't an
+	// installed one (C:\Windows\Tasks, an admin user's /Applications).
+	return trusted && !dirWritable(filepath.Dir(exe))
+}
+
+var (
+	writableMu    sync.Mutex
+	writableCache = map[string]bool{}
+)
+
+// dirWritable says whether the current user can create files in dir (probed once per folder).
+func dirWritable(dir string) bool {
+	writableMu.Lock()
+	defer writableMu.Unlock()
+	if w, ok := writableCache[dir]; ok {
+		return w
+	}
+	f, err := os.CreateTemp(dir, ".firefighter-probe-*")
+	w := err == nil
+	if w {
+		name := f.Name()
+		f.Close()
+		os.Remove(name)
+	}
+	writableCache[dir] = w
+	return w
 }
 
 // agentAbove reports an agent CLI or agent host anywhere above p.

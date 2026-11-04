@@ -785,7 +785,12 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Project, p.What, p.When = cleanText(p.Project, 100), cleanText(p.What, 300), cleanText(p.When, 40)
-	planOwner, planHuman := d.sessionOf(callerPID(r))
+	planCaller := callerPID(r)
+	if planCaller == 0 {
+		fail(w, http.StatusForbidden, "couldn't tell which process is asking")
+		return
+	}
+	planOwner, planHuman := d.sessionOf(planCaller)
 	if planHuman {
 		planOwner = -1 // the human's: only the human removes it
 	}
@@ -810,6 +815,10 @@ func (d *Daemon) plan(w http.ResponseWriter, r *http.Request) {
 
 func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 	caller := callerPID(r)
+	if caller == 0 {
+		fail(w, http.StatusForbidden, "couldn't tell which process is asking")
+		return
+	}
 	agent, human := d.sessionOf(caller)
 	agentAt := sysinfo.Created(agent)
 	d.mu.Lock()
