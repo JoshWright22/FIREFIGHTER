@@ -1,7 +1,7 @@
 {
   "name": "firefighter",
   "displayName": "firefighter: GPU/CPU/RAM queue for AI agents",
-  "description": "See who is using your GPU, CPU and RAM, the agent job queue and the market, right in the status bar. Works in VS Code, Cursor and Windsurf.",
+  "description": "firefighter, the coordinator and scheduler for unmanaged AI agents: see who is using your GPU, CPU and RAM, the agent job queue and the market, right in the status bar. Works in VS Code, Cursor and Windsurf.",
   "version": "0.1.0",
   "publisher": "JoshWright22",
   "license": "MIT",

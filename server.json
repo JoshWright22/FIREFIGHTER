@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.joshwright22/firefighter",
   "title": "firefighter",
-  "description": "Local GPU, CPU and RAM job queue for AI agents sharing one computer. The human comes first.",
+  "description": "The coordinator and scheduler for unmanaged AI agents sharing one computer.",
   "repository": {
     "url": "https://github.com/JoshWright22/FIREFIGHTER",
     "source": "github"

@@ -35,7 +35,8 @@ import (
 
 var version = "dev"
 
-const usage = `firefighter: your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your network.
+const usage = `firefighter: the coordinator and scheduler for unmanaged AI agents.
+Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your network.
 
   firefighter run [--gpu] [--net] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
                                  wait for a turn, run the command here, print a receipt

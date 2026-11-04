@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.svg" alt="firefighter: GPU, CPU and RAM scheduler for AI coding agents" width="640"></p>
+<p align="center"><img src="assets/logo.svg" alt="firefighter: the coordinator and scheduler for unmanaged AI agents" width="640"></p>
 
 <p align="center">
   <a href="https://github.com/JoshWright22/FIREFIGHTER/actions/workflows/ci.yml"><img src="https://github.com/JoshWright22/FIREFIGHTER/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -10,7 +10,8 @@
 
 <h3 align="center">Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your network.</h3>
 
-<p align="center"><b>firefighter</b> is a local GPU, CPU and RAM scheduler, job queue and market maker for AI coding agents
+<p align="center"><b>firefighter</b> is the coordinator and scheduler for unmanaged AI agents: a local job queue and
+market maker that shares one computer's GPU, CPU, RAM and network among AI coding agents
 (<b>Claude Code, Codex, Gemini CLI, Cursor, Grok, OpenCode, Kimi, Antigravity, Copilot, T3 Code</b> and more) that share one computer.<br>
 One command to install, on <b>Windows, macOS and Linux</b>. After that, every agent session queues its heavy work, sees
 what the others are doing, and gets out of the way when you need the machine.</p>
