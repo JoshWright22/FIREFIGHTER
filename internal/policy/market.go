@@ -226,7 +226,7 @@ func QuietWindow(now time.Time, history []float64, samples []float64, planned ma
 	}
 	f := fnv.New32a()
 	f.Write([]byte(id))
-	c := near[int(f.Sum32())%len(near)]
+	c := near[int(f.Sum32()%uint32(len(near)))]
 	return now.Add(time.Duration(c.at)*time.Hour).Format("15:00") + fmt.Sprintf(" (usually %.0f%% busy)", 100*c.v)
 }
 

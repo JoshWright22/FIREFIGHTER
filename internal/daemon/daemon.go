@@ -30,6 +30,7 @@ type job struct {
 	*policy.Ticket
 	rootCreated  int64
 	clientAt     int64          // the client's start time (with ClientPID: one process, for good)
+	human        bool           // the human created it: only the human (or --force) changes it
 	pids         map[int]int64  // member pid -> start time (pid + start time = one process, for good)
 	applied      map[int]string // pid -> cpu set applied
 	cpuPrev      float64
@@ -107,6 +108,7 @@ type Daemon struct {
 	netWasBusy    bool                 // a network job ran last tick
 	prevOpen      map[string]OpenJob   // running jobs the previous daemon granted, until re-registered
 	backoff       map[string]backoff   // job id -> evictions in a row: a requeued job waits longer each time
+	agentOf       map[int]agentSeen    // heavy processes an agent started, remembered past their parents' exit
 	gpuMax        int                  // most GPUs seen in one reading
 	gpuShortSince time.Time            // since when readings show fewer
 	gpuDegraded   bool                 // this reading is partial: no GPU grants
@@ -203,6 +205,13 @@ func (d *Daemon) openJobs(now time.Time) map[string]OpenJob {
 		}
 	}
 	return open
+}
+
+// waitsForAway: a GPU job that needs more than its card frees beside the human's reserve would
+// only be stopped again; it gets the card at its emptiest while the human is away.
+func (d *Daemon) waitsForAway(t *policy.Ticket) bool {
+	card, _ := d.cardFor(t)
+	return card >= 0 && d.needOn(t, card) < t.NeedVRAM-0.05 && d.user != "away"
 }
 
 // backoff: how often in a row a job was stopped for the human, and when it last was.
@@ -399,6 +408,14 @@ func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []
 	d.reloadConfig()
 	c := d.cfg
 	d.snap = snap
+	if dt > 30*time.Second {
+		// A tick 30 s late: the machine slept (or the daemon was frozen). Nothing ran meanwhile, so
+		// it isn't lease time.
+		for _, j := range d.running() {
+			j.pausedTotal += dt
+		}
+		dt = 0
+	}
 	if dt > 0 {
 		d.utilEWMA += (1 - math.Exp(-dt.Seconds()/30)) * (snap.GPUUtil() - d.utilEWMA)
 	} else {
@@ -482,7 +499,7 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		j.cpuPrev, j.ramGB = m.cpuSec, m.ramGB
 		if j.container != "" {
 			for _, o := range d.others {
-				if o.Name == j.container {
+				if o.ID != "" && strings.HasPrefix(j.container, o.ID) {
 					j.ramGB, j.cpuNow = o.MemGB, o.CPU/100
 				}
 			}
@@ -941,7 +958,9 @@ func (d *Daemon) ladder(now time.Time) {
 		ram, vram := d.headroom(now)
 		var head *policy.Ticket
 		for _, t := range d.waiting() {
-			if t.GPU && t.Band < policy.BandSpot {
+			// The head as admission sees it: one that can start once there's room (not backing
+			// off, not waiting for the human to leave).
+			if t.GPU && t.Band < policy.BandSpot && !d.backingOff(t.ID, now) && !d.waitsForAway(t) {
 				head = t
 				break
 			}
@@ -1352,12 +1371,14 @@ func (d *Daemon) cardFor(t *policy.Ticket) (int, float64) {
 		}
 		fits, open := d.capFor(i, t) >= need, d.cardOpen(i)
 		switch {
-		case best < 0, open && !bestOpen:
+		case best < 0, fits && !bestFits: // a card that can hold it first: it waits for that one
+		case fits != bestFits:
+			continue
+		case open && !bestOpen: // then one that takes a job now
 		case open != bestOpen:
 			continue
-		case fits && !bestFits:
-		case fits && bestFits && d.lighter(i, best, left, bestLeft): // among cards that fit: the least loaded
-		case !fits && !bestFits && d.capFor(i, t) > d.capFor(best, t): // none fits: the biggest
+		case fits && d.lighter(i, best, left, bestLeft): // among cards that fit: the least loaded
+		case !fits && d.capFor(i, t) > d.capFor(best, t): // none fits: the biggest
 		default:
 			continue
 		}
@@ -1497,7 +1518,7 @@ func (d *Daemon) admit(now time.Time) {
 		}
 	}
 	changed := false
-	headWaitsOnVRAM, cpuHeadBlocked := false, false
+	headWaitsOnVRAM, cpuHeadBlocked := map[int]bool{}, false // per card
 	if d.unknownAt == nil {
 		d.unknownAt = map[bool]time.Time{}
 	}
@@ -1538,18 +1559,16 @@ func (d *Daemon) admit(now time.Time) {
 			}
 			left -= d.res.VRAMGB
 			need := d.needOn(t, card)
-			if card >= 0 && need < t.NeedVRAM-0.05 && d.user != "away" {
-				// It needs more than this card frees beside the human's reserve: it would only be
-				// stopped again. It gets the card at its emptiest while the human is away.
+			if d.waitsForAway(t) {
 				continue
 			}
 			if vt > 0 && card >= 0 && need > left {
-				headWaitsOnVRAM = true // the head waits for VRAM; only short jobs may backfill
+				headWaitsOnVRAM[card] = true // the head waits for this card's VRAM; only short jobs may backfill it
 				continue
 			}
 			// EASY-style backfill: behind a head that waits on VRAM, only a short job that fits
 			// now may start, so the head is delayed by at most ~10 minutes.
-			if headWaitsOnVRAM && !shortJob(t) {
+			if headWaitsOnVRAM[card] && !shortJob(t) {
 				continue
 			}
 		} else if cpuHeadBlocked && !shortJob(t) {
@@ -1578,7 +1597,7 @@ func (d *Daemon) admit(now time.Time) {
 			if len(d.snap.GPUs) == 0 && gpuRunning >= c.GPU.MaxJobs {
 				gpuBlocked = true // no card readings: one machine-wide count, and it's now full
 			}
-			j.backfilled = headWaitsOnVRAM
+			j.backfilled = headWaitsOnVRAM[card]
 			if len(d.snap.GPUs) > 1 {
 				j.device = card // and the client pins it there, in that vendor's numbering
 			}
@@ -1608,6 +1627,9 @@ func (d *Daemon) harvester(now time.Time) {
 	busy := d.gpuHeld()
 	for _, j := range d.jobs {
 		busy = busy || (j.GPU && j.State != "done")
+	}
+	if !d.harvest.on && len(d.outSince) > 0 {
+		busy = true // heavy GPU work outside firefighter (a render, a local model) is the human's
 	}
 	if busy {
 		d.harvest.quietFrom = time.Time{}

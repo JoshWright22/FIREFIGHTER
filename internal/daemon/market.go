@@ -45,10 +45,11 @@ func (d *Daemon) slotsFor(gpu bool) int {
 	if !gpu {
 		return 4 // CPU jobs share; RAM admission is the real limit
 	}
+	cards := max(1, len(d.snap.GPUs))
 	if d.cfg.GPU.MaxJobs > 1 && d.utilEWMA < d.cfg.GPU.PackBelowUtil {
-		return d.cfg.GPU.MaxJobs
+		return d.cfg.GPU.MaxJobs * cards
 	}
-	return 1
+	return cards
 }
 
 // line returns the running and waiting slots of one kind (GPU or CPU), excluding one ticket id.

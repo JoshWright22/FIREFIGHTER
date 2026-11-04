@@ -339,5 +339,6 @@ tests both one-command installers.
   next firefighter call, and the new guard thaws anything the old one had suspended.
 - Not a sandbox: an agent with your shell can do anything you can. firefighter makes the polite
   path the cheap one and catches the careless one; it doesn't contain a hostile one.
-- Windows: shared build servers a job starts (MSBuild nodes, VBCSCompiler) end with the job, because
-  the job object that prevents orphans covers its whole tree. They restart on your next build.
+- Windows: a job's whole process tree is in a job object, so nothing it starts outlives it by
+  accident. Shared build servers on the `guard.keep_alive` list (MSBuild nodes, VBCSCompiler, ...)
+  are spared when the job ends normally; if its client is killed, they go with it.

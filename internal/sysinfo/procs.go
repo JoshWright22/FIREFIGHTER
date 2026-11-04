@@ -59,6 +59,17 @@ func (s *Scanner) Scan(minCPU, minRAM float64) []Proc {
 	return out
 }
 
+// NameIs says whether a process name (lowercase, no .exe) is the program a: "claude" matches claude,
+// claude-1.2 and claude_x, and "python" matches python3 and python3.12; never claudette or pip.
+func NameIs(n, a string) bool {
+	a = strings.ToLower(a)
+	if n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
+		return true
+	}
+	rest, ok := strings.CutPrefix(n, a)
+	return ok && rest != "" && strings.Trim(rest, "0123456789.") == ""
+}
+
 // AgentAncestor returns the name of the nearest ancestor whose name contains one of names.
 // AgentAncestorPID is the pid of the nearest agent CLI above pid (pid itself counts), 0 if none:
 // it identifies which agent session a request comes from.
@@ -68,7 +79,7 @@ func AgentAncestorPID(pid int, names []string) int {
 		n, _ := p.Name()
 		n = strings.TrimSuffix(strings.ToLower(n), ".exe")
 		for _, a := range names {
-			if a = strings.ToLower(a); n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
+			if NameIs(n, a) {
 				return int(p.Pid)
 			}
 		}
@@ -87,7 +98,7 @@ func AgentAncestorPID(pid int, names []string) int {
 func HumanSession(pid int, humans, agents, agentHosts []string) bool {
 	match := func(n string, list []string) bool {
 		for _, a := range list {
-			if a = strings.ToLower(a); n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
+			if NameIs(n, a) {
 				return true
 			}
 		}
@@ -181,7 +192,7 @@ func AgentAncestor(pid int, names []string) string {
 		n = printable(strings.TrimSuffix(strings.ToLower(n), ".exe"))
 		for _, a := range names {
 			// "claude" matches claude and claude-1.2, not claudette; "pi" never matches pip.
-			if a = strings.ToLower(a); n == a || strings.HasPrefix(n, a+"-") || strings.HasPrefix(n, a+"_") {
+			if NameIs(n, a) {
 				return n
 			}
 		}

@@ -527,23 +527,24 @@ func printable(s string) string {
 // non-job load comes from. Empty when Docker isn't installed or running.
 type Container struct {
 	Name  string  `json:"name"`
+	ID    string  `json:"id"` // short id: a prefix of the full one
 	CPU   float64 `json:"cpu_pct"`
 	MemGB float64 `json:"mem_gb"`
 }
 
 func Containers() []Container {
-	out, err := run(8*time.Second, "docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}")
+	out, err := run(8*time.Second, "docker", "stats", "--no-stream", "--format", "{{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}")
 	if err != nil {
 		return nil
 	}
 	var cs []Container
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 3 {
+		if len(f) < 4 {
 			continue
 		}
-		c := Container{Name: f[0], CPU: num(strings.TrimSuffix(f[1], "%"))}
-		c.MemGB = size(strings.TrimSpace(strings.Split(f[2], "/")[0]))
+		c := Container{ID: f[0], Name: f[1], CPU: num(strings.TrimSuffix(f[2], "%"))}
+		c.MemGB = size(strings.TrimSpace(strings.Split(f[3], "/")[0]))
 		cs = append(cs, c)
 	}
 	return cs

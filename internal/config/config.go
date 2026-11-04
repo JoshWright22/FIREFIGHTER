@@ -179,7 +179,9 @@ func Defaults() Config {
 		"hyper", "rio", "contour", "terminology", "cool-retro-term"}
 	c.Guard.AgentHosts = []string{"node", "bun", "deno", "code", "code - insiders", "cursor", "windsurf", "devin", "electron",
 		"t3 code (beta)", "t3 code", "antigravity", "zed", "idea64", "pycharm64", "webstorm64", "rider64", "goland64", "clion64",
-		"kiro", "codium", "vscodium", "trae", "void", "positron", "fleet"}
+		"kiro", "codium", "vscodium", "trae", "void", "positron", "fleet",
+		// script runtimes agents run in (aider, Open Interpreter, gptme, OpenHands, Amazon Q, ...)
+		"python", "pythonw", "py", "pyw", "uv", "uvx", "pipx", "ruby", "java", "javaw", "dotnet", "perl", "php"}
 	return c
 }
 

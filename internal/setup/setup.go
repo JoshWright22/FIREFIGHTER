@@ -63,7 +63,9 @@ func Install(exe string) []Step {
 func Uninstall() []Step {
 	var steps []Step
 	add := func(what string, err error) { steps = append(steps, Step{what, err}) }
-	add("remove logon start", removeAutostart())
+	if os.Getenv("FIREFIGHTER_NO_AUTOSTART") == "" {
+		add("remove logon start", removeAutostart())
+	}
 	for _, f := range allInstructionFiles() {
 		if _, err := os.Stat(f); err != nil {
 			continue

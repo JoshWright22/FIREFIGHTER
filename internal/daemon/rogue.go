@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/config"
@@ -53,10 +54,33 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 			delete(d.rogueSeen, pid)
 		}
 	}
+	for pid, a := range d.agentOf {
+		if !sysinfo.Same(pid, a.created) {
+			delete(d.agentOf, pid) // gone
+		}
+	}
 	var out []rogue
 	for pid, p := range heavy {
 		if governed[pid] || pid <= 4 {
 			continue
+		}
+		if fg := strings.ToLower(snap.ForegroundApp); fg != "" &&
+			strings.TrimSuffix(strings.ToLower(p.Name), ".exe") == strings.TrimSuffix(fg, ".exe") {
+			continue // the app the human is using (a game or tool an agent opened for them) is theirs
+		}
+		if u := snap.ProcGPU[pid]; u.Util3D >= 5 {
+			continue // drawing on screen: something the human looks at, not background compute
+		}
+		if d.agentOf == nil {
+			d.agentOf = map[int]agentSeen{}
+		}
+		created := sysinfo.Created(pid)
+		if _, ok := d.agentOf[pid]; !ok {
+			// Remember who started it while its parents are still there: a `nohup ... &` whose
+			// shell exits is still the agent's work.
+			if a := sysinfo.AgentAncestor(pid, g.AgentParents); a != "" {
+				d.agentOf[pid] = agentSeen{name: a, created: created, owner: sysinfo.AgentAncestorPID(pid, g.AgentParents)}
+			}
 		}
 		first, ok := d.rogueSeen[pid]
 		if !ok {
@@ -66,7 +90,10 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 		if now.Sub(first).Seconds() < g.HeavySeconds {
 			continue
 		}
-		agent := sysinfo.AgentAncestor(pid, g.AgentParents)
+		agent, owner := sysinfo.AgentAncestor(pid, g.AgentParents), sysinfo.AgentAncestorPID(pid, g.AgentParents)
+		if seen, ok := d.agentOf[pid]; agent == "" && ok && seen.created == created {
+			agent, owner = seen.name, seen.owner
+		}
 		if agent == "" {
 			d.rogueSeen[pid] = now.Add(time.Hour) // the human's own program: look again in an hour
 			continue
@@ -78,7 +105,7 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 		}
 		u := snap.ProcGPU[pid]
 		out = append(out, rogue{proc: p, agent: agent, project: project, gpu: u.Util-u.Util3D >= c.Reserve.ForeignGPUPct,
-			vramGB: u.VRAMGB, created: sysinfo.Created(pid), owner: sysinfo.AgentAncestorPID(pid, g.AgentParents)})
+			vramGB: u.VRAMGB, created: created, owner: owner})
 	}
 	return out
 }
@@ -124,4 +151,11 @@ func projectOf(dir string) string {
 			return filepath.Base(dir)
 		}
 	}
+}
+
+// agentSeen: an agent found above a heavy process while its parents were still there.
+type agentSeen struct {
+	name    string
+	created int64
+	owner   int
 }

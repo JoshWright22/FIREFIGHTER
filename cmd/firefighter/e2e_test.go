@@ -547,7 +547,9 @@ func TestSetupTeachesAgentsAndUninstallCleans(t *testing.T) {
 		_ = os.MkdirAll(filepath.Join(h, d), 0o755)
 	}
 	_ = os.WriteFile(filepath.Join(h, ".claude", "CLAUDE.md"), []byte("# mine\n"), 0o644)
-	extra := []string{"HOME=" + h, "USERPROFILE=" + h, "CLAUDE_CONFIG_DIR=", "CODEX_HOME="}
+	extra := []string{"HOME=" + h, "USERPROFILE=" + h, "CLAUDE_CONFIG_DIR=", "CODEX_HOME=",
+		"APPDATA=" + filepath.Join(h, "AppData"), "XDG_CONFIG_HOME=" + filepath.Join(h, ".config"),
+		"T3CODE_HOME=" + filepath.Join(h, ".t3", "userdata")}
 	if out, err := e.cmd(extra, "setup").CombinedOutput(); err != nil {
 		t.Fatalf("setup: %v\n%s", err, out)
 	}

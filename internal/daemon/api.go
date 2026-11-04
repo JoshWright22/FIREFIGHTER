@@ -291,6 +291,10 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if t.GPU && t.VRAMGB > 0 && len(d.snap.GPUs) == 0 && !d.gpuSeen && d.snap.RAMTotalGB > 0 && t.VRAMGB > d.snap.RAMTotalGB {
+		fail(w, 400, fmt.Sprintf("--vram %.1f GB: this machine has no discrete GPU and only %.1f GB of memory", t.VRAMGB, d.snap.RAMTotalGB))
+		return
+	}
 	if t.GPU && t.VRAMGB > 0 && len(d.snap.GPUs) > 0 {
 		biggest := 0.0
 		for _, g := range d.snap.GPUs {
@@ -313,6 +317,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	j := newJob(&t)
 	j.ownerAgent, j.ownerCreated = owner, sysinfo.Created(owner)
 	j.clientAt = clientAt
+	j.human = human
 	if req.Running && !reclaim {
 		// Work started outside the queue and brought in: priced and placed like any adopted
 		// process (1.5x, spot, preempted first), so start-then-adopt never beats queueing.
@@ -374,6 +379,9 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 			// machine that has reported a GPU and missed one reading isn't this case.)
 			t.NeedRAM += t.NeedVRAM
 			t.NeedVRAM = 0
+			if most := d.snap.RAMTotalGB * (1 - d.cfg.Reserve.Away.RAMPct/100) * 0.9; most > 0 && t.NeedRAM > most {
+				t.NeedRAM = most
+			}
 		}
 		// No cap here: which card the job gets is decided at admission, where needOn clamps a
 		// need to what that card ever frees.
@@ -470,6 +478,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	if verb == "cancel" || verb == "bid" || verb == "extend" || verb == "done" {
 		sameSession := callerAgent != 0 && (callerAgent == j.ownerAgent && callerAgentAt == j.ownerCreated ||
 			caller == j.ClientPID) // the job's own client always may (an unknown agent's own job)
+		if !callerHuman && j.human && !sameSession && !a.Force {
+			fail(w, http.StatusForbidden, fmt.Sprintf("job %s is the human's; add --force if you mean it", id))
+			return
+		}
 		if !callerHuman && !sameSession && cleanText(a.Project, 100) != j.Project && !a.Force {
 			fail(w, http.StatusForbidden, fmt.Sprintf("job %s belongs to another agent session (project %s); add --force if you mean it", id, j.Project))
 			return
@@ -530,14 +542,16 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		if a.Container != j.container {
 			// Verified before the lock below would matter: only a container labeled for this job.
 			d.mu.Unlock()
-			ok := containerFor(a.Engine, a.Container, j.ID)
+			full := containerFor(a.Engine, a.Container, j.ID)
 			d.mu.Lock()
-			if !ok {
+			if full == "" {
 				fail(w, http.StatusForbidden, "container "+a.Container+" isn't labeled firefighter.job="+j.ID)
 				return
 			}
+			// Later pause/kill calls use the full id: a name or prefix could point at another
+			// container once this one is gone.
+			j.container, j.engine = full, a.Engine
 		}
-		j.container, j.engine = a.Container, a.Engine
 	case "bid": // re-bid while waiting, after reading the market
 		if a.Minutes < 1 || a.Minutes > 10 {
 			fail(w, 400, "bid must be 1-10")
@@ -747,6 +761,8 @@ func (d *Daemon) view(j *job) View {
 	case "running":
 		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
 		v.ETA = clock(now.Add(time.Duration(left * float64(time.Minute))))
+	case "granted":
+		v.ETA = clock(now.Add(time.Duration(math.Max(1, j.PredMinutes+j.extended) * float64(time.Minute))))
 	}
 	return v
 }
@@ -754,6 +770,10 @@ func (d *Daemon) view(j *job) View {
 func (d *Daemon) blocker(j *job) string {
 	ram, _ := d.headroom(time.Now())
 	switch {
+	case d.backingOff(j.ID, time.Now()):
+		return "stopped for the human a moment ago: waiting a while before trying again"
+	case j.GPU && d.waitsForAway(j.Ticket):
+		return "needs more VRAM than the card frees beside the human's reserve: starts while the human is away"
 	case j.Net && !d.netFree():
 		return d.netWhy()
 	case j.GPU && d.gpuHeld():
@@ -945,19 +965,25 @@ func (d *Daemon) writeStatus() {
 }
 
 // containerFor says whether a container carries the label firefighter put on this job's docker run.
-func containerFor(engine, name, id string) bool {
+// containerFor returns the full id of the container name refers to, if it's labeled for job id
+// ("" otherwise).
+func containerFor(engine, name, id string) string {
 	if strings.HasPrefix(name, "-") {
-		return false
+		return ""
 	}
 	if engine != "podman" {
 		engine = "docker"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := exec.CommandContext(ctx, engine, "inspect", "-f", `{{index .Config.Labels "firefighter.job"}}`, name)
+	c := exec.CommandContext(ctx, engine, "inspect", "-f", `{{.Id}} {{index .Config.Labels "firefighter.job"}}`, name)
 	sysinfo.PrepareBackground(c)
 	out, err := c.Output()
-	return err == nil && strings.TrimSpace(string(out)) == id
+	f := strings.Fields(string(out))
+	if err != nil || len(f) != 2 || f[1] != id {
+		return ""
+	}
+	return f[0]
 }
 
 // cleanText drops control characters (newlines, terminal escapes) and trims to max runes: text one

@@ -247,6 +247,8 @@ func jobLine(v daemon.View) string {
 			note = " (asked to checkpoint and exit: " + v.Why + ")"
 		}
 		return fmt.Sprintf("%s running, ends ~%s%s | do: wait; extend with firefighter_job if it will run long", v.ID, v.ETA, note)
+	case "granted":
+		return fmt.Sprintf("%s starting now, ends ~%s | do: call firefighter_wait", v.ID, v.ETA)
 	}
 	return v.ID + " " + v.State
 }
