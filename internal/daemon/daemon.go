@@ -100,6 +100,7 @@ type Daemon struct {
 	gpuSeen       bool                 // a GPU has reported since start (a missed reading isn't "no GPU")
 	netCap        float64              // the most network throughput seen (Mbps), slowly forgotten: the link's size
 	netHuman      float64              // network use while no network job runs (Mbps, smoothed): the human's
+	netQuietFrom  time.Time            // when the last network job ended (the human's traffic is measured after)
 	gpuMax        int                  // most GPUs seen in one reading
 	gpuShortSince time.Time            // since when readings show fewer
 	gpuDegraded   bool                 // this reading is partial: no GPU grants
@@ -488,6 +489,11 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		for _, j := range d.running() {
 			netJob = netJob || j.Net
 		}
+		if netJob {
+			d.netQuietFrom = now.Add(time.Hour) // reset when the last one ends
+		} else if d.netQuietFrom.After(now) {
+			d.netQuietFrom = now
+		}
 		if !netJob {
 			d.netHuman += (1 - math.Exp(-dt.Seconds()/20)) * (d.snap.NetMbps - d.netHuman)
 		}
@@ -729,6 +735,13 @@ func (d *Daemon) ladder(now time.Time) {
 		hold := (j.GPU && gpuHold) || (j.Net && netHold)
 		acked := exists(PausedFile(j.ID))
 		switch {
+		case hold && j.pausedAt.IsZero() && j.checkpoint.IsZero() && j.Net && !j.GPU:
+			// A download can't be told to pause and checked (no per-process network numbers):
+			// suspend it outright; it resumes after the game.
+			j.pausedAt, j.reason = now, "the human is gaming (network latency)"
+			j.suspended = now
+			d.suspend(j)
+			logf("%s: suspended: %s", j.Name, j.reason)
 		case hold && j.pausedAt.IsZero() && j.checkpoint.IsZero():
 			j.pausedAt, j.reason = now, "the human needs the GPU ("+d.why()+")"
 			touch(PauseFile(j.ID))
@@ -1230,7 +1243,11 @@ func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 
 // netFree says whether a network job may start now: a network turn is free, no game holds the
 // machine, and the human isn't already using much of the link.
-func (d *Daemon) netFree() bool {
+func (d *Daemon) netFree() bool { return d.netWhy() == "" }
+
+// netWhy says what holds a network job back ("" when nothing does). Between two downloads it waits
+// ~10 s, so the human's own traffic is measured again (it can't be told apart while one runs).
+func (d *Daemon) netWhy() string {
 	c := d.cfg.Network
 	n := 0
 	for _, j := range d.jobs {
@@ -1240,13 +1257,15 @@ func (d *Daemon) netFree() bool {
 	}
 	switch {
 	case c.MaxJobs > 0 && n >= c.MaxJobs:
-		return false
+		return "network turn: another download has it"
 	case d.user == "game" && c.PauseInGame:
-		return false
+		return "network: the human is gaming (latency)"
+	case time.Since(d.netQuietFrom) < 10*time.Second:
+		return "network: measuring the human's own traffic after the last download"
 	case d.netCap > 1 && d.netHuman > d.netCap*c.HumanBusyPct/100:
-		return false
+		return fmt.Sprintf("network: the human is using %.0f of ~%.0f Mbps", d.netHuman, d.netCap)
 	}
-	return true
+	return ""
 }
 
 // cardLeft is the VRAM a job of this vendor would find on its card, after the human's reserve.

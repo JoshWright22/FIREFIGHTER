@@ -851,7 +851,10 @@ func TestNetworkJobsTakeTurns(t *testing.T) {
 		}
 	}
 	if !netCommand([]string{"curl", "-L", "-o", "x", "https://example.com"}) || !netCommand([]string{"docker", "pull", "img"}) ||
-		!netCommand([]string{"cmd", "/c", "pip install torch"}) || netCommand([]string{"python", "train.py"}) {
+		!netCommand([]string{"cmd", "/c", "pip install torch"}) || netCommand([]string{"python", "train.py"}) ||
+		!netCommand([]string{"sh", "-c", "cd x && pip install -r r.txt"}) || !netCommand([]string{"pip", "--index-url", "U", "install", "x"}) ||
+		!netCommand([]string{"git", "-C", "d", "clone", "u"}) || !netCommand([]string{"docker", "compose", "pull"}) ||
+		netCommand([]string{"docker", "build", "."}) || netCommand([]string{"cargo", "install", "ripgrep"}) {
 		t.Fatal("network command detection")
 	}
 }

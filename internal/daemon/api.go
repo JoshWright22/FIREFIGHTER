@@ -464,12 +464,6 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, fmt.Sprintf("pid %d isn't a process", a.PID))
 			return
 		}
-		if !sysinfo.Alive(a.PID) {
-			// It already finished (a quick command beats its own start report): nothing to govern;
-			// its client reports done next.
-			j.State, j.Started = "running", now
-			break
-		}
 		starter := caller
 		if starter < 0 { // the connection table isn't available on this system
 			starter = j.ClientPID
@@ -477,6 +471,12 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		if j.ClientPID > 1 && starter != j.ClientPID {
 			fail(w, http.StatusForbidden, "only the client that queued this job can start it")
 			return
+		}
+		if !sysinfo.Alive(a.PID) {
+			// It already finished (a quick command beats its own start report): nothing to govern;
+			// its client reports done next.
+			j.State, j.Started = "running", now
+			break
 		}
 		if starter <= 1 || !sysinfo.DescendantOf(a.PID, starter) {
 			// The job is a process its client started. Anything else (a game, a browser, another
@@ -574,7 +574,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	if !j.Started.IsZero() {
 		ran = now.Sub(j.Started).Minutes()
 	}
-	if j.State == "running" && outcome != "lost" {
+	if j.State == "running" && outcome != "lost" && len(j.pids) > 0 { // nothing measured: nothing to learn
 		h := d.st.History[histKey(j.Ticket)]
 		if h == nil {
 			h = &History{}
@@ -652,6 +652,7 @@ type View struct {
 	Why      string        `json:"why,omitempty"`      // what it's waiting for, or why it's paused
 	Paused   bool          `json:"paused,omitempty"`
 	Checkpt  bool          `json:"checkpoint,omitempty"`
+	StopIn   float64       `json:"stop_in_s,omitempty"` // seconds until a checkpointing job is stopped hard
 	StartsIn float64       `json:"starts_in_min,omitempty"`
 	Tier     string        `json:"tier,omitempty"` // spot | normal | urgent
 	Budget   float64       `json:"budget_left"`    // project's machine-minutes left
@@ -672,6 +673,12 @@ func (d *Daemon) view(j *job) View {
 	v := View{ID: j.ID, Name: j.Name, Project: j.Project, State: j.State, Band: j.Band, Tier: tierOf(j.Ticket),
 		Budget: round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(j.Project))))), Pred: round1(j.PredMinutes),
 		Receipt: j.receipt, Paused: !j.pausedAt.IsZero(), Checkpt: !j.checkpoint.IsZero(), Why: j.reason,
+		StopIn: func() float64 {
+			if j.checkpoint.IsZero() {
+				return 0
+			}
+			return math.Max(0.1, d.cfg.Ladder.GraceSeconds-time.Since(j.checkpoint).Seconds())
+		}(),
 		PauseF: PauseFile(j.ID), PausedF: PausedFile(j.ID), CheckF: CheckpointFile(j.ID)}
 	if j.device >= 0 && j.device < len(d.snap.GPUs) {
 		g := d.snap.GPUs[j.device]
@@ -699,7 +706,7 @@ func (d *Daemon) blocker(j *job) string {
 	ram, _ := d.headroom(time.Now())
 	switch {
 	case j.Net && !d.netFree():
-		return fmt.Sprintf("network turn: %.0f Mbps in use by the human of ~%.0f, a game, or another download", d.netHuman, d.netCap)
+		return d.netWhy()
 	case j.GPU && d.gpuHeld():
 		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:

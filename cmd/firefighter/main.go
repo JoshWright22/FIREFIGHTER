@@ -495,10 +495,11 @@ loop:
 					ui.Say(ui.Hot, "%s: firefighter needs it to stop (%s); it gets time to save and exit, then it's requeued", t.Name, cur.Why)
 				}
 			}
-			if !askedAt.IsZero() && !interrupted && time.Since(askedAt) >= 30*time.Second {
-				// Still running half-way through the grace period: it doesn't read the checkpoint
-				// file, so stop it politely (Ctrl+Break / SIGINT, which most programs handle cleanly)
-				// before the daemon escalates to SIGTERM and then a kill.
+			if err == nil && cur.Checkpt && !interrupted && runtime.GOOS != "windows" && cur.StopIn > 0 && cur.StopIn <= 10 {
+				// Ten seconds before the hard stop and still running: it isn't checkpointing, so
+				// SIGINT it (Ctrl+C: most programs exit cleanly) instead of letting SIGTERM/kill be
+				// the first thing it hears. Not on Windows, where Ctrl+Break ends a program at once:
+				// there it keeps its whole grace period.
 				interrupted = true
 				_ = sysinfo.Interrupt(cmd.Process.Pid)
 			}
@@ -1142,40 +1143,57 @@ func netCommand(argv []string) bool {
 	if len(argv) == 0 {
 		return false
 	}
-	words := argv
+	text := strings.Join(argv, " ")
 	if len(argv) >= 3 {
 		switch strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe") {
 		case "sh", "bash", "zsh", "cmd", "powershell", "pwsh":
-			words = strings.Fields(argv[len(argv)-1])
+			text = argv[len(argv)-1]
 		}
 	}
+	// Each step of a compound command ("cd x && pip install -r r.txt").
+	for _, seg := range strings.FieldsFunc(text, func(r rune) bool { return r == '&' || r == ';' || r == '|' }) {
+		if netStep(strings.Fields(seg)) {
+			return true
+		}
+	}
+	return false
+}
+
+func netStep(words []string) bool {
 	if len(words) == 0 {
 		return false
 	}
 	prog := strings.TrimSuffix(strings.ToLower(filepath.Base(words[0])), ".exe")
-	sub := ""
-	for _, w := range words[1:] {
-		if !strings.HasPrefix(w, "-") {
-			sub = strings.ToLower(w)
-			break
+	has := func(subs ...string) bool { // a subcommand anywhere after options (pip --index-url U install)
+		for _, w := range words[1:] {
+			for _, s := range subs {
+				if strings.EqualFold(w, s) {
+					return true
+				}
+			}
 		}
+		return false
 	}
 	switch prog {
-	case "curl", "wget", "aria2c", "rsync", "scp", "huggingface-cli", "hf", "gsutil", "rclone":
+	case "curl", "wget", "aria2c", "rsync", "scp", "huggingface-cli", "hf", "gsutil", "rclone", "azcopy":
 		return true
+	case "aws":
+		return has("s3") && has("cp", "sync", "mv")
 	case "docker", "podman":
-		return sub == "pull" || sub == "push" || sub == "build"
+		return has("pull", "push") // build and compose up are mostly CPU
 	case "git":
-		return sub == "clone" || sub == "fetch" || sub == "pull" || sub == "lfs"
-	case "pip", "pip3", "npm", "pnpm", "yarn", "bun", "cargo", "conda", "mamba", "brew", "winget", "choco", "scoop", "apt", "apt-get", "dnf", "ollama":
-		return sub == "install" || sub == "i" || sub == "ci" || sub == "add" || sub == "pull" || sub == "fetch" || sub == "update" || sub == "upgrade" || sub == "sync"
+		return has("clone", "fetch", "pull", "lfs")
+	case "pip", "pip3", "pipx", "npm", "pnpm", "yarn", "bun", "poetry", "conda", "mamba", "micromamba", "brew", "winget",
+		"choco", "scoop", "apt", "apt-get", "dnf", "ollama":
+		return has("install", "i", "ci", "add", "pull", "update", "upgrade", "sync", "create")
+	case "cargo":
+		return has("fetch") // install compiles: CPU-bound
 	case "uv":
-		return sub == "pip" || sub == "sync" || sub == "add"
+		return has("pip", "sync", "add")
 	case "go":
-		return sub == "get" || sub == "mod"
+		return has("get", "download")
 	case "python", "python3", "py":
-		j := strings.Join(words, " ")
-		return strings.Contains(j, "-m pip install") || strings.Contains(j, "huggingface_hub")
+		return has("pip") && has("install") || strings.Contains(strings.Join(words, " "), "huggingface_hub")
 	}
 	return false
 }

@@ -113,7 +113,7 @@ func (r *Reader) Read() Snapshot {
 	if c, err := psnet.IOCounters(true); err == nil {
 		var total uint64
 		for _, n := range c {
-			if l := strings.ToLower(n.Name); l == "lo" || strings.HasPrefix(l, "loopback") || strings.HasPrefix(l, "lo0") {
+			if virtualIface(n.Name) {
 				continue
 			}
 			total += n.BytesRecv + n.BytesSent
@@ -282,6 +282,20 @@ func logicalCPUs() int {
 		}
 	}
 	return cpuCount
+}
+
+// virtualIface: loopback, VM/container bridges and VPN tunnels carry traffic the physical adapter
+// also carries (WSL's vEthernet mirrors Ethernet), so counting them would double it.
+func virtualIface(name string) bool {
+	l := strings.ToLower(name)
+	for _, p := range []string{"lo", "loopback", "vethernet", "docker", "br-", "veth", "virbr", "vmnet", "vboxnet",
+		"virtualbox", "hyper-v", "wsl", "tun", "tap", "utun", "wg", "tailscale", "zt", "ppp", "isatap", "teredo",
+		"bluetooth", "npcap", "awdl", "llw", "anpi", "bridge"} {
+		if l == p || strings.HasPrefix(l, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // sysfsAMD reads the amdgpu driver's files (Linux without ROCm installed).
