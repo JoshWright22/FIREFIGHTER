@@ -858,3 +858,35 @@ func TestNetworkJobsTakeTurns(t *testing.T) {
 		t.Fatal("network command detection")
 	}
 }
+
+// A download frozen for a game, past the suspend limit, that then meets a RAM shortage is thawed
+// and asked to save (it checkpoints and is requeued), never killed outright.
+func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
+	v, _ := mem.VirtualMemory()
+	total := float64(v.Total) / (1 << 30)
+	e := newEnv(t, map[string]any{"net_mbps": 0.0})
+	e.ff("config", "set", "ladder.suspend_max_seconds", "1")
+	e.ff("config", "set", "ladder.kill_below_ram_pct", "0.01")
+	e.ff("config", "set", "reserve.game_cool_seconds", "1")
+	log := filepath.Join(e.home, "frozen.txt")
+	done := make(chan string, 1)
+	go func() {
+		out, _ := e.job("pausable:40:"+log, "--net", "--minutes", "1", "--name", "download")
+		done <- out
+	}()
+	eventually(t, "download running", 90*time.Second, func() bool { // after the 30 s measuring gap
+		r, _ := e.status()["running"].([]any)
+		return len(r) == 1
+	})
+	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe"})
+	eventually(t, "frozen for the game", 20*time.Second, func() bool { out, _ := e.ff("status"); return strings.Contains(out, "gaming") })
+	time.Sleep(3 * time.Second) // past suspend_max_seconds
+	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "ram_avail_gb": total * 0.02})
+	eventually(t, "asked to save, not killed", 30*time.Second, func() bool { return strings.Contains(readFile(log), "checkpointed") })
+	e.setFake(map[string]any{"idle": 9999.0, "foreground": ""})
+	select {
+	case <-done:
+	case <-time.After(120 * time.Second):
+		t.Fatal("download never finished")
+	}
+}

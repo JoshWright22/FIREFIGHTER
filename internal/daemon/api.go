@@ -619,6 +619,15 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		rec.Reason = j.reason
 	}
 	j.receipt = rec
+	if j.Net && j.State == "running" {
+		last := true
+		for _, o := range d.jobs {
+			last = last && (o == j || !o.Net || o.State != "running")
+		}
+		if last {
+			d.netQuietFrom, d.netWasBusy = now, false // measure the human before the next download, starting now
+		}
+	}
 	j.State = "done"
 	d.st.Receipts[id] = rec
 	logf("%s: %s (exit %d) after %.1f min, waited %.1f, charged %.1f", j.Name, outcome, exit, ran, waited, j.charged)
