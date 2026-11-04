@@ -309,9 +309,10 @@ tests both one-command installers.
   Ancestry and ownership checks ignore reused pids. "You" means a caller whose unbroken process
   chain reaches a terminal window (Windows Terminal, iTerm, GNOME Terminal, ...; or sshd) with no
   agent CLI, script runtime (node) or IDE in between (`guard.human_hosts`, `guard.agent_hosts`).
-  The terminal must be installed where only an administrator can write (Program Files, /usr,
-  /Applications, ...; or started by root, like sshd and login), so a terminal installed just for
-  your user (a kitty/WezTerm download, Scoop) doesn't count. The desktop shell, a classic console
+  The terminal must be installed by an administrator: the program and every folder above it owned
+  by the system (root on macOS/Linux; TrustedInstaller, SYSTEM or Administrators on Windows), or a
+  real sshd/login session started by root. A terminal installed just for your user (a kitty or
+  WezTerm download, Scoop, an app you dragged into /Applications, a Nix profile) doesn't count. The desktop shell, a classic console
   started from it, tmux and screen don't count either (an agent can open those silently); from
   them, add `--force` for other projects' jobs and for `adopt`. Anything else, including detached helpers
   and agents hosted in node or an IDE, is an agent session limited to its own work and its project;
