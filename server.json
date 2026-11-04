@@ -1,0 +1,62 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.joshwright22/firefighter",
+  "title": "firefighter",
+  "description": "Local GPU, CPU and RAM job queue for AI agents sharing one computer. The human comes first.",
+  "repository": {
+    "url": "https://github.com/JoshWright22/FIREFIGHTER",
+    "source": "github"
+  },
+  "websiteUrl": "https://joshwright22.github.io/FIREFIGHTER/",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/JoshWright22/FIREFIGHTER/releases/download/v0.1.0/firefighter_darwin_amd64.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/JoshWright22/FIREFIGHTER/releases/download/v0.1.0/firefighter_darwin_arm64.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/JoshWright22/FIREFIGHTER/releases/download/v0.1.0/firefighter_linux_amd64.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/JoshWright22/FIREFIGHTER/releases/download/v0.1.0/firefighter_linux_arm64.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/JoshWright22/FIREFIGHTER/releases/download/v0.1.0/firefighter_windows_amd64.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/JoshWright22/FIREFIGHTER/releases/download/v0.1.0/firefighter_windows_arm64.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@
 
 Writes assets/logo.svg, assets/icon.svg and assets/social-preview.svg with the lettering converted to
 paths (GitHub renders SVGs without web fonts), then renders the PNGs with headless Chromium (Playwright):
-the 512 px icons and the 1280x640 social preview. Copies what the Pages site uses into docs/.
+the 512 px icons, a 400 px logo and the 1280x640 social preview. Copies what the Pages site uses into docs/.
 
 Look: magenta poster, the name repeated in Inter Tight Black, centered on a cream + black pair; the icon
 is "FF" built from bars, with a ring. Fonts are OFL (assets/brand/fonts); the Black weight is instanced
@@ -115,6 +115,7 @@ with sync_playwright() as p:
     jobs = [
         (ASSETS / "icon.svg", [ASSETS / "icon-512.png", ROOT / "integrations/vscode/icon.png",
                                ROOT / "integrations/claude-code/.claude-plugin/icon.png"], 512, 512),
+        (ASSETS / "icon.svg", [ASSETS / "logo-400.png"], 400, 400),  # directory listings (Cline marketplace)
         (HERE / "social.html", [ASSETS / "social-preview.png"], 1280, 640),
     ]
     for src, outs, w, h in jobs:
