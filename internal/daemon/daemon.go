@@ -97,6 +97,7 @@ type Daemon struct {
 	stopping  atomic.Bool          // shutdown requested (once)
 	unknownAt map[bool]time.Time   // last grant of a never-seen command, per kind (GPU/CPU)
 	cardFloor []float64            // the least VRAM each card has had in use lately: the emptiest it gets
+	gpuSeen   bool                 // a GPU has reported since start (a missed reading isn't "no GPU")
 	dockerQ   chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
 	graphics  map[string]float64   // non-job 3D-engine users -> % (games, video)
 	others    []sysinfo.Container
@@ -469,6 +470,7 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		jobCPU += j.cpuNow
 	}
 	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
+	d.gpuSeen = d.gpuSeen || len(d.snap.GPUs) > 0
 	if len(d.cardFloor) != len(d.snap.GPUs) {
 		d.cardFloor = make([]float64, len(d.snap.GPUs))
 		for i, g := range d.snap.GPUs {
@@ -777,15 +779,17 @@ func (d *Daemon) ladder(now time.Time) {
 			if card >= 0 {
 				left = d.cardLeft(head.WantVendor)
 			}
+			fits := need <= left || len(d.snap.GPUs) == 0 // no discrete GPU: VRAM is RAM, admitted as RAM
+			// When the head fits its card and only a slot is missing, a spot job on any card frees
+			// one; when VRAM on its card is the problem, only a spot job on that card helps.
 			var spot *job
 			for _, j := range d.running() {
-				if j.GPU && j.Band == policy.BandSpot && j.checkpoint.IsZero() && j.Evict != "never" && (card < 0 || d.onCard(j, card)) &&
+				if j.GPU && j.Band == policy.BandSpot && j.checkpoint.IsZero() && j.Evict != "never" && (fits || card < 0 || d.onCard(j, card)) &&
 					j.leaseUsed(now).Minutes() >= c.Ladder.MinRuntimeMinutes && (spot == nil || j.vramGB > spot.vramGB) {
 					spot = j
 				}
 			}
-			fits := need <= left
-			if spot != nil && (slotsFull || !fits) && need <= left+spot.vramGB+0.5 {
+			if spot != nil && (slotsFull || !fits) && (fits || need <= left+spot.vramGB+0.5) {
 				d.requestCheckpoint(spot, now, "spot job yields to "+head.Name)
 			}
 		}
@@ -1144,10 +1148,12 @@ func (d *Daemon) cardFor(want string) (int, float64) {
 // --vram is never shrunk.
 func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 	need := t.NeedVRAM
-	if card >= 0 && card < len(d.cardFloor) && card < len(d.snap.GPUs) && need > t.VRAMGB {
+	if card >= 0 && card < len(d.cardFloor) && card < len(d.snap.GPUs) {
+		// The most this card ever frees. A need above it (learned, or a declared --vram within
+		// the card's size: queue time refuses larger) starts when the card is at its emptiest.
 		g := d.snap.GPUs[card]
 		most := g.VRAMGB - d.res.VRAMGB - d.cardFloor[card]
-		need = math.Max(t.VRAMGB, math.Min(need, math.Max(0.5, most)))
+		need = math.Min(need, math.Max(0.5, most))
 	}
 	return need
 }
@@ -1244,7 +1250,7 @@ func (d *Daemon) admit(now time.Time) {
 		}
 		if t.GPU {
 			if card, _ := d.cardFor(t.WantVendor); d.needOn(t, card) < t.NeedVRAM-0.05 {
-				logf("%s: learned need %.1f GB is more than this card ever frees; starting at its emptiest (%.1f GB)", j.Name, t.NeedVRAM, d.needOn(t, card))
+				logf("%s: needs %.1f GB, more than this card ever frees; starting at its emptiest (%.1f GB)", j.Name, t.NeedVRAM, d.needOn(t, card))
 			}
 		}
 		j.State, j.granted = "granted", now

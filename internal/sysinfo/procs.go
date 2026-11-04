@@ -119,6 +119,14 @@ func HumanSession(pid int, humans, agents, agentHosts []string) bool {
 func systemExe(p *process.Process) bool {
 	exe, err := p.Exe()
 	if err != nil || exe == "" {
+		// Linux hides /proc/<pid>/exe of privileged processes (the per-session sshd, login).
+		// Such a host is trusted only when root started it (its parent runs as root), which an
+		// agent can't arrange.
+		if parent, perr := p.Parent(); perr == nil && parent != nil {
+			if uids, uerr := parent.Uids(); uerr == nil && len(uids) > 0 && uids[0] == 0 && parent.Pid > 1 {
+				return true
+			}
+		}
 		return false
 	}
 	e := strings.ToLower(filepath.ToSlash(exe))

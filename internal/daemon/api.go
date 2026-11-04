@@ -264,6 +264,18 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if t.GPU && t.VRAMGB > 0 && len(d.snap.GPUs) > 0 {
+		biggest := 0.0
+		for _, g := range d.snap.GPUs {
+			if v := strings.ToLower(t.WantVendor); v == "" || v == "any" || g.Vendor == v || (v == "" && g.Vendor == "nvidia") {
+				biggest = math.Max(biggest, g.VRAMGB)
+			}
+		}
+		if biggest > 0 && t.VRAMGB > biggest {
+			fail(w, 400, fmt.Sprintf("--vram %.1f GB: no GPU here has that much (largest: %.1f GB)", t.VRAMGB, biggest))
+			return
+		}
+	}
 	d.fillNeeds(&t)
 	a := d.account(t.Project, now)
 	t.Band = policy.BandFor(&t, a.Left(d.cfg, d.cfg.Allowance(t.Project)) > 0)
@@ -329,13 +341,14 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 		if t.NeedVRAM == 0 {
 			t.NeedVRAM = d.cfg.GPU.DefaultVRAMGB
 		}
-		if len(d.snap.GPUs) == 0 {
-			// No discrete GPU (Apple silicon, iGPU): VRAM is system RAM, so admit on RAM.
+		if len(d.snap.GPUs) == 0 && !d.gpuSeen {
+			// No discrete GPU (Apple silicon, iGPU): VRAM is system RAM, so admit on RAM. (A
+			// machine that has reported a GPU and missed one reading isn't this case.)
 			t.NeedRAM += t.NeedVRAM
 			t.NeedVRAM = 0
 		}
 		// No cap here: which card the job gets is decided at admission, where needOn clamps a
-		// learned need to what that card ever frees (a declared --vram is never shrunk).
+		// need to what that card ever frees.
 	}
 }
 
