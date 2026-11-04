@@ -559,3 +559,19 @@ func Interrupt(pid int) error {
 	}
 	return nil
 }
+
+func startTicks(int) (int64, bool) { return 0, false }
+
+var getCurrentPackageFullName = kernel32.NewProc("GetCurrentPackageFullName")
+
+// Packaged says whether this process runs inside an MSIX/AppX package (Claude Desktop, Store apps).
+// Such apps get a private, redirected copy of new %LOCALAPPDATA% folders: a guard started from one
+// would keep its state where no other client looks.
+func Packaged() bool {
+	if getCurrentPackageFullName.Find() != nil {
+		return false
+	}
+	var n uint32
+	r, _, _ := getCurrentPackageFullName.Call(uintptr(unsafe.Pointer(&n)), 0)
+	return r != 15700 // APPMODEL_ERROR_NO_PACKAGE
+}

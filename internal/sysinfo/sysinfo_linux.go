@@ -144,3 +144,29 @@ func SetCPUs(pid int, cpus []int) error {
 // gpus: GPUs beyond what vendor tools list. Linux: nvidia-smi, rocm-smi and sysfs cover it; macOS
 // GPUs share system memory (admitted as RAM).
 func (*platformReader) gpus(map[string]bool) []GPU { return nil }
+
+// startTicks is a process's start time in clock ticks since boot (/proc/<pid>/stat field 22). Unlike
+// a wall-clock start time it doesn't move when the clock is stepped (NTP, WSL resync, dual boot).
+func startTicks(pid int) (int64, bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')') // the name may hold spaces and parentheses
+	if i < 0 {
+		return 0, false
+	}
+	f := strings.Fields(s[i+1:])
+	if len(f) < 20 {
+		return 0, false
+	}
+	t, err := strconv.ParseInt(f[19], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return t + 1, true // never 0 ("gone")
+}
+
+// Packaged: Linux apps don't run in a redirected package context.
+func Packaged() bool { return false }

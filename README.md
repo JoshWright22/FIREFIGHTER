@@ -144,8 +144,8 @@ agents to change the policy.
 ## How it decides (and how to change it)
 
 Zero config gives you the researched defaults below. You can swap each part by name, live, with
-`firefighter config set <key> <value>`. Agents can read the policy through the `firefighter_config`
-MCP tool, and can change it only if you set `guard.agents_can_configure true`.
+`firefighter config set <key> <value>`. Agents read the policy with `firefighter config show`; the
+`firefighter_config` MCP tool (to change it) is listed only if you set `guard.agents_can_configure true`.
 
 | Stage | Default | What it does | Swap with |
 |---|---|---|---|

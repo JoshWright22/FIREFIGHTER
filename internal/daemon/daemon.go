@@ -1470,7 +1470,8 @@ func (d *Daemon) cardSize(j *job, fallback float64) float64 {
 // ever offers: its size, less the human's reserve, less the least others have held lately. Above
 // that it would wait forever, so it's clamped and starts when the card is at its emptiest (if a
 // program holds VRAM for good, the job runs with what's there and its log says so). A declared
-// --vram is never shrunk.
+// --vram is measured against the card's size less the human's reserve; past that it's clamped the
+// same way and waits for the human to be away.
 func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 	need := t.NeedVRAM
 	if card >= 0 && card < len(d.snap.GPUs) && need > d.capFor(card, t) {

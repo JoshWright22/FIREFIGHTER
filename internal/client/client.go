@@ -68,6 +68,11 @@ func Connect() (*Client, error) {
 
 // StartDaemon launches `firefighter daemon` detached from this process and its console.
 func StartDaemon() error {
+	if sysinfo.Packaged() {
+		// Inside a packaged app (Claude Desktop) the state folder would be a private copy: a guard
+		// started here would run beside the real one without either seeing the other.
+		return fmt.Errorf("firefighter's guard isn't running, and it can't be started from inside this app: install firefighter (https://github.com/JoshWright22/FIREFIGHTER) or run `firefighter status` in a terminal once")
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err

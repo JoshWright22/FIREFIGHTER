@@ -382,14 +382,18 @@ func call(name string, a map[string]any) (string, any, error) {
 		}
 		return jobLine(v), v, nil
 	case "firefighter_plan":
+		project := s(a, "project")
+		if project == "" {
+			project = callerProject() // the same default for announcing and for removing
+		}
 		if b(a, "done") {
-			return "plans removed", nil, c.Unplan(s(a, "project"))
+			return "plans removed", nil, c.Unplan(project)
 		}
 		at := s(a, "at")
 		if at == "" {
 			at = s(a, "when")
 		}
-		p, err := c.Plan(daemon.Plan{Project: s(a, "project"), What: s(a, "what"), When: at, Minutes: f(a, "minutes"),
+		p, err := c.Plan(daemon.Plan{Project: project, What: s(a, "what"), When: at, Minutes: f(a, "minutes"),
 			GPUPct: f(a, "gpu_pct"), VRAMGB: f(a, "vram_gb"), RAMGB: f(a, "ram_gb")})
 		if err != nil {
 			return "", nil, err

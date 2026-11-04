@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -65,6 +66,13 @@ func (d *Daemon) Serve() error {
 	d.step(d.reader.Read(), nil, nil, time.Now(), 0) // measure before the first ticket arrives
 	d.mu.Unlock()
 	go d.Run()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, stopSignals...)
+	go func() {
+		<-sig // launchd/systemd stopping it, or Ctrl+C: same clean stop as the API
+		logf("stop signal")
+		d.Shutdown()
+	}()
 	b, _ := json.Marshal(Endpoint{PID: os.Getpid(), Created: sysinfo.Created(os.Getpid()), Port: d.Port, Token: d.Token, Version: d.Version})
 	if err := writeAtomic(EndpointPath(), b, 0o600); err != nil {
 		return err
@@ -81,6 +89,20 @@ func (d *Daemon) Serve() error {
 	return err
 }
 
+// Shutdown stops the guard cleanly: anything it suspended is thawed, pause files go, and open jobs
+// are saved so their clients can re-register with the next guard. Safe to call more than once.
+func (d *Daemon) Shutdown() {
+	if !d.stopping.CompareAndSwap(false, true) {
+		return
+	}
+	d.mu.Lock()
+	d.release()
+	d.st.Open = d.openJobs(time.Now())
+	_ = d.st.write()
+	d.mu.Unlock()
+	close(d.stop)
+}
+
 func (d *Daemon) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -89,17 +111,9 @@ func (d *Daemon) routes() http.Handler {
 	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, map[string]bool{"ok": true})
 		logf("shutdown requested")
-		if !d.stopping.CompareAndSwap(false, true) {
-			return // already shutting down
-		}
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			d.mu.Lock()
-			d.release()
-			d.st.Open = d.openJobs(time.Now())
-			_ = d.st.write()
-			d.mu.Unlock()
-			close(d.stop)
+			d.Shutdown()
 		}()
 	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {

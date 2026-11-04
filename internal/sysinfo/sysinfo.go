@@ -395,6 +395,9 @@ func Created(pid int) int64 {
 	if pid <= 0 {
 		return 0
 	}
+	if t, ok := startTicks(pid); ok {
+		return t
+	}
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {
 		return 0

@@ -53,3 +53,8 @@ func SetCPUs(int, []int) error { return nil }
 // gpus: GPUs beyond what vendor tools list. Linux: nvidia-smi, rocm-smi and sysfs cover it; macOS
 // GPUs share system memory (admitted as RAM).
 func (*platformReader) gpus(map[string]bool) []GPU { return nil }
+
+func startTicks(int) (int64, bool) { return 0, false }
+
+// Packaged: macOS apps don't redirect firefighter's state folder.
+func Packaged() bool { return false }
