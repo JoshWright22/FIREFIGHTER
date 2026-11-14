@@ -68,6 +68,7 @@ func (d *Daemon) Serve() error {
 	d.step(d.reader.Read(), nil, nil, time.Now(), 0) // measure before the first ticket arrives
 	d.mu.Unlock()
 	go d.Run()
+	go d.autoUpdate()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, stopSignals...)
 	go func() {
@@ -995,6 +996,7 @@ type Status struct {
 	ConfigErr string                  `json:"config_error,omitempty"`
 	Recent    []*Receipt              `json:"recent"`
 	Notes     []string                `json:"notes,omitempty"`    // what is holding work back right now, in plain words
+	Version   string                  `json:"version"`            // the guard's version
 	VM        *sysinfo.VM             `json:"vm,omitempty"`       // the WSL2/Docker VM's memory, when one runs
 	Disks     []sysinfo.Disk          `json:"disks,omitempty"`    // drives jobs and the system use
 	Forecast  *Forecast               `json:"forecast,omitempty"` // what the human and each command are expected to use
@@ -1026,7 +1028,10 @@ func (d *Daemon) status() Status {
 	}
 	sort.Slice(s.Disks, func(a, b int) bool { return s.Disks[a].Path < s.Disks[b].Path })
 	s.Reserve["disk_free_gb"] = d.cfg.Reserve.DiskFreeGB
-	s.Notes = d.notes(now)
+	s.Notes, s.Version = d.notes(now), d.Version
+	if d.updateNote != "" {
+		s.Notes = append(s.Notes, d.updateNote)
+	}
 	s.Forecast = d.forecast(now)
 	s.Market = map[string]policy.Quote{}
 	for _, gpu := range []bool{true, false} {

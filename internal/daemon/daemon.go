@@ -173,13 +173,16 @@ type Daemon struct {
 	vmGuestAt time.Time
 	diskAt    time.Time
 
-	saveAt   time.Time
-	statusAt time.Time
-	started  time.Time
-	Version  string
-	Token    string
-	Port     int
-	stop     chan struct{}
+	saveAt     time.Time
+	statusAt   time.Time
+	started    time.Time
+	Version    string
+	Exe        string      // the program's own path, as started (an update replaces the file there)
+	restart    atomic.Bool // stopping to come back as a newer version
+	updateNote string      // a newer release is waiting, or the last update failed
+	Token      string
+	Port       int
+	stop       chan struct{}
 }
 
 func New(version string) *Daemon {
@@ -1399,17 +1402,30 @@ func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 	vram = free - d.res.VRAMGB
 	for _, j := range d.jobs {
 		if j.State == "granted" || j.State == "running" {
-			need := j.NeedRAM
-			if j.held == "ram" {
-				need = math.Max(need, j.heldRAM) // suspended to free RAM: it takes this back when it resumes
-			}
-			ram -= math.Max(0, need-j.ramGB)
+			ram -= d.reservedRAM(j)
 			if j.GPU && d.onCard(j, card) {
 				vram -= math.Max(0, j.NeedVRAM-j.vramGB)
 			}
 		}
 	}
 	return
+}
+
+// reservedRAM is the RAM still held back for a granted or running job beyond what it uses now.
+// It is Borg's reservation (Verma et al., EuroSys 2015, section 5.5): equal to the request at
+// first, then "after 300 s, to allow for startup transients, it decays slowly towards the actual
+// usage plus a safety margin", and it rises at once when the job uses more. Here the gap between
+// the need and the job's own peak + 15% halves with every 10 minutes of work, so a job that asked
+// for 12 GB and settled at 7 doesn't keep the next job out for hours.
+func (d *Daemon) reservedRAM(j *job) float64 {
+	need := j.NeedRAM
+	if j.held == "ram" {
+		return math.Max(0, math.Max(need, j.heldRAM)-j.ramGB) // suspended to free RAM: it takes this back when it resumes
+	}
+	if seen := j.peakRAM * (1 + usage.SafetyMargin); j.State == "running" && j.workSec > 300 && need > seen {
+		need = seen + (need-seen)*math.Pow(0.5, (j.workSec-300)/600)
+	}
+	return math.Max(0, need-j.ramGB)
 }
 
 // freestCard is the GPU with the most free VRAM after its jobs' unclaimed needs, and its raw free

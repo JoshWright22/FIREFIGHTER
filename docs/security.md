@@ -35,6 +35,13 @@ cooperative agents, not a sandbox.
   A release from before signing (v0.1.0) has none: the installers then say so and install on the
   checksum alone, unless `FIREFIGHTER_REQUIRE_PROVENANCE=1`. Provenance that exists and doesn't
   check out always stops the install.
+- The guard updates itself (`update.auto`, on by default). It only ever asks this repository's
+  GitHub releases over HTTPS, never installs an older version, and refuses an archive that doesn't
+  match the release's `checksums.txt`. With the GitHub CLI installed and signed in it also requires
+  the archive's signed build provenance (`gh attestation verify --repo JoshWright22/FIREFIGHTER`):
+  that is what a tampered release can't forge, so sign in to `gh` if you want that guarantee, or
+  set `update.auto false` and update by hand. The test-only override of the release address is
+  ignored in your real state folder.
 - Windows binaries aren't code-signed yet, and Microsoft Defender's machine-learning rules have
   flagged a published build (`Behavior:Win32/Persistence.A!ml` and similar names: an unsigned,
   rarely seen program that registers itself to start at logon). When the downloaded program is

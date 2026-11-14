@@ -117,6 +117,12 @@ type Config struct {
 		AutoDetect   bool    `toml:"auto_detect"`    // treat known download/install commands as network jobs
 	} `toml:"network"`
 
+	// Update: a released guard replaces itself with newer releases (checksum, and signed build
+	// provenance when the GitHub CLI is signed in), at a moment when no job is running.
+	Update struct {
+		Auto bool `toml:"auto"`
+	} `toml:"update"`
+
 	Harvester struct { // band 4: something that only runs when nothing else wants the GPU (Salad, BOINC, ...)
 		Start       string  `toml:"start"`
 		Stop        string  `toml:"stop"`
@@ -169,6 +175,7 @@ func Defaults() Config {
 	c.Ladder.OverrunFactor = 1.25
 	c.Ladder.MaxLeaseMinutes = 24 * 60
 	c.Harvester.IdleSeconds = 180
+	c.Update.Auto = true
 	c.Network.MaxJobs = 1
 	c.Network.HumanBusyPct = 50
 	c.Network.PauseInGame = true

@@ -77,8 +77,18 @@ func StartDaemon() error {
 	if err != nil {
 		return err
 	}
+	return StartDaemonAt(exe)
+}
+
+// StartDaemonAt launches the guard from the program at exe (after an update, the path the new
+// version was put at: the running program's own path may name a file that is gone).
+func StartDaemonAt(exe string, env ...string) error {
+	var err error
 	for _, breakaway := range []bool{true, false} {
 		cmd := exec.Command(exe, "daemon")
+		if len(env) > 0 {
+			cmd.Env = append(os.Environ(), env...)
+		}
 		sysinfo.Detach(cmd, breakaway)
 		if err = cmd.Start(); err == nil {
 			_ = cmd.Process.Release()

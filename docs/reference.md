@@ -67,6 +67,7 @@ agents to change the policy.
 | `quote [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent] [--json]` | The market for a job, no side effects |
 | `bid <id> <5\|10>` · `extend <id> <minutes>` · `cancel <id>` | Change a job's tier, lease, or cancel it |
 | `status [--json]` | The human's state and reserve, the market, running and waiting jobs, budgets, plans |
+| `update [--check]` | Install the newest release now and restart the guard (`--check` only says whether there is one). The guard does this by itself unless `update.auto` is `false` |
 | `forecast [--json]` | What has been learned: the human's use and reserve per state, and what each known command is expected to need on its next run (RAM, VRAM, CPUs, GPU load, disk, network, minutes) |
 | `adopt <pid> [--gpu] [--name] [--minutes]` | Govern a process that's already running |
 | `plan "<what>" --when ... --minutes N [--gpu %] [--vram GB] [--ram GB]` · `plan --done [--project p]` | Announce or remove planned work |

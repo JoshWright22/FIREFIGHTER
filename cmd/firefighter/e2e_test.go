@@ -192,6 +192,11 @@ func (e *env) setFake(m map[string]any) {
 	if _, ok := m["foreground"]; !ok {
 		m["foreground"] = ""
 	}
+	// No real GPU either unless the test scripts one: a training job running on the test machine's
+	// card would read as the human gaming (CI machines have none).
+	if _, ok := m["gpus"]; !ok {
+		m["gpus"] = []any{}
+	}
 	// And scripted free RAM (half the machine): a test machine that is itself short of RAM (a build
 	// running beside the tests) must not make jobs wait or get suspended.
 	if _, ok := m["ram_avail_gb"]; !ok {

@@ -31,6 +31,7 @@ import (
 	"github.com/JoshWright22/firefighter/internal/setup"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
 	"github.com/JoshWright22/firefighter/internal/ui"
+	"github.com/JoshWright22/firefighter/internal/update"
 )
 
 var version = "dev"
@@ -49,6 +50,7 @@ Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your networ
   firefighter wait <id>          block until a job ends; prints its receipt and log tail
   firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
   firefighter forecast [--json]  what the human and each known command are expected to use, as learned
+  firefighter update [--check]   install the newest release now (the guard also does it by itself: update.auto)
   firefighter extend <id> <min>  lengthen a running job's lease
   firefighter cancel <id>        cancel a waiting or running job
   firefighter adopt <pid> [--gpu] [--name NAME] [--minutes N]   govern a process already running
@@ -101,6 +103,8 @@ func main() {
 		err = configCmd(args)
 	case "forecast":
 		err = forecast(args)
+	case "update":
+		err = updateCmd(args)
 	case "protocol":
 		fmt.Print(protocol)
 	case "setup", "install":
@@ -1100,6 +1104,13 @@ func daemonCmd(args []string) error {
 	if len(args) > 0 && args[0] == "--stop" {
 		return stopDaemon()
 	}
+	restarted := os.Getenv("FIREFIGHTER_RESTART") == "1" // started by the version before it, which is on its way out
+	for i := 0; restarted && i < 75; i++ {
+		if c, err := client.Connect0(); err != nil || c == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	if c, err := client.Connect0(); err == nil && c != nil {
 		// Not an error: service managers (systemd Restart=on-failure, launchd) would otherwise
 		// crash-loop when a CLI call already started the daemon on demand.
@@ -1111,12 +1122,65 @@ func daemonCmd(args []string) error {
 		// would act on their behalf with admin/root rights. It starts unelevated at your next logon.
 		return errors.New("the guard won't run as administrator/root (it would lend those rights to every agent); it starts normally at your next logon, or run any firefighter command from a normal terminal. Containers/CI: FIREFIGHTER_ALLOW_ELEVATED=1")
 	}
+	exe, _ := os.Executable() // now: after an update the running program's file is another one
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
 	unlock, err := daemon.Lock()
+	for i := 0; err != nil && restarted && i < 75; i++ {
+		time.Sleep(200 * time.Millisecond) // the version before this one is still letting go
+		unlock, err = daemon.Lock()
+	}
 	if err != nil {
 		return err
 	}
-	defer unlock()
-	return daemon.New(version).Serve()
+	d := daemon.New(version)
+	d.Exe = exe
+	err = d.Serve()
+	unlock()
+	if err == nil && d.Restarting() {
+		// Updated: come back as the new version. Under systemd or launchd a failed exit does that
+		// (Restart=on-failure, KeepAlive on unsuccessful exit); anywhere else the new guard is
+		// started from here.
+		if os.Getenv("INVOCATION_ID") != "" || os.Getenv("XPC_SERVICE_NAME") == "dev.firefighter" {
+			os.Exit(75)
+		}
+		return client.StartDaemonAt(exe, "FIREFIGHTER_RESTART=1")
+	}
+	return err
+}
+
+// updateCmd installs the newest release over this program and restarts the guard.
+func updateCmd(args []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	rel, err := update.Latest(ctx)
+	if err != nil {
+		return err
+	}
+	if version == "dev" {
+		return fmt.Errorf("this is a development build, which never replaces itself; the newest release is %s (install: https://github.com/%s#install)", rel.Tag, update.Repo)
+	}
+	if !update.Newer(rel.Tag, version) {
+		ui.Note("firefighter %s is the newest release", version)
+		return nil
+	}
+	if len(args) > 0 && args[0] == "--check" {
+		ui.Note("firefighter %s is out (this is %s): run `firefighter update`, or leave it to the guard", rel.Tag, version)
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	if err := update.Apply(ctx, rel, exe, func(s string) { ui.Note("%s", s) }); err != nil {
+		return err
+	}
+	_ = stopDaemon()
+	return client.StartDaemonAt(exe, "FIREFIGHTER_RESTART=1")
 }
 
 const protocol = `# firefighter pause/checkpoint protocol for long GPU loops (Python; same idea in any language)

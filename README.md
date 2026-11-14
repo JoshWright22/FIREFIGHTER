@@ -122,6 +122,8 @@ The full mechanics (the decision table, the preemption ladder, the market math) 
   VRAM admission learned from each command's past runs.
 - **Posted prices, no bidding war.** Spot (1/3 price), normal and urgent (2x) tiers against a daily
   budget, summed up in one ~60-token line per reply.
+- **It keeps itself current.** A released guard installs newer releases by itself, checked against
+  the release's checksums and signed build provenance, when no job is running.
 - **It learns instead of guessing.** Every run teaches it what that command needs (RAM, VRAM,
   CPUs, GPU load, disk, network), and your own use teaches it how much to keep free for you.
   `firefighter forecast` shows what it expects.

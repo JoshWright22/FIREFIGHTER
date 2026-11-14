@@ -1,8 +1,13 @@
 package sysinfo
 
 import (
+	"context"
 	"math"
+	"os/exec"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 // /proc/meminfo of the docker-desktop WSL distro on 2026-11-13, after a Docker image build: 24 GB
@@ -39,5 +44,20 @@ func TestDiskOfFindsTheDrive(t *testing.T) {
 	d, ok := DiskOf(t.TempDir())
 	if !ok || d.TotalGB <= 0 || d.FreeGB <= 0 || d.FreeGB > d.TotalGB || d.Path == "" {
 		t.Fatalf("DiskOf = %+v, %v", d, ok)
+	}
+}
+
+// A helper started with PrepareBackground really runs (on Windows it used to be created suspended
+// and never resumed: docker, gh and the harvester's commands sat there until their timeout).
+func TestBackgroundHelpersRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "echo ran")
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/c", "echo ran")
+	}
+	PrepareBackground(cmd)
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "ran") {
+		t.Fatalf("helper didn't run: %v %q", err, out)
 	}
 }

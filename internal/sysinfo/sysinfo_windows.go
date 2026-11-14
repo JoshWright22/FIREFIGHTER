@@ -473,7 +473,12 @@ func ExeName(n string) string {
 
 // PrepareBackground starts a helper (docker, the harvester) with no window; Windows has no terminal
 // foreground to lose.
-func PrepareBackground(cmd *exec.Cmd) { PrepareChild(cmd, cmd.Args) }
+func PrepareBackground(cmd *exec.Cmd) {
+	PrepareChild(cmd, cmd.Args)
+	// Not suspended: nobody calls Started for a helper (created suspended, docker, gh and the
+	// harvester's commands never ran and sat there until their timeout).
+	cmd.SysProcAttr.CreationFlags &^= windows.CREATE_SUSPENDED
+}
 
 var (
 	getSystemCpuSetInformation = kernel32.NewProc("GetSystemCpuSetInformation")

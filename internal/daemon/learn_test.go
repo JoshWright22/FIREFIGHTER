@@ -199,3 +199,27 @@ func TestGPUPackingUsesLearnedLoad(t *testing.T) {
 		t.Fatalf("heavy %s, light %s: want the light one packed and the heavy one waiting", heavy.State, light.State)
 	}
 }
+
+// Borg's reservation: a running job's unused request is held back in full for its first 300 s of
+// work, then decays towards what it really uses (+15%), halving every 10 minutes.
+func TestUnusedRequestDecaysTowardsRealUse(t *testing.T) {
+	d := testDaemon(t)
+	j := d.addRunning("asked for 12", 12, time.Now().Add(-time.Hour))
+	j.ramGB, j.peakRAM = 6, 6
+	j.workSec = 200
+	if got := d.reservedRAM(j); got != 6 {
+		t.Fatalf("during start-up the whole unused request is reserved: %.2f, want 6", got)
+	}
+	j.workSec = 300 + 600 // one half-life: 6.9 + (12-6.9)/2 = 9.45 -> 3.45 beyond its 6
+	if got := d.reservedRAM(j); got < 3.4 || got > 3.5 {
+		t.Fatalf("after 15 min: %.2f, want 3.45", got)
+	}
+	j.workSec = 300 + 6000
+	if got := d.reservedRAM(j); got < 0.89 || got > 0.92 {
+		t.Fatalf("settled: %.2f, want 0.9 (15%% of its 6 GB peak)", got)
+	}
+	j.ramGB, j.peakRAM = 13, 13 // it grew past its request: nothing unused, and no negative reserve
+	if got := d.reservedRAM(j); got != 0 {
+		t.Fatalf("over its request: %.2f, want 0", got)
+	}
+}
