@@ -406,8 +406,11 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 			t.NeedRAM = d.cfg.GPU.DefaultRAMGB
 		}
 	}
-	if most := d.snap.RAMTotalGB * (1 - d.cfg.Reserve.Away.RAMPct/100) * 0.9; most > 0 && t.NeedRAM > most {
-		t.NeedRAM = most // a need the machine can never free would hold the line forever
+	t.WantRAM = 0
+	if most := d.ramMost(); d.snap.RAMTotalGB > 0 && t.NeedRAM > most {
+		// A need the machine can never free would hold the line forever: the job starts when the
+		// machine is at its emptiest, and its status line says so.
+		t.WantRAM, t.NeedRAM = t.NeedRAM, most
 	}
 	if t.GPU {
 		t.NeedVRAM = math.Max(t.VRAMGB, h.PeakVRAM*d.cfg.GPU.VRAMMargin)
@@ -425,8 +428,8 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 			// machine that has reported a GPU and missed one reading isn't this case.)
 			t.NeedRAM += t.NeedVRAM
 			t.NeedVRAM = 0
-			if most := d.snap.RAMTotalGB * (1 - d.cfg.Reserve.Away.RAMPct/100) * 0.9; most > 0 && t.NeedRAM > most {
-				t.NeedRAM = most
+			if most := d.ramMost(); d.snap.RAMTotalGB > 0 && t.NeedRAM > most {
+				t.WantRAM, t.NeedRAM = t.NeedRAM, most
 			}
 		}
 		// No cap here: which card the job gets is decided at admission, where needOn clamps a
@@ -721,6 +724,12 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	if j.held != "" {
 		j.heldTotal += now.Sub(j.heldAt)
 	}
+	if j.oom && j.charged > 0 {
+		// The guard stopped it for the human's RAM and its work is lost: it isn't billed as well.
+		d.account(j.Project, now).Refund(d.cfg, j.charged)
+		logf("%s: its %.1f machine-minutes are refunded (stopped by the guard for RAM)", j.Name, j.charged)
+		j.charged = 0
+	}
 	rec := &Receipt{ID: id, Project: j.Project, Name: j.Name, Exit: exit, Outcome: outcome, Minutes: round1(ran),
 		Declared: j.Minutes, Waited: round1(waited), Charged: round1(j.charged), PeakVRAM: round1(j.peakVRAM),
 		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted",
@@ -868,7 +877,20 @@ func (d *Daemon) view(j *job) View {
 	return v
 }
 
+// blocker says what a waiting job waits for. A spot job (over budget, or --spot) waits for the same
+// things as any other, only behind in-budget jobs: its line names the real reason and adds that.
 func (d *Daemon) blocker(j *job) string {
+	why := d.blockerOf(j)
+	if j.WantRAM > 0 {
+		why += fmt.Sprintf(" (its past runs point to %.1f GB of RAM, more than this machine ever has free for a job: counted as %.1f GB; declare --ram to set it yourself)", j.WantRAM, j.NeedRAM)
+	}
+	if j.Band == policy.BandSpot {
+		why += " [spot: over budget or --spot, so it goes after in-budget jobs and is preempted first; it still runs whenever there is room]"
+	}
+	return why
+}
+
+func (d *Daemon) blockerOf(j *job) string {
 	now := time.Now()
 	ram, _ := d.headroom(now)
 	if why := d.blockedByHuman(j, now); why != "" {
@@ -924,8 +946,6 @@ func (d *Daemon) blockedByHuman(j *job, now time.Time) string {
 		return d.netWhy()
 	case j.GPU && d.gpuHeld():
 		return "the human needs the GPU (" + d.why() + ")"
-	case j.Band == policy.BandSpot:
-		return "spot band (over budget or --spot): runs on leftovers only"
 	}
 	return ""
 }

@@ -281,7 +281,7 @@ func extract(archive []byte, name, dst string) error {
 			return err
 		}
 		for _, f := range zr.File {
-			if f.Name == exeName() {
+			if isProgram(f.Name) {
 				r, err := f.Open()
 				if err != nil {
 					return err
@@ -302,10 +302,16 @@ func extract(archive []byte, name, dst string) error {
 		if err != nil {
 			return fmt.Errorf("%s has no %s", name, exeName())
 		}
-		if h.Typeflag == tar.TypeReg && h.Name == exeName() {
+		if h.Typeflag == tar.TypeReg && isProgram(h.Name) {
 			return write(tr)
 		}
 	}
+}
+
+// isProgram says whether an archive entry is the firefighter program. Any case: v0.1.0 and v0.2.0
+// were packed as FIREFIGHTER(.exe), after the repository's name.
+func isProgram(entry string) bool {
+	return !strings.ContainsAny(entry, `/\`) && strings.EqualFold(entry, exeName())
 }
 
 // runs says whether the program at path starts and reports the version expected.

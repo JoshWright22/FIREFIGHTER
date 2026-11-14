@@ -1,6 +1,9 @@
 version: 2
 builds:
   - main: ./cmd/firefighter
+    # Not the project's name (FIREFIGHTER, after the repository): install.sh and the self-updater
+    # look for a program called firefighter, and Linux and macOS tell the two apart.
+    binary: firefighter
     env: [CGO_ENABLED=0]
     goos: [windows, linux, darwin]
     goarch: [amd64, arm64]

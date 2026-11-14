@@ -1,6 +1,10 @@
 package update
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -105,5 +109,40 @@ func TestOverrideNeedsItsOwnHome(t *testing.T) {
 	t.Setenv("FIREFIGHTER_UPDATE_API", "http://127.0.0.1:1")
 	if base, test := api(); test || base != "https://api.github.com" {
 		t.Fatalf("api() = %s, %v: the real guard must only ask GitHub", base, test)
+	}
+}
+
+// v0.2.0's archives hold the program as FIREFIGHTER(.exe), after the repository's name, and the
+// updater looked for firefighter(.exe) by exact name: "has no firefighter.exe". Any case is found;
+// a file of that name in a folder is not.
+func TestExtractFindsTheProgramWhateverItsCase(t *testing.T) {
+	upper := strings.ToUpper(strings.TrimSuffix(exeName(), ".exe"))
+	if strings.HasSuffix(exeName(), ".exe") {
+		upper += ".exe"
+	}
+	var zb bytes.Buffer
+	zw := zip.NewWriter(&zb)
+	for name, body := range map[string]string{"LICENSE": "mit", "docs/" + exeName(): "decoy", upper: "the program"} {
+		w, _ := zw.Create(name)
+		_, _ = w.Write([]byte(body))
+	}
+	_ = zw.Close()
+	var tb bytes.Buffer
+	gz := gzip.NewWriter(&tb)
+	tw := tar.NewWriter(gz)
+	for _, f := range [][2]string{{"README.md", "readme"}, {upper, "the program"}} {
+		_ = tw.WriteHeader(&tar.Header{Name: f[0], Mode: 0o755, Size: int64(len(f[1])), Typeflag: tar.TypeReg})
+		_, _ = tw.Write([]byte(f[1]))
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+	for name, archive := range map[string][]byte{"x.zip": zb.Bytes(), "x.tar.gz": tb.Bytes()} {
+		dst := filepath.Join(t.TempDir(), exeName())
+		if err := extract(archive, name, dst); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if b, _ := os.ReadFile(dst); string(b) != "the program" {
+			t.Fatalf("%s: extracted %q", name, b)
+		}
 	}
 }

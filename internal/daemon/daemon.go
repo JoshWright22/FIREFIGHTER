@@ -120,6 +120,7 @@ type Daemon struct {
 	foreign       map[string]float64   // non-job GPU users -> %
 	outSince      map[string]time.Time // when each busy non-job GPU user was first seen busy
 	lastKill      time.Time            // critical-RAM kills wait for the last one to free its memory
+	ramBase       float64              // the least RAM in use outside jobs lately: the machine never frees it
 	busyHist      [3]float64           // the last readings of non-job CPU use: the reserve follows the least (a one-tick spike isn't demand)
 	busyN         int
 	ramCrit       time.Time  // since when RAM has been critically low
@@ -675,6 +676,10 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		}
 		if j.overrun {
 			price *= 2
+		} else if j.Band == policy.BandSpot && !j.Spot && !j.adopted {
+			// Its project ran out of budget mid-run: it is treated as spot from then on (preempted
+			// first), so it pays the spot price from then on too.
+			price *= policy.SpotPrice
 		}
 		// The same working time feeds what the command is expected to use next time.
 		j.workSec += dt.Seconds()
@@ -687,6 +692,7 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		a := d.account(j.Project, now)
 		before := a.Charged
 		a.Charge(c, gpu, vram, m*j.ramGB/capy.RAMGB, m*j.cpuNow/capy.CPUs, price)
+		a.LimitDebt(c, c.Allowance(j.Project))
 		j.charged += a.Charged - before
 	}
 	// What the human and every other program (Docker, games, apps) use: everything not a job.
@@ -722,6 +728,21 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		if !netJob {
 			// ~10 s smoothing: within the 30 s measuring gap it settles to ~95% of the real rate.
 			d.netHuman += (1 - math.Exp(-dt.Seconds()/10)) * (d.snap.NetMbps - d.netHuman)
+		}
+	}
+	// The least RAM in use outside jobs lately (the OS, the human's always-open programs): what the
+	// machine never frees for a job. Like a card's floor, it drifts up over ~6 h. The WSL/Docker
+	// VM is left out: its cache is reclaimed on demand.
+	if d.snap.RAMTotalGB > 0 && dt > 0 {
+		jobRAM := 0.0
+		for _, j := range d.running() {
+			jobRAM += j.ramGB
+		}
+		base := math.Max(0, d.snap.RAMTotalGB-d.snap.RAMAvailGB-jobRAM-d.vm.HostGB)
+		if d.ramBase == 0 || base < d.ramBase {
+			d.ramBase = base
+		} else {
+			d.ramBase += (base - d.ramBase) * math.Min(1, dt.Hours()/6)
 		}
 	}
 	// A reading with fewer GPUs than usual is a vendor tool missing a beat, not a card removed:
@@ -862,9 +883,11 @@ func (d *Daemon) account(project string, now time.Time) *policy.Account {
 	// A project in its first day refills from the pool all new projects share, so a stream of
 	// invented names can't each earn the full daily rate.
 	if !a.Created.IsZero() && now.Sub(a.Created) < 24*time.Hour && len(d.st.Accounts) > 1 {
-		if gain := a.Bucket - before; gain > 0 {
+		// Only what lifts it above zero: paying off a debt mints nothing, and a project whose first
+		// job overdrew it must not sit frozen in debt for a day because the pool is empty.
+		if gain := a.Bucket - math.Max(before, 0); gain > 0 {
 			got := math.Min(gain, d.newcomers(now))
-			a.Bucket = before + got
+			a.Bucket -= gain - got
 			d.st.Newcomers -= got
 		}
 	}
@@ -1409,6 +1432,19 @@ func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 		}
 	}
 	return
+}
+
+// ramMost is the most RAM a job can ever count on: the machine's, less what is always in use
+// outside jobs, less the reserve when the human is away, less the admission margin. A need above
+// it could never be met, so needs are cut to it (fillNeeds) and the job starts when the machine is
+// at its emptiest.
+func (d *Daemon) ramMost() float64 {
+	total := d.snap.RAMTotalGB
+	most := total * (1 - d.cfg.Reserve.Away.RAMPct/100) * 0.9
+	if seen := total*(1-d.cfg.Reserve.Away.RAMPct/100) - d.ramBase - d.ramMargin(); d.ramBase > 0 && seen < most {
+		most = seen
+	}
+	return math.Max(most, math.Min(1, total/4))
 }
 
 // reservedRAM is the RAM still held back for a granted or running job beyond what it uses now.

@@ -276,3 +276,20 @@ func TestReserveFollowsLoadOnlyUpToItsCap(t *testing.T) {
 		t.Fatalf("uncapped reserve = %v, want 15", r.CPUs)
 	}
 }
+
+// A project never owes more than a day of its allowance, and a refund undoes a charge.
+func TestDebtLimitAndRefund(t *testing.T) {
+	c := config.Defaults() // karma, 240 a day
+	a := &Account{Bucket: 100}
+	a.Charge(c, 600, 0, 0, 0, 1) // one long run priced at 600
+	a.LimitDebt(c, 240)
+	if a.Bucket != -240 {
+		t.Fatalf("debt = %.0f, want it held at -240 (one day)", a.Bucket)
+	}
+	a = &Account{Bucket: 100}
+	a.Charge(c, 18, 0, 0, 0, 1)
+	a.Refund(c, 18)
+	if a.Bucket != 100 || a.Charged != 0 || a.Pass != 0 {
+		t.Fatalf("after a refund: %+v", a)
+	}
+}

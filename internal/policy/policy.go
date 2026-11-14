@@ -49,6 +49,7 @@ type Ticket struct {
 
 	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: declared, or learned from the command's past runs (usage.PeakNeed)
 	NeedRAM     float64 `json:"need_ram_gb"`
+	WantRAM     float64 `json:"want_ram_gb,omitempty"`  // what its history pointed to, when that was more than the machine can give (NeedRAM is then the cut value)
 	NeedCPU     float64 `json:"need_cpus,omitempty"`    // CPUs it is expected to keep busy (its past runs' mean; 0 unknown)
 	NeedDisk    float64 `json:"need_disk_gb,omitempty"` // GB it is expected to write
 	NeedNet     float64 `json:"need_net_mbps,omitempty"`
@@ -139,6 +140,30 @@ func (a *Account) Charge(c config.Config, gpu, vram, ram, cpu, price float64) {
 	if c.Budget.Policy == "karma" {
 		a.Bucket -= base * price
 	}
+}
+
+// Refund takes back a charge (a job the guard itself had to stop for the human's RAM lost its work:
+// it isn't billed for it too).
+func (a *Account) Refund(c config.Config, amount float64) {
+	if amount <= 0 {
+		return
+	}
+	a.Charged = math.Max(0, a.Charged-amount)
+	a.Pass = math.Max(0, a.Pass-amount)
+	a.UsedDay = math.Max(0, a.UsedDay-amount)
+	if c.Budget.Policy == "karma" {
+		a.Bucket += amount
+	}
+}
+
+// LimitDebt keeps a project from owing more than one day of its allowance: however a long run
+// was priced, the project is back in budget within a day of refill.
+func (a *Account) LimitDebt(c config.Config, allowance float64) {
+	if allowance <= 0 {
+		return
+	}
+	a.Bucket = math.Max(a.Bucket, -allowance)
+	a.UsedDay = math.Min(a.UsedDay, 2*allowance)
 }
 
 // Price of a bid: 5 is list price, 10 costs double, 1 costs a fifth (Tycoon-style pay per use).

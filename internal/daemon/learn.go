@@ -129,8 +129,10 @@ func (d *Daemon) withLearnedReserve(c config.Config, now time.Time) config.Confi
 	return c
 }
 
-// projectPrior is the cold-start need for a command never run before: the 90th percentile of what
-// the project's other commands of the same kind (GPU or CPU) need, when at least two are known.
+// projectPrior is the cold-start need for a command never run before: the median of what the
+// project's other commands of the same kind (GPU or CPU) need, when at least two are known (the
+// lower of the two middle ones: one heavy sibling must not make every new command look heavy; its
+// own first run, its declaration and the RAM ladder cover the rest).
 // 3Sigma (EuroSys 2018) predicts from several features of a job (user, program) and uses whichever
 // has history; here the levels are the command, then its project.
 func (d *Daemon) projectPrior(project string, gpu bool) (ramGB, vramGB float64, ok bool) {
@@ -145,11 +147,11 @@ func (d *Daemon) projectPrior(project string, gpu bool) (ramGB, vramGB float64, 
 	if len(rams) < 2 {
 		return 0, 0, false
 	}
-	p90 := func(v []float64) float64 {
+	median := func(v []float64) float64 {
 		sort.Float64s(v)
-		return v[int(math.Ceil(0.9*float64(len(v))))-1]
+		return v[(len(v)-1)/2]
 	}
-	return p90(rams), p90(vrams), true
+	return median(rams), median(vrams), true
 }
 
 // jobCPUs is the CPUs the running and granted jobs are expected to keep busy: for each, the larger

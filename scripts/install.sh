@@ -56,6 +56,8 @@ else
     fi
   fi
   tar -xzf "$tmp/$name" -C "$tmp"
+  # v0.1.0 and v0.2.0 packed the program as FIREFIGHTER (the repository's name).
+  [ -f "$tmp/firefighter" ] || { [ -f "$tmp/FIREFIGHTER" ] && mv "$tmp/FIREFIGHTER" "$tmp/firefighter"; }
   put "$tmp/firefighter"
 fi
 

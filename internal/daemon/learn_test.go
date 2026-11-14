@@ -76,8 +76,9 @@ func TestNewCommandStartsFromItsProjectsHistory(t *testing.T) {
 	d.finishRun("lint", false, 0.3, 0, 1, 0, 0, false)
 	tk := policy.Ticket{Project: "p", CmdHash: "train-c", GPU: true}
 	d.fillNeeds(&tk)
-	if tk.NeedRAM < 8*1.2 || tk.NeedRAM > 8*1.2*1.06 || tk.NeedVRAM < 6*1.2 || tk.NeedVRAM > 6*1.2*1.06 {
-		t.Fatalf("new GPU command: need %.1f GB RAM / %.1f GB VRAM, want ~9.6 / ~7.2 (the project's GPU commands)", tk.NeedRAM, tk.NeedVRAM)
+	// Two siblings: the lower one (6 GB RAM, 4 GB VRAM, x1.2), not the heaviest.
+	if tk.NeedRAM < 6*1.2 || tk.NeedRAM > 6*1.2*1.06 || tk.NeedVRAM < 4*1.2 || tk.NeedVRAM > 4*1.2*1.06 {
+		t.Fatalf("new GPU command: need %.1f GB RAM / %.1f GB VRAM, want ~7.2 / ~4.8 (the median of the project's GPU commands)", tk.NeedRAM, tk.NeedVRAM)
 	}
 	other := policy.Ticket{Project: "elsewhere", CmdHash: "x", GPU: true}
 	d.fillNeeds(&other)
@@ -221,5 +222,93 @@ func TestUnusedRequestDecaysTowardsRealUse(t *testing.T) {
 	j.ramGB, j.peakRAM = 13, 13 // it grew past its request: nothing unused, and no negative reserve
 	if got := d.reservedRAM(j); got != 0 {
 		t.Fatalf("over its request: %.2f, want 0", got)
+	}
+}
+
+// 2026-11-14: a 9 GB training run waited four hours on an idle machine because its need had been
+// set to 26.7 GB, more than the PC ever has free, and status only said "spot band". A need is never
+// counted above what the machine can give, the status line says what happened, and being out of
+// budget never keeps a job off spare capacity.
+func TestNeedIsCappedAtWhatTheMachineCanGiveAndSpotStillRuns(t *testing.T) {
+	d := testDaemon(t)
+	d.user = "away"
+	d.res = policy.ReserveCtl{}
+	d.res.Update(d.cfg, "away", 0, 16, time.Now())
+	d.ramBase = 9 // the OS and the human's open programs never go under 9 GB
+	// One heavy run of this very command: 22 GB peak -> 26.4 GB wanted.
+	j := d.addWaiting("ctl-port", 1, 90, time.Minute)
+	d.finishRun("ctl-port", true, 22, 2, 2, 60, 0, false)
+	d.fillNeeds(j.Ticket)
+	most := 32*0.95 - 9 - 1.6 // 19.8 GB: total less the away reserve, the floor in use, the margin
+	if j.NeedRAM < most-0.01 || j.NeedRAM > most+0.01 || j.WantRAM < 26 {
+		t.Fatalf("need %.1f GB (wanted %.1f): want it cut to %.1f, the most the machine frees", j.NeedRAM, j.WantRAM, most)
+	}
+	j.Band = policy.BandSpot // its project is out of budget
+	d.snap.RAMAvailGB = 18
+	d.admit(time.Now())
+	if j.State != "waiting" {
+		t.Fatalf("18 GB free can't hold a %.1f GB need plus the margin", j.NeedRAM)
+	}
+	why := d.blocker(j)
+	for _, want := range []string{"needs 19.8 GB RAM", "its past runs point to", "more than this machine ever has free", "declare --ram", "it still runs whenever there is room"} {
+		if !strings.Contains(why, want) {
+			t.Fatalf("status line lacks %q:\n%s", want, why)
+		}
+	}
+	if strings.HasPrefix(why, "spot") {
+		t.Fatalf("the budget is not the reason it waits:\n%s", why)
+	}
+	// The machine at its emptiest (about 23 GB free = 32 - 9): it starts, out of budget or not.
+	d.snap.RAMAvailGB = 23.5
+	d.admit(time.Now())
+	if j.State != "granted" {
+		t.Fatalf("away, idle GPU, room for it: an out-of-budget job must start: %s", d.blocker(j))
+	}
+	// A command with no history is counted at what it declares.
+	k := policy.Ticket{Project: "p", CmdHash: "other", GPU: true, RAMGB: 10}
+	d.fillNeeds(&k)
+	if k.NeedRAM != 10 || k.WantRAM != 0 {
+		t.Fatalf("declared 10 GB: need %.1f (want %.1f)", k.NeedRAM, k.WantRAM)
+	}
+}
+
+// A project in debt on its first day gets its refill even when the pool for new projects is empty:
+// paying off a debt mints nothing. (nanoTSFM sat at -358.8 for hours on 2026-11-14.) Only what
+// would lift it above zero comes out of the pool.
+func TestDebtRefillsOnTheFirstDay(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	created := now.Add(-10 * time.Hour)
+	d.st.Accounts["nanoTSFM"] = &policy.Account{Bucket: -100, BucketAt: now.Add(-2 * time.Hour), DecayAt: now, Created: created}
+	d.st.Accounts["other"] = &policy.Account{Bucket: 50, BucketAt: now, DecayAt: now, Created: created}
+	d.st.Newcomers, d.st.NewcomersAt = 0, now // the shared pool is spent
+	a := d.account("nanoTSFM", now)
+	if a.Bucket < -80.1 || a.Bucket > -79.9 {
+		t.Fatalf("after 2 h at 10/h the debt should be -80, got %.1f", a.Bucket)
+	}
+	// Almost paid off, 2 more hours, pool still empty: it reaches zero and stops there.
+	a.Bucket, a.BucketAt = -5, now.Add(-2*time.Hour)
+	if a = d.account("nanoTSFM", now); a.Bucket != 0 {
+		t.Fatalf("with the pool empty a first-day project refills to 0, not past it: %.1f", a.Bucket)
+	}
+	d.st.Newcomers = 8
+	a.Bucket, a.BucketAt = -5, now.Add(-2*time.Hour)
+	if a = d.account("nanoTSFM", now); a.Bucket < 7.9 || a.Bucket > 8.1 || d.st.Newcomers > 0.1 {
+		t.Fatalf("above zero it draws on the pool (8 left): bucket %.1f, pool %.1f", a.Bucket, d.st.Newcomers)
+	}
+}
+
+// A job the guard had to stop for the human's RAM is not billed for the work it lost.
+func TestStoppedForRAMIsRefunded(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addRunning("victim", 9, now.Add(-6*time.Minute))
+	a := d.account("p", now)
+	before := a.Bucket
+	a.Charge(d.cfg, 17.8, 0, 0, 0, 1)
+	j.charged, j.oom, j.killedAt, j.reason = 17.8, true, now, "RAM critically low"
+	d.finish(j.ID, 137, "evicted", "")
+	if got := d.account("p", now).Bucket; got < before-0.01 || j.receipt.Charged != 0 {
+		t.Fatalf("budget %.1f (was %.1f), receipt charged %.1f: the charge should be refunded", got, before, j.receipt.Charged)
 	}
 }
