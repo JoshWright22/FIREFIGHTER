@@ -48,6 +48,7 @@ Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your networ
   firefighter bid <id> <1-10>    change a waiting job's tier (5 normal, 10 urgent)
   firefighter wait <id>          block until a job ends; prints its receipt and log tail
   firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
+  firefighter forecast [--json]  what the human and each known command are expected to use, as learned
   firefighter extend <id> <min>  lengthen a running job's lease
   firefighter cancel <id>        cancel a waiting or running job
   firefighter adopt <pid> [--gpu] [--name NAME] [--minutes N]   govern a process already running
@@ -98,6 +99,8 @@ func main() {
 		err = plan(args)
 	case "config":
 		err = configCmd(args)
+	case "forecast":
+		err = forecast(args)
 	case "protocol":
 		fmt.Print(protocol)
 	case "setup", "install":
@@ -691,6 +694,14 @@ func status(args []string) error {
 	p := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 	p("%s  human: %s %s", ui.Bold(ui.Paint(ui.Hot, "FIREFIGHTER")), ui.UserLabel(s.User), s.UserWhy)
 	p("  reserve for the human: %.0f CPUs, %.0f%% RAM, %.1f GB VRAM", s.Reserve["cpus"], s.Reserve["ram_pct"], s.Reserve["vram_gb"])
+	if s.Forecast != nil {
+		for _, h := range s.Forecast.Human {
+			if h.Now && h.Learned {
+				p("  (learned from %.1f days of your use while %s: %d CPUs, %.0f%% RAM, %.1f GB VRAM; configured %d, %.0f%%, %.1f GB. Details: firefighter forecast)",
+					h.Days, h.State, h.CPUs, h.RAMPct, h.VRAMGB, h.SetCPUs, h.SetRAMPct, h.SetVRAMGB)
+			}
+		}
+	}
 	m := s.Machine
 	p("  CPU %.1f/%.0f busy (%.1f human+other)  RAM %.1f/%.1f GB free  GPU %.0f%%  VRAM %.1f/%.1f GB",
 		m["cpu_busy"], m["cpus"], m["user_cpus"], m["ram_avail_gb"], m["ram_total_gb"], m["gpu_util"], m["vram_used_gb"], m["vram_total_gb"])
@@ -748,6 +759,53 @@ func status(args []string) error {
 		for _, pl := range s.Plans {
 			p("  %s %s: %s, %s, ~%.0f min", pl.ID, pl.Project, pl.What, pl.When, pl.Minutes)
 		}
+	}
+	return nil
+}
+
+// forecast prints what firefighter has learned: the human's use per state (and the reserve that
+// follows from it), and each command's expected need on its next run.
+func forecast(args []string) error {
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	s, err := c.Status()
+	if err != nil {
+		return err
+	}
+	f := s.Forecast
+	if f == nil {
+		f = &daemon.Forecast{}
+	}
+	if len(args) > 0 && args[0] == "--json" {
+		b, _ := json.MarshalIndent(f, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	p := func(format string, a ...any) { fmt.Printf(format+"\n", a...) }
+	p("%s", ui.Paint(ui.Hot, "the human, by state (reserve in force; learned after a day of history in that state)"))
+	p("  %-8s %-10s %-24s %-24s %s", "state", "history", "reserve", "configured", "seen: CPUs P95/mean, RAM and VRAM rise in 5 min (P95), net P95")
+	for _, h := range f.Human {
+		mark, src := " ", "configured"
+		if h.Now {
+			mark = "*"
+		}
+		if h.Learned {
+			src = "learned"
+		}
+		p("%s %-8s %-10s %-24s %-24s %.1f/%.1f CPUs, +%.1f GB RAM, +%.1f GB VRAM, %.1f Mbps  (%s)", mark, h.State, fmt.Sprintf("%.1f days", h.Days),
+			fmt.Sprintf("%d CPUs %.0f%% RAM %.1f GB", h.CPUs, h.RAMPct, h.VRAMGB), fmt.Sprintf("%d CPUs %.0f%% RAM %.1f GB", h.SetCPUs, h.SetRAMPct, h.SetVRAMGB),
+			h.CPUP95, h.CPUMean, h.RAMRiseGB, h.VRAMRiseGB, h.NetMbps, src)
+	}
+	p("\n%s", ui.Paint(ui.Hot, "commands (expected on the next run; * = enough runs that history outranks the declaration)"))
+	p("  %-14s %-34s %4s %8s %8s %6s %5s %8s %8s %8s", "project", "job", "runs", "RAM GB", "VRAM GB", "CPUs", "GPU%", "disk GB", "net Mbps", "minutes")
+	for _, k := range f.Commands {
+		warm := " "
+		if k.Warm {
+			warm = "*"
+		}
+		p("%s %-14s %-34s %4d %8.1f %8.1f %6.1f %5.0f %8.1f %8.1f %8.1f", warm, trunc(k.Project, 14), trunc(k.Name, 34), k.Runs, k.RAMGB, k.VRAMGB, k.CPUs, k.GPUPct, k.DiskGB, k.NetMbps, k.Minutes)
 	}
 	return nil
 }

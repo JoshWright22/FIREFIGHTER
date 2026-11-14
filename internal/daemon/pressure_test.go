@@ -19,7 +19,7 @@ func testDaemon(t *testing.T) *Daemon {
 	home := t.TempDir()
 	t.Setenv("FIREFIGHTER_HOME", home)
 	t.Setenv("FIREFIGHTER_FAKE_FILE", filepath.Join(home, "fake.json")) // never the real WSL VM
-	if err := os.WriteFile(filepath.Join(home, "fake.json"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "fake.json"), []byte(`{"ram_avail_gb": 17}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	d := &Daemon{jobs: map[string]*job{}, st: load(), notify: make(chan struct{}), user: "present",

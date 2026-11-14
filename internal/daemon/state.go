@@ -8,6 +8,7 @@ import (
 
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/policy"
+	"github.com/JoshWright22/firefighter/internal/usage"
 )
 
 // History is what firefighter learned about one command in one project: how its runtime compares to
@@ -18,7 +19,28 @@ type History struct {
 	PeakVRAM float64   `json:"peak_vram_gb"`
 	PeakRAM  float64   `json:"peak_ram_gb"`
 	Runs     int       `json:"runs"`
-	Last     time.Time `json:"last,omitempty"` // last run, for pruning
+	Last     time.Time `json:"last,omitempty"`    // last run, for pruning
+	Name     string    `json:"name,omitempty"`    // the job's name at its last run, for `firefighter forecast`
+	GPUJob   bool      `json:"gpu_job,omitempty"` // it ran as a GPU job
+	// One sample per finished run, older runs fading (usage.AddRun): peaks for what a job must not
+	// run out of, means for what it can be throttled on.
+	RAM  *usage.Hist `json:"ram,omitempty"`      // peak RAM, GB
+	VRAM *usage.Hist `json:"vram,omitempty"`     // peak VRAM, GB
+	CPU  *usage.Hist `json:"cpu,omitempty"`      // mean CPUs busy
+	GPU  *usage.Hist `json:"gpu_util,omitempty"` // mean GPU utilization, %
+	Disk *usage.Hist `json:"disk,omitempty"`     // GB written
+	Net  *usage.Hist `json:"net,omitempty"`      // mean Mbps (network jobs)
+	Mins *usage.Hist `json:"minutes,omitempty"`  // minutes worked
+}
+
+// HumanUse is what the human (and every program that isn't a firefighter job) has been seen to use
+// in one user state: the basis of that state's learned reserve. Samples are taken every 5 s and
+// fade with a 7-day half-life.
+type HumanUse struct {
+	CPU      *usage.Hist `json:"cpu"`       // CPUs busy
+	RAMRise  *usage.Hist `json:"ram_rise"`  // GB their RAM use rose within 5 minutes
+	VRAMRise *usage.Hist `json:"vram_rise"` // GB their VRAM use rose within 5 minutes
+	Net      *usage.Hist `json:"net"`       // Mbps, while no network job runs
 }
 
 // Receipt is what an agent gets back when its job ends.
@@ -82,9 +104,11 @@ type saved struct {
 	// Open: running jobs by id, so their clients can re-register them after a restart.
 	Open map[string]OpenJob `json:"open,omitempty"`
 	// Newcomers: the budget never-seen projects draw from, refilled daily (guard.new_project_minutes).
-	Newcomers   float64   `json:"newcomers"`
-	NetLinkMbps float64   `json:"net_link_mbps,omitempty"` // the network link's learned size, kept across restarts
-	NewcomersAt time.Time `json:"newcomers_at"`
+	Newcomers   float64 `json:"newcomers"`
+	NetLinkMbps float64 `json:"net_link_mbps,omitempty"` // the network link's learned size, kept across restarts
+	// Human: the human's use per user state (away, present, active, game), for the learned reserve.
+	Human       map[string]*HumanUse `json:"human,omitempty"`
+	NewcomersAt time.Time            `json:"newcomers_at"`
 	// Occupancy is how taken the GPU usually is, per hour of the week (0-1), for quotes.
 	Occupancy  []float64 `json:"occupancy"`
 	OccSamples []float64 `json:"occupancy_hours"` // hours of observation behind each slot

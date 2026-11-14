@@ -72,6 +72,7 @@ type Config struct {
 		RAMMarginPct      float64  `toml:"ram_margin_pct"`      // a job starts only if this share of RAM stays free beyond the reserve and its need
 		DiskFreeGB        float64  `toml:"disk_free_gb"`        // free space kept on each drive jobs use (at most a tenth of the drive)
 		ReclaimVMCache    bool     `toml:"reclaim_vm_cache"`    // short of RAM: have the WSL2/Docker VM drop its file cache before any job is touched
+		Learn             bool     `toml:"learn"`               // size each state's reserve from what the human is seen to use (the values above bound it)
 	} `toml:"reserve"`
 
 	Ladder struct {
@@ -156,6 +157,7 @@ func Defaults() Config {
 	c.Reserve.RAMMarginPct = 5
 	c.Reserve.DiskFreeGB = 10
 	c.Reserve.ReclaimVMCache = true
+	c.Reserve.Learn = true
 	c.Reserve.ExclusiveApps = []string{"gamescope"} // Steam's game compositor on Linux
 	c.Reserve.IgnoreGPUApps = []string{"dwm.exe", "csrss.exe", "explorer.exe", "windowserver", "xorg", "gnome-shell", "kwin_wayland", "kwin_x11", "firefighter.exe", "firefighter"}
 	c.Ladder.PauseAckSeconds = 10

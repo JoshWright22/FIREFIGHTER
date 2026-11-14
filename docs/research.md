@@ -141,6 +141,55 @@ Jobs declare `--evict never|graceful|force` (gpubroker [S]). `never` jobs are ad
 
 Do changes 1 to 3 together if possible. Change 2 alone moves contention from bids to fair share, and without the reserve controller and VRAM history the fairer order still admits jobs the machine can't hold [I].
 
+## Learning usage
+
+Added 2026-11-13. The owner's requirement: FIREFIGHTER "needs to dynamically understand how much
+usage each agent and user will use while using the computer and allocate accordingly", for disk,
+network, GPU, CPU and memory. The full survey, with each algorithm's formula, constants and source
+section, is in [usage-prediction.md](usage-prediction.md). Its finding in one line: systems that
+share machines well predict the background job from its own past runs, and protect the primary
+user with a measured buffer that is taken back fast, not with a long-range forecast.
+
+What FIREFIGHTER now implements, and the algorithm each part comes from:
+
+| Part | Algorithm, as published | Source | In FIREFIGHTER |
+|---|---|---|---|
+| The data structure | Per-window histograms with exponentially decaying weights, w[τ] = 2^(−τ/t½); t½ = 12 h for CPU, 48 h for memory | Autopilot, Rzadca et al., EuroSys 2020, §3.2.1-3.2.2, Eq. 1 ([PDF](https://homepages.dcc.ufmg.br/~cunha/teaching/20221/cloudcomp/readings/10-readings/rzadca20autopilot.pdf)); bucket growth 5% from Kubernetes VPA `aggregations_config.go` ([code](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/pkg/recommender/model/aggregations_config.go)) | `usage.Hist`: 5% buckets; one sample per run, fading by half every 8 runs (peaks) or 2 runs (means): the 4:1 ratio in runs, which is this project's translation |
+| Memory need | Memory histograms hold only the window's peak; limit = S_p98 (or S_max for jobs that can't tolerate an OOM), + 10-15% margin | Autopilot §3.2.2 | `usage.PeakNeed`: highest peak × 1.2 for the first two runs, then P98 of the peaks × 1.15, for RAM, VRAM and disk written |
+| CPU need | Batch CPU limit = S_avg = Σw·s̄/Σw, "if a job tolerates CPU throttling, the most efficient limit is the job's average load" | Autopilot §3.2.2, Eq. 2 | `usage.RateNeed`: decayed mean, for CPUs, GPU load and network |
+| Bursty use | Load-adjusted percentile: h[k] = b[k]·Σw·s[k], percentile of h (covers a share of the work, not of the time) | Autopilot Eq. 3, Fig. 2 | `Hist.LoadPercentile`: the human's CPU reserve is its P95 + 2 idle cores |
+| Young jobs | Tasks with fewer than min_num_samples are counted at their limit | Take it to the limit, Bashir et al., EuroSys 2021, §4 ([PDF](https://storage.googleapis.com/gweb-research2023-media/pubtools/6074.pdf)) | Under 3 runs the declaration is a floor |
+| After an OOM | New sample = max(base × 1.2, base + 100 MiB) | VPA `RecordOOM`, `oom-bump-up-ratio`, `oom-min-bump-up-bytes` ([flags](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/flags.md)) | `usage.OOMBump` on a run stopped for RAM |
+| Little history | confidence = min(lifespan in days, samples per day); bounds widen by (1 + 1/confidence) | VPA `estimator.go`, `getConfidence` | A state's reserve is learned only after one day of samples; before that the configured value is used |
+| Never-seen jobs | Keep histograms per job feature and predict from one that has history | 3Sigma, Park et al., EuroSys 2018, §4.1 ([PDF](https://www.pdl.cmu.edu/PDL-FTP/CloudComputing/eurosys18-final49.pdf)) | `daemon.projectPrior`: P90 of the project's commands of the same kind |
+| CPU oversubscription | Place a VM only if Σalloc ≤ 125% and Σ predicted P95 ≤ 100% | Resource Central, Cortez et al., SOSP 2017, Algorithm 1 ([PDF](https://www.microsoft.com/en-us/research/wp-content/uploads/2017/10/Resource-Central-SOSP17.pdf)) | `daemon.cpuRoom`: jobs' learned mean CPUs may reach 125% of the CPUs outside the reserve |
+| GPU packing | Pack two jobs on a GPU only when their use fits together; undo it if throughput drops | Gandiva, Xiao et al., OSDI 2018, §5 ([PDF](https://www.usenix.org/system/files/osdi18-xiao.pdf)) | A job with a learned GPU load joins a busy card only if the sum stays under 110% |
+| Idle-core buffer | Keep B idle cores; shrink batch work when fewer are idle, grow it when more are | PerfIso, Iorgulescu et al., ATC 2018 | The + 2 cores on the learned and the instant CPU reserve (already there) |
+| Censoring | Ignore samples taken while the primary was saturated: they understate its demand | SmartHarvest, Wang et al., EuroSys 2021 (read through a later paper that reuses it) | The human's CPU use isn't recorded while every CPU is busy |
+| Reclaimable memory | Tell working set from cache; reclaim before killing | TMO/Senpai (ASPLOS 2022), ESX ballooning (OSDI 2002), WSL2 free page reporting | `daemon.reclaimVM`, `daemon.hold` (see "When RAM runs short" in how-it-works.md) |
+
+Choices that are this project's and not from a paper: half-lives counted in runs (8 and 2), the
+7-day half-life of the human's history, the 5-minute horizon of the RAM and VRAM "rise", the
+0.5-3× bounds on a learned reserve, the 1.5× cut of an over-declaration, and the 110% GPU packing
+line. They should be tuned from `firefighter forecast` and the daemon log.
+
+Surveyed and not built yet, in the order they would pay off:
+
+1. **Read per-job peak counters instead of sampling.** The one study of coding agents (AgentCgroup,
+   arXiv 2602.09345) measured memory bursts of 2-4 GB lasting 1-2 s, up to 15.4× the average. Two
+   samples a second can miss them; Windows keeps `PeakWorkingSetSize` per process and Linux cgroup
+   v2 has `memory.peak`.
+2. **An hour-of-week profile of the human**, so a long job is admitted on the hours it will span,
+   not just on now (Ren et al., HPDC 2006: the same time window over recent weekdays predicted
+   10-hour availability with over 86% accuracy). Today only GPU occupancy has one, for quotes.
+3. **A lower bound on how long the human stays away** before starting a job that can't be paused
+   (Brevik, Nurmi and Wolski's binomial bound: correct for 96% of machines at a 95% target).
+4. **Network and disk I/O by delay, not by rate**: LEDBAT-style backoff (RFC 6817, target 100 ms)
+   for downloads, and IOCost-style latency targets for disk. Windows BITS already does the first.
+5. **Machine-level peak prediction** for RAM, max(mean + 3σ of the jobs' total, Σ per-job P80),
+   which Google found gives 16% more usable capacity than summing limits. RAM misses are costly on
+   a desktop, so FIREFIGHTER still sums each job's full need.
+
 ## Conclusion
 
 Three findings change how FIREFIGHTER should be framed. First, the user's reserve is a *control loop*, not a setting. PerfIso's result that rate caps fail while a resized idle-core buffer works on Windows Job Objects is the strongest single piece of evidence here, and it argues against both the static 2-core reserve and the earlier idea of leaning on CPU-rate caps. Second, FIREFIGHTER's market problem is economic, not algorithmic. Any scheme where urgency is free collapses to everyone claiming maximum urgency, and studies of LLM bidders suggest agents will find that equilibrium faster than humans did on Mirage. Least attained service with priced urgency and leases removes the incentive without needing agents to be honest. Third, the hard limit on this machine is VRAM and the preemption it allows. Windows offers no transparent CUDA checkpoint and no VRAM fence, so the cooperation of the jobs themselves (pause flags, checkpoint-on-signal, declared eviction policy) is the real preemption mechanism. Making that protocol easy for agents to adopt matters more than any scheduling formula.

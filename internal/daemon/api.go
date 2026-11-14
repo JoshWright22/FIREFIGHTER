@@ -23,6 +23,7 @@ import (
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/policy"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
+	"github.com/JoshWright22/firefighter/internal/usage"
 )
 
 // Endpoint is how clients find the daemon: written to <home>/daemon.json.
@@ -373,11 +374,29 @@ func histKey(t *policy.Ticket) string { return t.Project + "|" + t.CmdHash }
 // fillNeeds sets admission needs and the predicted runtime from declarations and learned history.
 func (d *Daemon) fillNeeds(t *policy.Ticket) {
 	h := d.st.History[histKey(t)]
+	known := h != nil
 	if h == nil {
 		h = &History{}
 	}
+	// A command never run here starts from what its project's other commands need, not from a
+	// fixed default (its own declaration still counts, and its own first run replaces this).
+	priorRAM, priorVRAM, prior := 0.0, 0.0, false
+	if !known && t.CmdHash != "" {
+		priorRAM, priorVRAM, prior = d.projectPrior(t.Project, t.GPU)
+	}
 	t.PredMinutes = policy.Predict(t.Minutes, h.Ratios)
 	t.NeedRAM = math.Max(t.RAMGB, h.PeakRAM*d.cfg.GPU.VRAMMargin)
+	if h.RAM != nil && h.RAM.N > 0 {
+		t.NeedRAM = math.Max(0.1, usage.PeakNeed(h.RAM, t.RAMGB, 0)) // a known command: its history, not the default below
+	}
+	// What it can be throttled on is predicted from its past runs' means; unknown stays 0 (no claim).
+	t.NeedCPU, t.NeedDisk, t.NeedNet, t.PredGPU = usage.RateNeed(h.CPU, 0), 0, usage.RateNeed(h.Net, 0), usage.RateNeed(h.GPU, 0)
+	if h.Disk != nil && h.Disk.N >= usage.WarmRuns-1 {
+		t.NeedDisk = usage.PeakNeed(h.Disk, 0, 0)
+	}
+	if prior && t.RAMGB == 0 {
+		t.NeedRAM = math.Max(0.1, priorRAM)
+	}
 	if t.NeedRAM == 0 {
 		t.NeedRAM = 0.5
 		if t.GPU && (len(d.snap.GPUs) > 0 || d.gpuSeen) && d.cfg.GPU.DefaultRAMGB > t.NeedRAM {
@@ -391,6 +410,12 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 	}
 	if t.GPU {
 		t.NeedVRAM = math.Max(t.VRAMGB, h.PeakVRAM*d.cfg.GPU.VRAMMargin)
+		if h.VRAM != nil && h.VRAM.N > 0 {
+			t.NeedVRAM = usage.PeakNeed(h.VRAM, t.VRAMGB, 0)
+		}
+		if prior && t.VRAMGB == 0 && priorVRAM > 0 {
+			t.NeedVRAM = priorVRAM
+		}
 		if t.NeedVRAM == 0 {
 			t.NeedVRAM = d.cfg.GPU.DefaultVRAMGB
 		}
@@ -669,6 +694,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		h.PeakRAM = math.Max(h.PeakRAM*0.9, j.peakRAM)
 		h.Runs++
 		h.Last = now
+		d.learnRun(h, j, now)
 	}
 	if !j.suspended.IsZero() {
 		d.resume(j)
@@ -726,6 +752,40 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 }
 
 func round1(f float64) float64 { return math.Round(f*10) / 10 }
+
+// learnRun adds one finished run to its command's usage histograms: the peaks of what it must not
+// run out of (RAM, VRAM, disk written) and the means of what it can be throttled on (CPUs, GPU
+// load, network). A run stopped for lack of RAM records more than it reached (usage.OOMBump): its
+// real need is above that. Rates need 10 s of work to mean anything.
+func (d *Daemon) learnRun(h *History, j *job, now time.Time) {
+	add := func(hp **usage.Hist, first, v, half float64) {
+		if *hp == nil {
+			*hp = usage.NewHist(first)
+		}
+		usage.AddRun(*hp, v, half, now)
+	}
+	h.Name, h.GPUJob = j.Name, j.GPU
+	ram := j.peakRAM
+	if j.oom {
+		ram = usage.OOMBump(ram)
+	}
+	add(&h.RAM, 0.05, ram, usage.RunHalfLifePeak)
+	if j.GPU {
+		add(&h.VRAM, 0.05, j.peakVRAM, usage.RunHalfLifePeak)
+	}
+	if j.workSec < 10 {
+		return
+	}
+	add(&h.CPU, 0.05, j.cpuSec/j.workSec, usage.RunHalfLifeRate)
+	add(&h.Disk, 0.01, math.Max(0, j.written-j.written0), usage.RunHalfLifePeak)
+	add(&h.Mins, 0.1, j.workSec/60, usage.RunHalfLifeRate)
+	if j.GPU {
+		add(&h.GPU, 1, j.gpuSec/j.workSec, usage.RunHalfLifeRate)
+	}
+	if j.Net && j.netSec > 0 {
+		add(&h.Net, 0.1, j.netSum/j.netSec, usage.RunHalfLifeRate)
+	}
+}
 
 // KeepAlive says whether a process name is a shared build server (guard.keep_alive) that outlives
 // the job that started it.
@@ -816,6 +876,8 @@ func (d *Daemon) blocker(j *job) string {
 	switch {
 	case d.diskWhy(j) != "":
 		return d.diskWhy(j)
+	case d.cpuWhy(j) != "":
+		return d.cpuWhy(j)
 	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.Ticket); return c < 0 }():
 		return "waiting for a " + j.WantVendor + " GPU (none is reporting right now)"
 	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.Ticket):
@@ -932,10 +994,11 @@ type Status struct {
 	Policy    map[string]string       `json:"policy"`
 	ConfigErr string                  `json:"config_error,omitempty"`
 	Recent    []*Receipt              `json:"recent"`
-	Notes     []string                `json:"notes,omitempty"` // what is holding work back right now, in plain words
-	VM        *sysinfo.VM             `json:"vm,omitempty"`    // the WSL2/Docker VM's memory, when one runs
-	Disks     []sysinfo.Disk          `json:"disks,omitempty"` // drives jobs and the system use
-	Market    map[string]policy.Quote `json:"market"`          // posted prices and odds for a typical 30-minute job
+	Notes     []string                `json:"notes,omitempty"`    // what is holding work back right now, in plain words
+	VM        *sysinfo.VM             `json:"vm,omitempty"`       // the WSL2/Docker VM's memory, when one runs
+	Disks     []sysinfo.Disk          `json:"disks,omitempty"`    // drives jobs and the system use
+	Forecast  *Forecast               `json:"forecast,omitempty"` // what the human and each command are expected to use
+	Market    map[string]policy.Quote `json:"market"`             // posted prices and odds for a typical 30-minute job
 }
 
 func (d *Daemon) status() Status {
@@ -964,6 +1027,7 @@ func (d *Daemon) status() Status {
 	sort.Slice(s.Disks, func(a, b int) bool { return s.Disks[a].Path < s.Disks[b].Path })
 	s.Reserve["disk_free_gb"] = d.cfg.Reserve.DiskFreeGB
 	s.Notes = d.notes(now)
+	s.Forecast = d.forecast(now)
 	s.Market = map[string]policy.Quote{}
 	for _, gpu := range []bool{true, false} {
 		p := policy.Ticket{Project: "default", GPU: gpu, Minutes: 30, Bid: policy.BidNormal}

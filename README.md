@@ -122,6 +122,9 @@ The full mechanics (the decision table, the preemption ladder, the market math) 
   VRAM admission learned from each command's past runs.
 - **Posted prices, no bidding war.** Spot (1/3 price), normal and urgent (2x) tiers against a daily
   budget, summed up in one ~60-token line per reply.
+- **It learns instead of guessing.** Every run teaches it what that command needs (RAM, VRAM,
+  CPUs, GPU load, disk, network), and your own use teaches it how much to keep free for you.
+  `firefighter forecast` shows what it expects.
 - **RAM and disk without casualties.** Short of RAM, it first takes back what nobody needs (the
   WSL/Docker VM's file cache), then suspends a job and moves its memory out (Windows) so it resumes
   later with nothing lost. It keeps free space on your drives too.

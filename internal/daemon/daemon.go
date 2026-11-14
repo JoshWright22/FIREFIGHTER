@@ -22,6 +22,7 @@ import (
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/policy"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
+	"github.com/JoshWright22/firefighter/internal/usage"
 )
 
 const tick = 500 * time.Millisecond
@@ -75,6 +76,13 @@ type job struct {
 	cpuByPID   map[int]float64 // CPU seconds per member at the last reading
 	written    float64         // GB its members have written so far
 	writeRate  float64         // MB/s it writes, smoothed over ~10 s
+	// For learning (usage histograms, one sample per run): time it really worked, and over that
+	// time its CPU-seconds, GPU-percent-seconds and (network jobs) megabit-seconds.
+	workSec, cpuSec, gpuSec float64
+	netSum, netSec          float64
+	written0                float64 // GB already written when first measured
+	measured                bool
+	oom                     bool // stopped for lack of RAM: its need is above the peak it reached
 }
 
 func newJob(t *policy.Ticket) *job {
@@ -129,6 +137,9 @@ type Daemon struct {
 	sysDrives     map[string]bool         // the drives temp files and firefighter's own state live on
 	diskLow       map[string]time.Time    // since when each drive has been under the reserve
 	diskBusy      atomic.Bool
+	humanAt       time.Time    // last sample of the human's use (every 5 s)
+	ramRise       usage.Growth // the human's RAM over the last 5 minutes: how far it rises
+	vramRise      usage.Growth
 	stopping      atomic.Bool        // shutdown requested (once)
 	unknownAt     map[bool]time.Time // last grant of a never-seen command, per kind (GPU/CPU)
 	cardFloor     []float64          // the least VRAM each card has had in use lately: the emptiest it gets
@@ -495,8 +506,9 @@ func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []
 	d.applyMeasurements(meas, now, dt)
 	d.observeOccupancy(now, dt)
 	d.senseUser(now)
+	d.observeHuman(now, dt)
 	d.adoptRogues(rogues, now)
-	d.res.Update(c, d.user, d.busyUser, d.snap.CPUs, now)
+	d.res.Update(d.withLearnedReserve(c, now), d.user, d.busyUser, d.snap.CPUs, now)
 	d.enforceCPU()
 	d.ladder(now)
 	d.reap(now)
@@ -571,6 +583,9 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 			j.writeRate += (1 - math.Exp(-dt.Seconds()/10)) * (rate - j.writeRate)
 		}
 		j.written = m.writtenGB
+		if !j.measured {
+			j.measured, j.written0 = true, m.writtenGB
+		}
 		if j.container != "" {
 			for _, o := range d.others {
 				if o.ID != "" && strings.HasPrefix(j.container, o.ID) {
@@ -657,6 +672,14 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		}
 		if j.overrun {
 			price *= 2
+		}
+		// The same working time feeds what the command is expected to use next time.
+		j.workSec += dt.Seconds()
+		j.cpuSec += j.cpuNow * dt.Seconds()
+		j.gpuSec += j.gpuUtil * dt.Seconds()
+		if j.Net && d.netCap > 0 {
+			j.netSum += math.Max(0, d.snap.NetMbps-d.netHuman) * dt.Seconds() // the link's traffic beyond the human's
+			j.netSec += dt.Seconds()
 		}
 		a := d.account(j.Project, now)
 		before := a.Charged
@@ -1669,6 +1692,11 @@ func (d *Daemon) admit(now time.Time) {
 			if card >= 0 && !d.cardOpen(card) {
 				continue // every card it can use has its turns taken (gpu.max_jobs each) or is busy
 			}
+			if card >= 0 && d.cardJobs(card) > 0 && t.PredGPU > 0 && d.utilOf(card)+t.PredGPU > 110 {
+				// Gandiva packs two jobs on a card only when their loads fit together: this one's
+				// past runs say it would push the card past full, so it takes a turn instead.
+				continue
+			}
 			left -= d.res.VRAMGB
 			need := d.needOn(t, card)
 			if d.waitsForAway(t) {
@@ -1687,7 +1715,10 @@ func (d *Daemon) admit(now time.Time) {
 			continue // an overdue big CPU job is waiting for RAM: don't let long jobs eat it first
 		}
 		if d.diskWhy(j) != "" {
-			continue // its drive is under the human's disk reserve
+			continue // its drive is under the human's disk reserve, or lacks room for what it writes
+		}
+		if d.cpuWhy(j) != "" {
+			continue // the CPUs outside the human's reserve are taken by jobs already running
 		}
 		// Short of RAM. An overdue job with nothing else running needs no margin (the ladder still
 		// protects the human); otherwise it holds the line only once it's overdue.
@@ -2169,7 +2200,7 @@ func (d *Daemon) ramPressure(now time.Time, floor float64) {
 			}
 		}
 		if v != nil && v.ramGB >= minHoldRAM && d.ramCovers(v, need) {
-			v.freedGB = math.Max(v.freedGB, v.ramGB)
+			v.freedGB, v.oom = math.Max(v.freedGB, v.ramGB), true
 			v.reason = fmt.Sprintf("RAM critically low: %.1f GB free, %.1f GB short; stopping it frees %.1f GB", avail, need, v.ramGB)
 			d.killJob(v, now)
 		} else if now.Sub(d.critSaid) > time.Minute {
@@ -2241,8 +2272,25 @@ func (d *Daemon) diskWhy(j *job) string {
 		if dk := d.disks[dr]; dk.TotalGB > 0 && dk.FreeGB < d.diskFloor(dk) {
 			return fmt.Sprintf("disk %s has %.1f GB free, under the %.0f GB kept for the human", dr, dk.FreeGB, d.diskFloor(dk))
 		}
+		if dk := d.disks[dr]; dk.TotalGB > 0 && j.State == "waiting" && j.NeedDisk >= 1 && dr == d.driveOf[j.Cwd] && dk.FreeGB-d.diskFloor(dk) < j.NeedDisk {
+			return fmt.Sprintf("usually writes %.1f GB; disk %s has %.1f GB beyond the %.0f GB kept for the human", j.NeedDisk, dr, dk.FreeGB-d.diskFloor(dk), d.diskFloor(dk))
+		}
 	}
 	return ""
+}
+
+// cpuWhy says when a job waits for CPUs ("" otherwise): its past runs keep NeedCPU CPUs busy, and
+// with the jobs already running that passes what's outside the human's reserve (cpuRoom). A job
+// with no history claims nothing, and nothing waits while no other job runs.
+func (d *Daemon) cpuWhy(j *job) string {
+	used := d.jobCPUs()
+	if j.State == "running" || j.State == "granted" {
+		used -= math.Max(j.cpuNow, j.NeedCPU) // not itself
+	}
+	if j.NeedCPU < 1 || used < 0.5 || used+j.NeedCPU <= d.cpuRoom() {
+		return ""
+	}
+	return fmt.Sprintf("usually keeps %.1f CPUs busy; jobs already running use %.1f of the %.0f outside the human's reserve", j.NeedCPU, used, d.cpuRoom()/1.25)
 }
 
 // diskPressure keeps free space on every drive in use. A drive under the reserve for

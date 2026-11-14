@@ -47,9 +47,13 @@ type Ticket struct {
 	Net        bool   `json:"net,omitempty"`      // network-heavy (downloads, uploads, installs)
 	NetAuto    bool   `json:"net_auto,omitempty"` // Net was detected from the command, not declared
 
-	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: max(declared, learned peak x margin)
+	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: declared, or learned from the command's past runs (usage.PeakNeed)
 	NeedRAM     float64 `json:"need_ram_gb"`
-	PredMinutes float64 `json:"pred_minutes"` // declared minutes corrected by this command's history
+	NeedCPU     float64 `json:"need_cpus,omitempty"`    // CPUs it is expected to keep busy (its past runs' mean; 0 unknown)
+	NeedDisk    float64 `json:"need_disk_gb,omitempty"` // GB it is expected to write
+	NeedNet     float64 `json:"need_net_mbps,omitempty"`
+	PredGPU     float64 `json:"pred_gpu_pct,omitempty"` // GPU utilization it is expected to cause
+	PredMinutes float64 `json:"pred_minutes"`           // declared minutes corrected by this command's history
 }
 
 // Account is one project's standing. Everything is in machine-minutes: one minute of a whole GPU, or

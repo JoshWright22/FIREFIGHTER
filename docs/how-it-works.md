@@ -44,6 +44,10 @@ code, with the numbers the code actually uses. If this page and the code disagre
 - **RAM nobody needs is reclaimed first.** On Windows the WSL2 VM (where Docker Desktop runs) keeps
   file cache from builds and installs, and Windows counts all of it as used. When RAM runs short
   FIREFIGHTER has the VM give that cache back before it touches any job, and says so in the log.
+- **It learns what you and each command use.** Every run adds to its command's history for RAM,
+  VRAM, CPUs, GPU load, disk writes and network, and the next run is admitted on that history, not
+  on a guess. Your own use is recorded per state (away, present, active, game), and after a day
+  your reserve follows it. `firefighter forecast` shows both.
 - **Disk too.** It keeps free space on every drive jobs use (`reserve.disk_free_gb`): no job starts
   on a drive under the reserve, and a job writing to one is suspended until there's room again.
 - **Network too.** Downloads and uploads (`docker pull`, pip/npm/cargo installs, `git clone`,
@@ -74,7 +78,8 @@ Zero config gives you the researched defaults below. You can swap each part by n
 | **Market** | `priced` | Price per machine-minute = tier (spot ⅓, normal 1, urgent 2) × congestion × 1.25 for projects whose jobs habitually overrun. Congestion is 0.5 × 8^u, where u is how committed the resource is over the next hour: 0.5 idle, about 1.4 at half load, 4 when full. The price is locked when the job is granted; overruns pay ×2 and adopted work ×1.5 on top. Urgent buys at most 30 min of queue lead under `las` and `stride`. | `pricing.policy = priced \| free`, `pricing.max_lead_minutes` |
 | **Budget** | `karma` | Steady refill of 240 machine-minutes a day (10 an hour), banked up to 2 days (Karma, OSDI '23). The first project on a machine starts full. Later new projects start at the median usage and draw their start and first day's refill from one pool all new projects share (120 a day), so inventing names doesn't mint budget or jump the queue. While a project's budget is empty, its waiting and running jobs are spot. | `budget.policy = karma \| daily \| none`, `budget.daily_minutes`, `budget.bank_days`, `budget.projects.<name>`, `budget.weights.<name>` |
 | **Charge** | DRF | One machine-minute is all of the GPU, VRAM, RAM or CPUs for one minute (Dominant Resource Fairness). Idle VRAM is charged ×3 (ESX idle tax), overruns ×2, and chronic under-estimates ×1.25. | built in |
-| **Admission** | learned peaks | A job's need is the larger of its declared size and 1.2 × its learned peak, checked against what's left on one GPU after your reserve and the unclaimed needs of jobs already there. Each card takes turns on its own (`gpu.max_jobs` per card, a second job only while that card's load leaves room), and a job goes to the least busy card that fits (fewest jobs, then lowest load, then most VRAM left); a need is clamped to what that card ever offers (its size, less your reserve, less the least others have held lately). The job is pinned to that card (`CUDA_VISIBLE_DEVICES` with PCI order, `HIP_VISIBLE_DEVICES`/`ROCR_VISIBLE_DEVICES`, or the oneAPI selector; `docker run --gpus` is narrowed too). First-time commands start 5 s apart so their real use shows. Short jobs (declared and predicted ≤ 10 min) may backfill behind a head that's waiting on VRAM or on RAM, so the GPU isn't idle while a big job waits. RAM: a job starts only if its need plus `reserve.ram_margin_pct` (5% of RAM) fits beside your reserve, and not while RAM is, or within `reserve.ram_shrink_seconds` was, under the reserve; a GPU job with no `--ram` and no history is assumed to need `gpu.default_ram_gb` (3). A waiting job's line in `status` says what it lacks, and `status` leads with a note when the GPU is idle with jobs waiting. With no discrete GPU (Apple silicon), VRAM needs count as RAM. | `gpu.max_jobs` (per card), `gpu.pack_below_util`, `gpu.vram_margin`, `gpu.default_vram_gb`, `gpu.default_ram_gb`, `reserve.ram_margin_pct` |
+| **Learning** | on | Per command: decaying histograms of each run's peak RAM, peak VRAM and GB written, and of its mean CPUs, GPU load and network rate. Per user state: histograms of the CPUs you keep busy and of how far your RAM and VRAM use rises within 5 minutes. After a day of history in a state its reserve is the learned one, within half to three times the configured value. See [What it learns](#what-it-learns). | `reserve.learn` |
+| **Admission** | learned peaks | A job's need is the larger of its declared size and 1.2 × its learned peak (from three runs on: the 98th percentile of its peaks + 15%, whatever it declares), checked against what's left on one GPU after your reserve and the unclaimed needs of jobs already there. Each card takes turns on its own (`gpu.max_jobs` per card, a second job only while that card's load leaves room), and a job goes to the least busy card that fits (fewest jobs, then lowest load, then most VRAM left); a need is clamped to what that card ever offers (its size, less your reserve, less the least others have held lately). The job is pinned to that card (`CUDA_VISIBLE_DEVICES` with PCI order, `HIP_VISIBLE_DEVICES`/`ROCR_VISIBLE_DEVICES`, or the oneAPI selector; `docker run --gpus` is narrowed too). First-time commands start 5 s apart so their real use shows. Short jobs (declared and predicted ≤ 10 min) may backfill behind a head that's waiting on VRAM or on RAM, so the GPU isn't idle while a big job waits. CPUs: a job whose past runs keep N CPUs busy waits while the jobs already running leave fewer than that outside your reserve (counted with a 25% allowance); a job with no history is never held for CPUs. GPU load: a job joins a busy card only if its usual load fits beside what the card carries. Disk: a job that usually writes N GB waits until its drive has that much beyond the disk reserve. RAM: a job starts only if its need plus `reserve.ram_margin_pct` (5% of RAM) fits beside your reserve, and not while RAM is, or within `reserve.ram_shrink_seconds` was, under the reserve; a GPU job with no `--ram` and no history is assumed to need `gpu.default_ram_gb` (3). A waiting job's line in `status` says what it lacks, and `status` leads with a note when the GPU is idle with jobs waiting. With no discrete GPU (Apple silicon), VRAM needs count as RAM. | `gpu.max_jobs` (per card), `gpu.pack_below_util`, `gpu.vram_margin`, `gpu.default_vram_gb`, `gpu.default_ram_gb`, `reserve.ram_margin_pct` |
 | **Preemption** | ladder | See [the ladder](#the-preemption-ladder) below. | `ladder.*` |
 | **Guard** | on | Heavy processes an agent CLI (Claude Code, Codex, Gemini, Grok, OpenCode, Kimi, Copilot, Amp, Qwen, Aider, Goose, Cline and more) starts outside FIREFIGHTER get adopted: spot band, idle priority, charged. IDE terminals are never adopted. Each project is capped at 20 open jobs. Agents can read the policy but can't change it unless you allow it, and even then only `order.*`, `pricing.*` and `gpu.*` (never presets, which set reserves). | `guard.auto_adopt`, `guard.agent_parents`, `guard.heavy_*`, `guard.agents_can_configure` |
 
@@ -110,6 +115,40 @@ Victims are picked so one eviction fixes the problem: first jobs whose memory co
 then the highest band (spot, past their lease, adopted), then the heaviest. One eviction at a time.
 CUDA can't be checkpointed from outside on Windows or macOS, so the job has to cooperate.
 `firefighter protocol` prints a short Python helper you call once per step.
+
+## What it learns
+
+FIREFIGHTER's first versions asked agents how much a job needs and kept a fixed share of the
+machine for you. Both are guesses. Now it measures, and the measurements decide. The data
+structure and the rules are the ones Google's Autopilot and the Kubernetes Vertical Pod
+Autoscaler use to size jobs, cut down to one PC. The math is in `internal/usage`, the sources are
+in [research.md](research.md#learning-usage), and `firefighter forecast` prints what has been
+learned.
+
+**Each command** (the same command line in the same project) keeps one sample per finished run in
+a histogram whose buckets are 5% wide, where older runs fade:
+
+| Resource | Sample per run | Fades by half every | Next run is admitted on |
+|---|---|---|---|
+| RAM, VRAM | the peak | 8 runs | no history: what it declares, else what the project's other commands of its kind need (90th percentile), else `gpu.default_ram_gb` / `gpu.default_vram_gb`. 1-2 runs: the larger of the declaration and the highest peak × 1.2. 3+ runs: the 98th percentile of the peaks × 1.15; a declaration above anything seen is cut to 1.5 × the highest peak |
+| Disk | GB written | 8 runs | the same rule, against the free space beyond the disk reserve |
+| CPUs, GPU load, network | the mean over the run | 2 runs | the weighted mean (jobs can be slowed on these without losing work, so the mean is the right size) |
+
+A run that was stopped for lack of RAM records 1.2 × the peak it reached (or +100 MiB), because
+its real need is above that.
+
+**You** are everything that isn't a FIREFIGHTER job. Every 5 s, for the state you're in:
+
+| Resource | Sample | Your reserve in that state, after a day of history |
+|---|---|---|
+| CPUs | CPUs busy outside jobs (not counted while every CPU is busy: that shows what you got, not what you wanted) | the level that covers 95% of your work (not of your time: one minute of compiling outweighs nine of reading), + 2 idle cores |
+| RAM, VRAM | how far your use rises within the next 5 minutes (the WSL/Docker VM's memory is left out: its cache is reclaimed, not reserved for) | the 95th percentile of that rise + 15%: the free memory that has to be there now |
+| Network | Mbps while no network job runs | shown in `forecast`; network jobs still wait while you use over `network.human_busy_pct` of the link |
+
+History fades with a 7-day half-life. The learned reserve stays between half and three times the
+configured one, and the instant rules stay on top: the CPU reserve still follows what is in use
+this second, and a game still holds the GPU. `reserve.learn false` goes back to the configured
+values.
 
 ### When RAM runs short
 
@@ -184,7 +223,16 @@ Twice a second the daemon:
 | Leases | Themis, AgentLoom `gpu_extend` | Past 1.25 × the lease (paused time excluded) without `extend`, a job drops to spot and pays ×2. | `daemon.ladder` |
 | Idle memory tax | Waldspurger, ESX | VRAM held while GPU use is under 15% is charged ×3. | `daemon.applyMeasurements` |
 | Pack only on sustained headroom | Gandiva (OSDI '18) | A second GPU job joins only while the ~30 s smoothed utilization is under `pack_below_util`. | `daemon.admit` |
-| Learned memory peaks beat estimators | GPUMemNet, LLMem, FakeTensor study | VRAM and RAM need = max(declared, 1.2 × learned peak). The learned peak decays 10% per run. A need the card can never free is clamped. | `daemon.fillNeeds` |
+| Learned memory peaks beat estimators | GPUMemNet, LLMem, FakeTensor study | VRAM and RAM need = max(declared, 1.2 × learned peak) for the first runs, then the 98th percentile of the peaks + 15%. A need the card can never free is clamped. | `daemon.fillNeeds`, `usage.PeakNeed` |
+| Decaying histograms; peak for memory, mean for CPU | Autopilot (EuroSys '20, §3.2, Eq. 1-3); Kubernetes VPA | 5%-wide buckets, weight 2^(−age/half-life). Memory and VRAM: P98 of per-run peaks + 15%. CPUs, GPU load, network: the decayed mean. Half-lives 8 runs and 2 runs (Autopilot's 48 h and 12 h, 4:1). | `usage.Hist`, `usage.PeakNeed`, `usage.RateNeed` |
+| Load-adjusted percentile for bursty use | Autopilot Eq. 3 | The human's CPU reserve is the P95 of their load weighted by the load itself, + 2 idle cores (PerfIso). | `usage.Hist.LoadPercentile`, `daemon.learnedReserve` |
+| Count a young job at its declared limit | Take it to the limit (EuroSys '21, §4) | Under 3 runs the declaration is a floor; from 3 runs history decides. | `usage.PeakNeed` |
+| Bump after an out-of-memory kill | VPA `RecordOOM` (×1.2, +100 MiB) | A run stopped for RAM records max(peak × 1.2, peak + 100 MiB). | `usage.OOMBump`, `daemon.learnRun` |
+| Predict from the nearest level with history | 3Sigma (EuroSys '18, §4.1) | A never-seen command starts from the P90 of its project's commands of the same kind. | `daemon.projectPrior` |
+| Oversubscribe what can be throttled | Resource Central (SOSP '17, Alg. 1: 125%) | Jobs' learned mean CPUs may add up to 125% of the CPUs outside the human's reserve. | `daemon.cpuRoom`, `daemon.cpuWhy` |
+| Pack a GPU only when loads fit | Gandiva (OSDI '18, §5) | A job with a learned GPU load joins a busy card only if the sum stays under 110%. | `daemon.admit` |
+| Don't learn from saturated samples | SmartHarvest (EuroSys '21) | The human's CPU use isn't recorded while every CPU is busy. | `daemon.observeHuman` |
+| Little history, little trust | VPA confidence (`getConfidence`) | A state's reserve is learned only after a day of samples in that state, and stays within 0.5-3× the configured value. | `usage.Reserve` |
 | EASY backfill | Lifka; Slurm | Behind a GPU head that's waiting on VRAM, only jobs ≤ 10 predicted minutes may start. | `daemon.admit` |
 | Minimum guaranteed runtime | KAI-Scheduler | A spot GPU job yields to an in-budget one only after `min_runtime_minutes` (10), and only when the waiting job is blocked by the GPU alone. | `daemon.ladder` |
 | Priority bands above the market | Borg | Band 0 (the human) is never in the market. Then 1 short, 2 batch, 3 spot, 4 harvester. | `policy.BandFor` |
