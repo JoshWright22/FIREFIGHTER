@@ -140,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write       # GitHub OIDC login to the registry (io.github.joshwright22/*)
+      id-token: write       # GitHub OIDC login to the registry (io.github.JoshWright22/*)
     env:
       MCP_PUBLISHER: v1.8.7
       MCP_PUBLISHER_SHA256: 00b21004149a4ce66f0782508ae4a2bce67d1bea395a8da0bd8028159fb59579 # linux_amd64, from registry_1.8.7_checksums.txt
