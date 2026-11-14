@@ -47,8 +47,16 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+var hog []byte // FF_HOG_MB: RAM the payload really holds, so memory rules have something to act on
+
 // helper is the job payload. Modes: exit:N | sleep:MS:FILE | pausable:SECONDS:FILE
 func helper(spec string) int {
+	if mb, _ := strconv.Atoi(os.Getenv("FF_HOG_MB")); mb > 0 {
+		hog = make([]byte, mb<<20)
+		for i := 0; i < len(hog); i += 4096 {
+			hog[i] = 1
+		}
+	}
 	f := strings.Split(spec, ":")
 	switch f[0] {
 	case "exit":
@@ -122,10 +130,11 @@ func appendLine(file, line string) {
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 type env struct {
-	t    *testing.T
-	home string
-	fake string
-	vars []string
+	t     *testing.T
+	home  string
+	fake  string
+	vars  []string
+	extra []string // more environment for the jobs this test starts (FF_HOG_MB)
 }
 
 func newEnv(t *testing.T, fake map[string]any) *env {
@@ -143,7 +152,10 @@ func newEnv(t *testing.T, fake map[string]any) *env {
 	}
 	e.setFake(fake)
 	// A test daemon scans the real machine: it must never adopt real agents' work.
-	if err := os.WriteFile(filepath.Join(home, "firefighter.toml"), []byte("[guard]\nauto_adopt = false\n"), 0o600); err != nil {
+	// Admission must not depend on how much RAM and disk the test machine happens to have free: no
+	// RAM margin, a small default need, no disk reserve (the tests of those rules turn them on).
+	toml := "[guard]\nauto_adopt = false\n[gpu]\ndefault_ram_gb = 0.5\n[reserve]\nram_margin_pct = 0\ndisk_free_gb = 0\n"
+	if err := os.WriteFile(filepath.Join(home, "firefighter.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	e.vars = append(os.Environ(), "FIREFIGHTER_HOME="+home, "FIREFIGHTER_FAKE_FILE="+e.fake, "NO_COLOR=1",
@@ -180,6 +192,13 @@ func (e *env) setFake(m map[string]any) {
 	if _, ok := m["foreground"]; !ok {
 		m["foreground"] = ""
 	}
+	// And scripted free RAM (half the machine): a test machine that is itself short of RAM (a build
+	// running beside the tests) must not make jobs wait or get suspended.
+	if _, ok := m["ram_avail_gb"]; !ok {
+		if v, err := mem.VirtualMemory(); err == nil {
+			m["ram_avail_gb"] = float64(v.Total) / (1 << 30) / 2
+		}
+	}
 	b, _ := json.Marshal(m)
 	if err := os.WriteFile(e.fake, b, 0o644); err != nil {
 		e.t.Fatal(err)
@@ -206,7 +225,7 @@ func (e *env) ff(args ...string) (string, int) {
 func (e *env) job(helperSpec string, args ...string) (string, int) {
 	self, _ := os.Executable()
 	full := append(append([]string{"run"}, args...), "--", self)
-	out, err := e.cmd([]string{"FF_HELPER=" + helperSpec}, full...).CombinedOutput()
+	out, err := e.cmd(append([]string{"FF_HELPER=" + helperSpec}, e.extra...), full...).CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
@@ -215,6 +234,8 @@ func (e *env) job(helperSpec string, args ...string) (string, int) {
 	}
 	return string(out), code
 }
+
+func (e *env) log() string { return readFile(filepath.Join(e.home, "daemon.log")) }
 
 func (e *env) detach(helperSpec string, args ...string) string {
 	self, _ := os.Executable()
@@ -361,16 +382,21 @@ func (e *env) mustWaitState(id string) string {
 	return out
 }
 
-func TestRAMPressureCheckpointsAndRequeues(t *testing.T) {
+// RAM under the human's reserve with a job that holds real memory. Where a suspended job's RAM can
+// be moved out (Windows) it is suspended and resumes when RAM is back: nothing is lost and nothing
+// is requeued. Elsewhere it is asked to checkpoint and exit, and is put back in line.
+func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 	v, _ := mem.VirtualMemory()
 	total := float64(v.Total) / (1 << 30)
 	e := newEnv(t, nil)
+	e.extra = []string{"FF_HOG_MB=600"}
 	e.ff("config", "set", "ladder.pressure_seconds", "1")
 	e.ff("config", "set", "ladder.kill_below_ram_pct", "0.01")
+	e.ff("config", "set", "reserve.ram_shrink_seconds", "2") // settle quickly after the shortage
 	log := filepath.Join(e.home, "evict.txt")
 	done := make(chan string, 1)
 	go func() {
-		out, _ := e.job("pausable:4:"+log, "--minutes", "1", "--name", "evictee")
+		out, _ := e.job("pausable:8:"+log, "--minutes", "1", "--name", "evictee")
 		done <- out
 	}()
 	eventually(t, "job running", 15*time.Second, func() bool {
@@ -378,20 +404,104 @@ func TestRAMPressureCheckpointsAndRequeues(t *testing.T) {
 		r, _ := st["running"].([]any)
 		return len(r) == 1
 	})
-	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "ram_avail_gb": total * 0.02}) // under the 5% reserve
-	eventually(t, "checkpoint", 20*time.Second, func() bool { return strings.Contains(readFile(log), "checkpointed") })
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)                                                           // its RAM has been measured
+	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "ram_avail_gb": total*0.05 - 0.3}) // 0.3 GB under the 5% reserve
+	if runtime.GOOS == "windows" {
+		eventually(t, "suspended and its RAM freed", 20*time.Second, func() bool { return strings.Contains(e.log(), "suspending it freed") })
+		if out, _ := e.ff("status"); !strings.Contains(out, "suspended, not stopped") {
+			t.Fatalf("status doesn't say the job is suspended:\n%s", out)
+		}
+		before := readFile(log)
+		time.Sleep(2 * time.Second)
+		if readFile(log) != before || strings.Contains(before, "checkpointed") {
+			t.Fatalf("a suspended job kept running or was told to exit:\n%s", readFile(log))
+		}
+	} else {
+		eventually(t, "checkpoint", 20*time.Second, func() bool { return strings.Contains(readFile(log), "checkpointed") })
+		time.Sleep(1500 * time.Millisecond)
+	}
 	e.setFake(map[string]any{"idle": 9999.0, "foreground": ""})
 	select {
 	case out := <-done:
-		if !strings.Contains(out, "back in line") || !strings.Contains(out, "RAM below the human") {
+		if !strings.Contains(readFile(log), "finished") {
+			t.Fatalf("job didn't finish:\n%s\n%s", readFile(log), out)
+		}
+		if runtime.GOOS == "windows" {
+			if strings.Contains(out, "back in line") || !strings.Contains(out, "suspended 1 time(s)") || strings.Contains(e.log(), "killed") {
+				t.Fatalf("a suspended job should resume where it stopped, and its receipt should say so:\n%s\n%s", out, e.log())
+			}
+		} else if !strings.Contains(out, "back in line") || !strings.Contains(out, "RAM below the human") {
 			t.Fatalf("evicted job should be told why and requeue:\n%s", out)
 		}
-		if !strings.Contains(readFile(log), "finished") {
-			t.Fatalf("requeued job didn't finish:\n%s", readFile(log))
+	case <-time.After(120 * time.Second):
+		t.Fatalf("job never finished:\n%s", e.log())
+	}
+}
+
+// Windows free RAM is critically low because the WSL/Docker VM is full of file cache. The guard has
+// the VM give the cache back and touches no job, and a job waiting for RAM says what it waits for.
+func TestVMCacheIsReclaimedNotJobs(t *testing.T) {
+	v, _ := mem.VirtualMemory()
+	total := float64(v.Total) / (1 << 30)
+	e := newEnv(t, nil)
+	e.extra = []string{"FF_HOG_MB=600"}
+	e.ff("config", "set", "ladder.pressure_seconds", "1")
+	e.ff("config", "set", "reserve.ram_shrink_seconds", "2")
+	log := filepath.Join(e.home, "run.txt")
+	done := make(chan string, 1)
+	go func() {
+		out, _ := e.job("pausable:8:"+log, "--minutes", "1", "--name", "scoring")
+		done <- out
+	}()
+	eventually(t, "job running", 15*time.Second, func() bool {
+		r, _ := e.status()["running"].([]any)
+		return len(r) == 1
+	})
+	e.setFake(map[string]any{"vm_host_gb": 19.0, "vm_cache_gb": 18.0}) // a VM full of cache, RAM still fine
+	eventually(t, "the VM shows in status", 15*time.Second, func() bool {
+		out, _ := e.ff("status")
+		return strings.Contains(out, "WSL/Docker VM: holds 19.0 GB")
+	})
+	e.setFake(map[string]any{"ram_avail_gb": total * 0.015, "vm_host_gb": 19.0, "vm_cache_gb": 18.0}) // under the 3% kill line
+	waiter := e.detach("exit:0", "--minutes", "1", "--name", "waiter")
+	if w := e.mustWaitState(waiter); !strings.Contains(w, "RAM") && !strings.Contains(w, "file cache") {
+		t.Fatalf("the waiting job doesn't say it waits for RAM:\n%s", w)
+	}
+	marker := e.fake + ".reclaim"
+	eventually(t, "the VM asked to drop its cache", 20*time.Second, func() bool { return exists(marker) })
+	e.setFake(map[string]any{"vm_host_gb": 2.0, "vm_cache_gb": 0.5}) // the cache came back to Windows
+	select {
+	case out := <-done:
+		l := e.log()
+		if strings.Contains(l, "killed") || strings.Contains(l, "suspended") || strings.Contains(l, "checkpoint and exit") ||
+			strings.Contains(out, "back in line") || !strings.Contains(readFile(log), "finished") {
+			t.Fatalf("the job was touched for RAM the VM could give back:\n%s\n%s", out, l)
 		}
-	case <-time.After(90 * time.Second):
-		t.Fatal("evicted job never finished")
+		if !strings.Contains(l, "give back its 18.0 GB of file cache before any job is touched") {
+			t.Fatalf("the log doesn't record the reclaim:\n%s", l)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatalf("job never finished:\n%s", e.log())
+	}
+	if out, code := e.ff("wait", waiter, "--timeout", "60"); code != 0 {
+		t.Fatalf("the waiting job never ran once RAM was back:\n%s", out)
+	}
+}
+
+// A drive under the disk reserve: jobs wait and say why, and start once there is space.
+func TestDiskReserveHoldsNewJobs(t *testing.T) {
+	e := newEnv(t, map[string]any{"disk_free_gb": 2.0})
+	e.ff("config", "set", "reserve.disk_free_gb", "10")
+	e.job("exit:0", "--minutes", "1", "--name", "probe") // may start before the first disk reading
+	time.Sleep(6 * time.Second)                          // the drives are read every 5 s
+	id := e.detach("exit:0", "--minutes", "1", "--name", "writer")
+	eventually(t, "waiting for disk", 15*time.Second, func() bool { return strings.Contains(e.mustWaitState(id), "under the") })
+	if out, _ := e.ff("status"); !strings.Contains(out, "GB kept for the human") {
+		t.Fatalf("status doesn't show the disk reserve:\n%s", out)
+	}
+	e.setFake(map[string]any{"disk_free_gb": 200.0})
+	if out, code := e.ff("wait", id, "--timeout", "60"); code != 0 {
+		t.Fatalf("job never ran with space back:\n%s", out)
 	}
 }
 
@@ -870,15 +980,19 @@ func TestNetworkJobsTakeTurns(t *testing.T) {
 	}
 }
 
-// A download frozen for a game that then meets a RAM shortage is thawed by the RAM pressure rule
-// and asked to save (it checkpoints and is requeued), never killed outright.
+// A download frozen for a game that then meets a RAM shortage is never killed outright: where its
+// RAM can be moved out (Windows) it stays frozen with its RAM freed; elsewhere it is thawed by the
+// RAM pressure rule and asked to save (it checkpoints and is requeued).
 func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 	v, _ := mem.VirtualMemory()
 	total := float64(v.Total) / (1 << 30)
 	e := newEnv(t, map[string]any{"net_mbps": 0.0})
+	e.extra = []string{"FF_HOG_MB=600"}
 	e.ff("config", "set", "ladder.suspend_max_seconds", "1")
+	e.ff("config", "set", "ladder.pressure_seconds", "5")
 	e.ff("config", "set", "ladder.kill_below_ram_pct", "0.01")
 	e.ff("config", "set", "reserve.game_cool_seconds", "1")
+	e.ff("config", "set", "reserve.ram_shrink_seconds", "2")
 	log := filepath.Join(e.home, "frozen.txt")
 	done := make(chan string, 1)
 	go func() {
@@ -892,11 +1006,22 @@ func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "net_mbps": 0.0})
 	eventually(t, "frozen for the game", 20*time.Second, func() bool { out, _ := e.ff("status"); return strings.Contains(out, "gaming") })
 	time.Sleep(3 * time.Second) // past suspend_max_seconds
-	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "ram_avail_gb": total * 0.02, "net_mbps": 0.0})
-	eventually(t, "asked to save, not killed", 30*time.Second, func() bool { return strings.Contains(readFile(log), "checkpointed") })
+	// 0.3 GB under the game state's 15% reserve.
+	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "ram_avail_gb": total*0.15 - 0.3, "net_mbps": 0.0})
+	if runtime.GOOS == "windows" {
+		eventually(t, "its RAM freed while frozen", 30*time.Second, func() bool { return strings.Contains(e.log(), "suspending it freed") })
+		if strings.Contains(readFile(log), "checkpointed") || strings.Contains(e.log(), "killed") {
+			t.Fatalf("a frozen download was stopped instead of having its RAM moved out:\n%s", e.log())
+		}
+	} else {
+		eventually(t, "asked to save, not killed", 30*time.Second, func() bool { return strings.Contains(readFile(log), "checkpointed") })
+	}
 	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "net_mbps": 0.0}) // keep the real network out of it
 	select {
 	case <-done:
+		if !strings.Contains(readFile(log), "finished") {
+			t.Fatalf("download didn't finish:\n%s", readFile(log))
+		}
 	case <-time.After(240 * time.Second): // requeued: a 1 min back-off, then the 30 s measuring gap
 		out, _ := e.ff("status")
 		t.Fatalf("download never finished:\n%s", out)

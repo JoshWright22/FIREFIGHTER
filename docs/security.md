@@ -32,6 +32,18 @@ cooperative agents, not a sandbox.
   locked npm toolchain for the extension, and least-privilege tokens, and carry signed build
   provenance. The installers check it automatically when the GitHub CLI is installed and signed in;
   by hand: `gh attestation verify firefighter_windows_amd64.zip --repo JoshWright22/FIREFIGHTER`.
+  A release from before signing (v0.1.0) has none: the installers then say so and install on the
+  checksum alone, unless `FIREFIGHTER_REQUIRE_PROVENANCE=1`. Provenance that exists and doesn't
+  check out always stops the install.
+- Windows binaries aren't code-signed yet, and Microsoft Defender's machine-learning rules have
+  flagged a published build (`Behavior:Win32/Persistence.A!ml` and similar names: an unsigned,
+  rarely seen program that registers itself to start at logon). When the downloaded program is
+  blocked, the Windows installer builds the same release from its tagged source if Go is installed,
+  and never asks for an antivirus exclusion.
+- To free RAM, the guard runs two fixed commands as root inside an already running WSL distro
+  (`cat /proc/meminfo`, and writes to `/proc/sys/vm/drop_caches` and `compact_memory`) through the
+  system's own `wsl.exe`. It never starts a distro and passes nothing an agent supplies.
+  `reserve.reclaim_vm_cache false` turns it off.
 - Any agent can stop the guard (it's your process; it could kill it anyway). It comes back on the
   next `firefighter` call, and the new guard thaws anything the old one had suspended.
 - Not a sandbox: an agent with your shell can do anything you can. FIREFIGHTER makes the polite

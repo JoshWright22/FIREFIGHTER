@@ -19,4 +19,8 @@ writes to your global instructions (see `internal/setup/setup.go`, `Instructions
   `internal/mcp` is the stdio MCP server; `cmd/firefighter` is the CLI.
 - Keep `go vet` clean for `GOOS=windows`, `linux` and `darwin`.
 - New policy knobs go in `internal/config` with a default, a validation rule and a README row.
-- Tests that need a human, a GPU or memory pressure script them with `FIREFIGHTER_FAKE_FILE`.
+- Tests that need a human, a GPU, memory pressure, a WSL VM full of cache or a full disk script them
+  with `FIREFIGHTER_FAKE_FILE` (`idle`, `foreground`, `gpus`, `ram_avail_gb`, `net_mbps`,
+  `vm_host_gb`, `vm_cache_gb`, `disk_free_gb`); a scripted VM records reclaim requests in
+  `<fake file>.reclaim`. Ladder and admission rules also have unit tests on a daemon with no loop
+  (`internal/daemon/pressure_test.go`).

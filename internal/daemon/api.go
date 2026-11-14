@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -379,6 +380,11 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 	t.NeedRAM = math.Max(t.RAMGB, h.PeakRAM*d.cfg.GPU.VRAMMargin)
 	if t.NeedRAM == 0 {
 		t.NeedRAM = 0.5
+		if t.GPU && (len(d.snap.GPUs) > 0 || d.gpuSeen) && d.cfg.GPU.DefaultRAMGB > t.NeedRAM {
+			// Nothing declared, nothing learned: a GPU framework alone takes a few GB of RAM, and a
+			// job granted on a 0.5 GB guess is the one stopped minutes later.
+			t.NeedRAM = d.cfg.GPU.DefaultRAMGB
+		}
 	}
 	if most := d.snap.RAMTotalGB * (1 - d.cfg.Reserve.Away.RAMPct/100) * 0.9; most > 0 && t.NeedRAM > most {
 		t.NeedRAM = most // a need the machine can never free would hold the line forever
@@ -685,11 +691,15 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		_ = os.Remove(f)
 	}
 	waited := now.Sub(j.Created).Minutes() - ran
+	if j.held != "" {
+		j.heldTotal += now.Sub(j.heldAt)
+	}
 	rec := &Receipt{ID: id, Project: j.Project, Name: j.Name, Exit: exit, Outcome: outcome, Minutes: round1(ran),
 		Declared: j.Minutes, Waited: round1(waited), Charged: round1(j.charged), PeakVRAM: round1(j.peakVRAM),
 		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted",
-		Client: j.ClientPID, ClientAt: j.clientAt}
-	if outcome == "evicted" || outcome == "killed" || outcome == "lost" {
+		Client: j.ClientPID, ClientAt: j.clientAt,
+		Held: j.holds, HeldMinutes: round1(j.heldTotal.Minutes()), FreedRAM: round1(j.freedGB)}
+	if outcome == "evicted" || outcome == "killed" || outcome == "lost" || !j.killedAt.IsZero() {
 		rec.Reason = j.reason
 	}
 	j.receipt = rec
@@ -798,9 +808,52 @@ func (d *Daemon) view(j *job) View {
 }
 
 func (d *Daemon) blocker(j *job) string {
-	ram, _ := d.headroom(time.Now())
+	now := time.Now()
+	ram, _ := d.headroom(now)
+	if why := d.blockedByHuman(j, now); why != "" {
+		return why
+	}
 	switch {
-	case d.backingOff(j.ID, time.Now()):
+	case d.diskWhy(j) != "":
+		return d.diskWhy(j)
+	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.Ticket); return c < 0 }():
+		return "waiting for a " + j.WantVendor + " GPU (none is reporting right now)"
+	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.Ticket):
+		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), math.Max(0, d.cardLeft(j.Ticket)))
+	case j.NeedRAM+d.ramMargin() > ram:
+		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram)) + d.ramNote(now)
+	case d.ramSettling(now) != "":
+		return d.ramSettling(now)
+	case j.GPU && len(d.busyOutside()) > 0:
+		return "GPU busy outside firefighter: " + strings.Join(d.busyOutside(), ", ")
+	case j.GPU:
+		return "GPU turn queue"
+	}
+	return "starting"
+}
+
+// ramNote adds, to "needs N GB RAM", what admission keeps on top and where the RAM went when the
+// local Linux VM holds it: a job waiting on RAM should say what would let it start.
+func (d *Daemon) ramNote(now time.Time) string {
+	note := ""
+	if m := d.ramMargin(); m >= 0.05 {
+		note = fmt.Sprintf(" (it starts with %.1f GB to spare)", m)
+	}
+	switch cache := d.reclaimable(now); {
+	case d.reclaim.on:
+		note += "; the WSL/Docker VM is giving its file cache back now"
+	case cache >= reclaimMinGB:
+		note += fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache that is reclaimed next", d.vm.HostGB, cache)
+	case d.vm.HostGB >= 4:
+		note += fmt.Sprintf("; the WSL/Docker VM holds %.1f GB", d.vm.HostGB)
+	}
+	return note
+}
+
+// blockedByHuman: reasons a waiting job gives way that have nothing to do with room.
+func (d *Daemon) blockedByHuman(j *job, now time.Time) string {
+	switch {
+	case d.backingOff(j.ID, now):
 		return "stopped for the human a moment ago: waiting a while before trying again"
 	case j.GPU && d.waitsForAway(j.Ticket):
 		return "needs more VRAM than the card frees beside the human's reserve: starts while the human is away"
@@ -810,20 +863,46 @@ func (d *Daemon) blocker(j *job) string {
 		return "the human needs the GPU (" + d.why() + ")"
 	case j.Band == policy.BandSpot:
 		return "spot band (over budget or --spot): runs on leftovers only"
-	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.Ticket); return c < 0 }():
-		return "waiting for a " + j.WantVendor + " GPU (none is reporting right now)"
-	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.Ticket):
-		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), math.Max(0, d.cardLeft(j.Ticket)))
-	case j.NeedRAM > ram:
-		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram))
-	case j.GPU && len(d.busyOutside()) > 0:
-		return "GPU busy outside firefighter: " + strings.Join(d.busyOutside(), ", ")
-	case j.GPU:
-		return "GPU turn queue"
-	case j.Band == policy.BandSpot:
-		return "spot: leftovers only"
 	}
-	return "starting"
+	return ""
+}
+
+// notes are the few lines `status` leads with when something is holding work back: an idle GPU
+// with jobs waiting (and what they wait for), a reclaim under way, jobs suspended for RAM or disk,
+// a drive under the reserve.
+func (d *Daemon) notes(now time.Time) []string {
+	var out []string
+	busy, waiting, first := 0, 0, (*job)(nil)
+	for _, j := range d.jobs {
+		if j.GPU && (j.State == "granted" || (j.State == "running" && j.suspended.IsZero())) {
+			busy++
+		}
+	}
+	for _, t := range d.waiting() {
+		if t.GPU {
+			if waiting++; first == nil {
+				first = d.jobs[t.ID]
+			}
+		}
+	}
+	if busy == 0 && waiting > 0 {
+		out = append(out, fmt.Sprintf("GPU idle with %d GPU job(s) waiting. Next in line, %s: %s", waiting, first.Name, d.blocker(first)))
+	}
+	if d.reclaim.on {
+		out = append(out, fmt.Sprintf("RAM: the WSL/Docker VM is giving back its file cache (started %.0f s ago); no job is stopped for it", now.Sub(d.reclaim.at).Seconds()))
+	}
+	for _, j := range d.running() {
+		if j.held != "" {
+			out = append(out, fmt.Sprintf("%s is suspended, not stopped: %s", j.Name, j.reason))
+		}
+	}
+	for dr, dk := range d.disks {
+		if d.cfg.Reserve.DiskFreeGB > 0 && dk.FreeGB < d.diskFloor(dk) {
+			out = append(out, fmt.Sprintf("disk %s has %.1f GB free, under the %.0f GB kept for the human: no job starts on it, and jobs writing to it are suspended", dr, dk.FreeGB, d.diskFloor(dk)))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (d *Daemon) busyOutside() []string {
@@ -853,7 +932,10 @@ type Status struct {
 	Policy    map[string]string       `json:"policy"`
 	ConfigErr string                  `json:"config_error,omitempty"`
 	Recent    []*Receipt              `json:"recent"`
-	Market    map[string]policy.Quote `json:"market"` // posted prices and odds for a typical 30-minute job
+	Notes     []string                `json:"notes,omitempty"` // what is holding work back right now, in plain words
+	VM        *sysinfo.VM             `json:"vm,omitempty"`    // the WSL2/Docker VM's memory, when one runs
+	Disks     []sysinfo.Disk          `json:"disks,omitempty"` // drives jobs and the system use
+	Market    map[string]policy.Quote `json:"market"`          // posted prices and odds for a typical 30-minute job
 }
 
 func (d *Daemon) status() Status {
@@ -870,6 +952,18 @@ func (d *Daemon) status() Status {
 	if d.user == "game" {
 		s.UserWhy = d.gameWhy
 	}
+	if d.vm.HostGB > 0 {
+		vm := d.vm
+		s.VM = &vm
+		s.Machine["ram_vm_gb"], s.Machine["ram_reclaimable_gb"] = round1(vm.HostGB), round1(d.reclaimable(now))
+	}
+	for _, dk := range d.disks {
+		dk.TotalGB, dk.FreeGB = round1(dk.TotalGB), round1(dk.FreeGB)
+		s.Disks = append(s.Disks, dk)
+	}
+	sort.Slice(s.Disks, func(a, b int) bool { return s.Disks[a].Path < s.Disks[b].Path })
+	s.Reserve["disk_free_gb"] = d.cfg.Reserve.DiskFreeGB
+	s.Notes = d.notes(now)
 	s.Market = map[string]policy.Quote{}
 	for _, gpu := range []bool{true, false} {
 		p := policy.Ticket{Project: "default", GPU: gpu, Minutes: 30, Bid: policy.BidNormal}
@@ -977,6 +1071,12 @@ func (d *Daemon) writeStatus() {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# firefighter status, %s\n\nRewritten every 15 s. Older than a minute means the guard is down: run `firefighter daemon`.\n\n", s.Time.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(&b, "Human: **%s** %s. Reserve kept for them: %.0f CPUs, %.0f%% RAM, %.1f GB VRAM.\n\n", s.User, s.UserWhy, s.Reserve["cpus"], s.Reserve["ram_pct"], s.Reserve["vram_gb"])
+	for _, n := range s.Notes {
+		fmt.Fprintf(&b, "- %s\n", n)
+	}
+	if len(s.Notes) > 0 {
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "| Resource | Use |\n|---|---|\n| CPU | %.1f of %.0f busy (%.1f by the human and other programs) |\n| RAM | %.1f of %.1f GB free |\n| GPU | %.0f%% |\n| VRAM | %.1f of %.1f GB used |\n\n",
 		s.Machine["cpu_busy"], s.Machine["cpus"], s.Machine["user_cpus"], s.Machine["ram_avail_gb"], s.Machine["ram_total_gb"], s.Machine["gpu_util"], s.Machine["vram_used_gb"], s.Machine["vram_total_gb"])
 	b.WriteString("## Running (busy until)\n\n| Job | Project | Until | Note |\n|---|---|---|---|\n")

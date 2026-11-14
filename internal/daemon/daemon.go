@@ -33,8 +33,7 @@ type job struct {
 	human        bool           // the human created it: only the human (or --force) changes it
 	pids         map[int]int64  // member pid -> start time (pid + start time = one process, for good)
 	applied      map[int]string // pid -> cpu set applied
-	cpuPrev      float64
-	cpuNow       float64 // CPUs in use
+	cpuNow       float64        // CPUs in use
 	ramGB        float64
 	vramGB       float64
 	gpuUtil      float64
@@ -61,6 +60,21 @@ type job struct {
 	ownerAgent   int       // pid of the agent session that submitted it (0: a human)
 	ownerCreated int64     // its start time (a reused pid isn't the same session)
 	ackBusy      time.Time // acked the pause but still computing on the GPU since then
+	// held: the guard suspended it to free a resource the human is short of ("ram" | "disk"); it
+	// resumes where it stopped once there is room again. Nothing it computed is lost.
+	held       string
+	heldAt     time.Time
+	heldDrive  string          // disk: the drive that ran low
+	heldRAM    float64         // RAM it held when suspended: what it takes back on resume
+	heldTotal  time.Duration   // all the time it has spent held
+	holds      int             // times held: each one waits longer before resuming
+	okSince    time.Time       // since when there has been room to resume it
+	freedAt    time.Time       // suspended for RAM then: what that freed is measured a moment later
+	freedGB    float64         // RAM its suspension (or its kill) gave back
+	trimFailed bool            // suspending it did not free its RAM (locked or shared memory)
+	cpuByPID   map[int]float64 // CPU seconds per member at the last reading
+	written    float64         // GB its members have written so far
+	writeRate  float64         // MB/s it writes, smoothed over ~10 s
 }
 
 func newJob(t *policy.Ticket) *job {
@@ -98,22 +112,39 @@ type Daemon struct {
 	foreign       map[string]float64   // non-job GPU users -> %
 	outSince      map[string]time.Time // when each busy non-job GPU user was first seen busy
 	lastKill      time.Time            // critical-RAM kills wait for the last one to free its memory
-	stopping      atomic.Bool          // shutdown requested (once)
-	unknownAt     map[bool]time.Time   // last grant of a never-seen command, per kind (GPU/CPU)
-	cardFloor     []float64            // the least VRAM each card has had in use lately: the emptiest it gets
-	gpuSeen       bool                 // a GPU has reported since start (a missed reading isn't "no GPU")
-	netCap        float64              // the most network throughput seen (Mbps), slowly forgotten: the link's size
-	netHuman      float64              // network use while no network job runs (Mbps, smoothed): the human's
-	netQuietFrom  time.Time            // when the last network job ended, or the daemon started (the human's traffic is measured after)
-	netWasBusy    bool                 // a network job ran last tick
-	prevOpen      map[string]OpenJob   // running jobs the previous daemon granted, until re-registered
-	backoff       map[string]backoff   // job id -> evictions in a row: a requeued job waits longer each time
-	agentOf       map[int]agentSeen    // heavy processes an agent started, remembered past their parents' exit
-	gpuMax        int                  // most GPUs seen in one reading
-	gpuShortSince time.Time            // since when readings show fewer
-	gpuDegraded   bool                 // this reading is partial: no GPU grants
-	dockerQ       chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
-	graphics      map[string]float64   // non-job 3D-engine users -> % (games, video)
+	busyHist      [3]float64           // the last readings of non-job CPU use: the reserve follows the least (a one-tick spike isn't demand)
+	busyN         int
+	ramCrit       time.Time  // since when RAM has been critically low
+	ramLowLast    time.Time  // the last time RAM was under the reserve
+	ramBlocked    bool       // a waiting job lacks only RAM (admission found it so)
+	lastHold      time.Time  // jobs are suspended (and resumed) one at a time, a few seconds apart
+	critSaid      time.Time  // last "nothing to stop would help" log line
+	vm            sysinfo.VM // the local Linux VM's memory (WSL2 / Docker Desktop), as last read
+	vmAt          time.Time  // when
+	vmWanted      int        // read the VM's own numbers (it runs a command inside it): 0 no, 1 a job waits for RAM, 2 RAM is tight
+	vmBusy        atomic.Bool
+	reclaim       reclaimState
+	disks         map[string]sysinfo.Disk // drives jobs and the system use, by drive
+	driveOf       map[string]string       // folder -> its drive
+	sysDrives     map[string]bool         // the drives temp files and firefighter's own state live on
+	diskLow       map[string]time.Time    // since when each drive has been under the reserve
+	diskBusy      atomic.Bool
+	stopping      atomic.Bool        // shutdown requested (once)
+	unknownAt     map[bool]time.Time // last grant of a never-seen command, per kind (GPU/CPU)
+	cardFloor     []float64          // the least VRAM each card has had in use lately: the emptiest it gets
+	gpuSeen       bool               // a GPU has reported since start (a missed reading isn't "no GPU")
+	netCap        float64            // the most network throughput seen (Mbps), slowly forgotten: the link's size
+	netHuman      float64            // network use while no network job runs (Mbps, smoothed): the human's
+	netQuietFrom  time.Time          // when the last network job ended, or the daemon started (the human's traffic is measured after)
+	netWasBusy    bool               // a network job ran last tick
+	prevOpen      map[string]OpenJob // running jobs the previous daemon granted, until re-registered
+	backoff       map[string]backoff // job id -> evictions in a row: a requeued job waits longer each time
+	agentOf       map[int]agentSeen  // heavy processes an agent started, remembered past their parents' exit
+	gpuMax        int                // most GPUs seen in one reading
+	gpuShortSince time.Time          // since when readings show fewer
+	gpuDegraded   bool               // this reading is partial: no GPU grants
+	dockerQ       chan []string      // docker CLI calls, run in order (a late pause must not follow its unpause)
+	graphics      map[string]float64 // non-job 3D-engine users -> % (games, video)
 	others        []sysinfo.Container
 	notify        chan struct{}
 	rng           *rand.Rand
@@ -127,6 +158,9 @@ type Daemon struct {
 	rogueSeen map[int]time.Time
 	dockerAt  time.Time
 	docking   atomic.Bool
+	vmProbeAt time.Time
+	vmGuestAt time.Time
+	diskAt    time.Time
 
 	saveAt   time.Time
 	statusAt time.Time
@@ -335,9 +369,10 @@ type root struct {
 }
 
 type measured struct {
-	members map[int]int64
-	cpuSec  float64
-	ramGB   float64
+	members   map[int]int64
+	cpuSec    map[int]float64 // per member
+	ramGB     float64
+	writtenGB float64
 }
 
 // Run is the control loop. It never returns.
@@ -366,6 +401,13 @@ func (d *Daemon) Run() {
 			}
 		}
 		cfg := d.cfg
+		vmWanted := d.vmWanted
+		folders := []string{os.TempDir(), config.Home()}
+		for _, j := range d.jobs {
+			if j.State != "done" && j.Cwd != "" {
+				folders = append(folders, j.Cwd)
+			}
+		}
 		d.mu.Unlock()
 
 		meas := map[string]measured{}
@@ -377,11 +419,13 @@ func (d *Daemon) Run() {
 				pids = append(pids, p)
 				governed[p] = true
 			}
-			cpu, ram := sysinfo.Usage(pids)
-			meas[r.id] = measured{m, cpu, ram}
+			cpu, ram, written := sysinfo.Usage(pids)
+			meas[r.id] = measured{m, cpu, ram, written}
 		}
 		rogues := d.findRogues(now, cfg, snap, governed)
 		d.refreshDocker(now)
+		d.refreshVM(now, vmWanted)
+		d.refreshDisks(now, folders)
 
 		d.mu.Lock()
 		func() {
@@ -452,7 +496,7 @@ func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []
 	d.observeOccupancy(now, dt)
 	d.senseUser(now)
 	d.adoptRogues(rogues, now)
-	d.res.Update(c, d.user, d.busyUser, now)
+	d.res.Update(c, d.user, d.busyUser, d.snap.CPUs, now)
 	d.enforceCPU()
 	d.ladder(now)
 	d.reap(now)
@@ -510,10 +554,23 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 			}
 		}
 		j.pids = m.members
-		if j.cpuPrev > 0 && dt > 0 {
-			j.cpuNow = math.Max(0, (m.cpuSec-j.cpuPrev)/dt.Seconds())
+		// CPU per member: one that exits takes only its own share with it, so the job's use (and
+		// with it what counts as the human's) doesn't jump when a worker ends.
+		if j.cpuByPID != nil && dt > 0 {
+			used := 0.0
+			for p, sec := range m.cpuSec {
+				if prev, ok := j.cpuByPID[p]; ok {
+					used += math.Max(0, sec-prev)
+				}
+			}
+			j.cpuNow = used / dt.Seconds()
 		}
-		j.cpuPrev, j.ramGB = m.cpuSec, m.ramGB
+		j.cpuByPID, j.ramGB = m.cpuSec, m.ramGB
+		if j.written > 0 && dt > 0 {
+			rate := math.Max(0, m.writtenGB-j.written) * 1024 / dt.Seconds()
+			j.writeRate += (1 - math.Exp(-dt.Seconds()/10)) * (rate - j.writeRate)
+		}
+		j.written = m.writtenGB
 		if j.container != "" {
 			for _, o := range d.others {
 				if o.ID != "" && strings.HasPrefix(j.container, o.ID) {
@@ -611,7 +668,14 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 	for _, j := range d.running() {
 		jobCPU += j.cpuNow
 	}
-	d.busyUser = math.Max(0, d.snap.CPUBusy-jobCPU)
+	// The least of the last three readings (1.5 s): a job's own start, or one noisy sample, must
+	// not grow the human's CPU reserve, which then takes 15 s per CPU to come back.
+	d.busyHist[d.busyN%len(d.busyHist)] = math.Max(0, d.snap.CPUBusy-jobCPU)
+	d.busyN++
+	d.busyUser = d.busyHist[0]
+	for _, b := range d.busyHist[:min(d.busyN, len(d.busyHist))] {
+		d.busyUser = math.Min(d.busyUser, b)
+	}
 	d.gpuSeen = d.gpuSeen || len(d.snap.GPUs) > 0
 	// The link's size is learned from the most it has carried (forgotten over about a week, so a
 	// slower network later is noticed); while no network job runs, its traffic is the human's.
@@ -892,8 +956,8 @@ func (d *Daemon) ladder(now time.Time) {
 	// what's short (and --evict never jobs never are, short of critical RAM).
 	gpuHold, netHold := d.gpuHeld(), d.user == "game" && c.Network.PauseInGame
 	for _, j := range d.running() {
-		if (!j.GPU && !j.Net) || !j.killedAt.IsZero() {
-			continue
+		if (!j.GPU && !j.Net) || !j.killedAt.IsZero() || j.held != "" {
+			continue // a job held for RAM or disk is the pressure rules' until they let it go
 		}
 		hold := (j.GPU && gpuHold) || (j.Net && netHold)
 		acked := exists(PausedFile(j.ID))
@@ -925,11 +989,12 @@ func (d *Daemon) ladder(now time.Time) {
 			}
 		case hold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.Evict != "never" && j.GPU &&
 			now.Sub(j.suspended) > dur(c.Ladder.SuspendMaxSeconds) &&
-			((ramShort && j.ramGB > 0.5) || (vramCard >= 0 && d.onCard(j, vramCard))):
+			((ramShort && j.ramGB > 0.5 && (!sysinfo.CanTrim || j.trimFailed)) || (vramCard >= 0 && d.onCard(j, vramCard))):
 			// A GPU job suspended past the limit and holding memory the human is short of. It ignored
 			// the pause file, so it can't checkpoint: resuming it would only let it compute through
 			// the game. Stop it (requeued). A download frozen for the game is left to the RAM
 			// pressure rule, which picks the job whose RAM covers the shortfall and thaws it to save.
+			// Where a suspended job's RAM can be moved out (Windows), the RAM rule does that instead.
 			j.reason = "suspended past the limit, holding memory the human needs"
 			d.killJob(j, now)
 		case !hold && !j.pausedAt.IsZero():
@@ -938,14 +1003,12 @@ func (d *Daemon) ladder(now time.Time) {
 		}
 	}
 
-	// RAM and VRAM pressure: under the reserve for PressureSeconds -> checkpoint one victim, the one
-	// whose leaving actually covers the shortfall.
-	if !d.ramLow.IsZero() && now.Sub(d.ramLow) > dur(c.Ladder.PressureSeconds) {
-		short := ramFloor - d.snap.RAMAvailGB
-		if v := d.victim(nil, true, false, short, func(j *job) float64 { return j.ramGB }); v != nil {
-			d.requestCheckpoint(v, now, fmt.Sprintf("RAM below the human's %.0f%% reserve", d.res.RAMPct))
-		}
-	}
+	// RAM and disk: reclaim what nobody needs, then suspend, and stop a job only as a last resort.
+	d.ramPressure(now, ramFloor)
+	d.diskPressure(now)
+
+	// VRAM pressure: under the reserve for PressureSeconds -> checkpoint one victim, the one whose
+	// leaving actually covers the shortfall.
 	if !d.vramLow.IsZero() && now.Sub(d.vramLow) > dur(c.Ladder.PressureSeconds) {
 		card := vramCard
 		short := d.res.VRAMGB
@@ -955,15 +1018,6 @@ func (d *Daemon) ladder(now time.Time) {
 		}
 		if v := d.victim(func(j *job) bool { return j.GPU && d.onCard(j, card) }, true, false, short, func(j *job) float64 { return j.vramGB }); v != nil {
 			d.requestCheckpoint(v, now, fmt.Sprintf("VRAM below the human's %.1f GB reserve", d.res.VRAMGB))
-		}
-	}
-	// Critical RAM: kill at once, even mid-grace: the job whose RAM covers the shortfall (or the
-	// heaviest), one at a time, giving each kill a few seconds to actually free its memory.
-	if d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < d.snap.RAMTotalGB*c.Ladder.KillBelowRAMPct/100 && now.Sub(d.lastKill) > 5*time.Second {
-		short := d.snap.RAMTotalGB*c.Ladder.KillBelowRAMPct/100 - d.snap.RAMAvailGB
-		if v := d.victim(nil, false, true, short, func(j *job) float64 { return j.ramGB }); v != nil {
-			v.reason = "RAM critically low"
-			d.killJob(v, now)
 		}
 	}
 
@@ -1048,7 +1102,11 @@ func (d *Daemon) unpause(j *job, now time.Time) {
 	if !j.pausedAt.IsZero() {
 		j.pausedTotal += now.Sub(j.pausedAt)
 	}
+	if j.held != "" {
+		j.heldTotal += now.Sub(j.heldAt)
+	}
 	j.pausedAt, j.suspended, j.ackBusy, j.reason = time.Time{}, time.Time{}, time.Time{}, ""
+	j.held, j.heldDrive, j.okSince, j.freedAt = "", "", time.Time{}, time.Time{}
 }
 
 func since(t time.Time, cond bool, now time.Time) time.Time {
@@ -1142,11 +1200,15 @@ func (d *Daemon) requestCheckpoint(j *job, now time.Time, why string) {
 	if !j.checkpoint.IsZero() || !j.killedAt.IsZero() {
 		return
 	}
-	if !j.suspended.IsZero() && j.Net && !j.GPU {
-		// A download frozen for a game (never asked to pause): thaw it so it can save and exit in
-		// its grace period like any job; a few seconds of traffic beat losing the download.
+	if !j.suspended.IsZero() && (j.held != "" || (j.Net && !j.GPU)) {
+		// A download frozen for a game, or a job held for RAM or disk (neither was asked to pause):
+		// thaw it so it can save and exit in its grace period like any job; a few seconds of
+		// running beat losing the work.
 		d.resume(j)
-		j.suspended = time.Time{}
+		if j.held != "" {
+			j.heldTotal += now.Sub(j.heldAt)
+		}
+		j.suspended, j.held, j.heldDrive = time.Time{}, "", ""
 	} else if !j.suspended.IsZero() {
 		// Suspended means it ignored the pause file, so it won't read the checkpoint file either:
 		// resuming it would only let it compute (through the human's game) until the grace ends.
@@ -1175,6 +1237,10 @@ func (d *Daemon) killJob(j *job, now time.Time) {
 		return
 	}
 	j.killedAt = now
+	if j.held != "" {
+		j.heldTotal += now.Sub(j.heldAt)
+		j.held = ""
+	}
 	if j.checkpoint.IsZero() {
 		j.checkpoint = now
 	}
@@ -1232,7 +1298,11 @@ func (d *Daemon) reap(now time.Time) {
 		case j.State == "waiting" && clientGone:
 			d.finish(id, -1, "cancelled", "")
 		case j.State == "running" && j.adopted && jobGone:
-			d.finish(id, -1, "ended", "")
+			outcome := "ended"
+			if !j.killedAt.IsZero() {
+				outcome = "killed" // the guard stopped it: its receipt says why
+			}
+			d.finish(id, -1, outcome, "")
 		case j.State == "running" && !j.adopted && clientGone:
 			if !jobGone && j.killedAt.IsZero() {
 				j.reason = "its firefighter client exited"
@@ -1306,7 +1376,11 @@ func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 	vram = free - d.res.VRAMGB
 	for _, j := range d.jobs {
 		if j.State == "granted" || j.State == "running" {
-			ram -= math.Max(0, j.NeedRAM-j.ramGB)
+			need := j.NeedRAM
+			if j.held == "ram" {
+				need = math.Max(need, j.heldRAM) // suspended to free RAM: it takes this back when it resumes
+			}
+			ram -= math.Max(0, need-j.ramGB)
 			if j.GPU && d.onCard(j, card) {
 				vram -= math.Max(0, j.NeedVRAM-j.vramGB)
 			}
@@ -1548,6 +1622,12 @@ func (d *Daemon) admit(now time.Time) {
 	}
 	changed := false
 	headWaitsOnVRAM, cpuHeadBlocked := map[int]bool{}, false // per card
+	// RAM: a job starts only if its need plus a margin fits beside the reserve, and never while RAM
+	// is (or just was) short: a grant with no room to spare is a job stopped minutes later.
+	margin := d.ramMargin()
+	settling := d.ramSettling(now) != ""
+	gpuHeadRAM := false // an overdue GPU job waits for RAM: only short jobs may start ahead of it
+	d.ramBlocked = false
 	if d.unknownAt == nil {
 		d.unknownAt = map[bool]time.Time{}
 	}
@@ -1579,6 +1659,9 @@ func (d *Daemon) admit(now time.Time) {
 			if d.gpuDegraded {
 				continue // fewer GPUs answered than usual: no GPU grant on a partial reading
 			}
+			if gpuHeadRAM && !shortJob(t) {
+				continue // the GPU stays busy with short jobs that fit; long ones would starve the head of RAM
+			}
 			card, left := d.cardFor(t) // already less the jobs granted this tick
 			if card < 0 && len(d.snap.GPUs) > 0 {
 				continue // no card of the vendor it needs right now
@@ -1603,12 +1686,17 @@ func (d *Daemon) admit(now time.Time) {
 		} else if cpuHeadBlocked && !shortJob(t) {
 			continue // an overdue big CPU job is waiting for RAM: don't let long jobs eat it first
 		}
-		if t.NeedRAM > ram && !(overdue && jobsOn(false) == 0) {
-			// Short of RAM. An overdue job with no other job running gets what there is (the ladder
-			// still protects the human); otherwise it holds the line only once it's overdue.
+		if d.diskWhy(j) != "" {
+			continue // its drive is under the human's disk reserve
+		}
+		// Short of RAM. An overdue job with nothing else running needs no margin (the ladder still
+		// protects the human); otherwise it holds the line only once it's overdue.
+		lone := overdue && jobsOn(false) == 0 && t.NeedRAM <= ram
+		if settling || (t.NeedRAM+margin > ram && !lone) {
+			d.ramBlocked = true
 			if overdue {
 				if t.GPU {
-					gpuBlocked = true
+					gpuHeadRAM = true
 				} else {
 					cpuHeadBlocked = true
 				}
@@ -1626,7 +1714,7 @@ func (d *Daemon) admit(now time.Time) {
 			if len(d.snap.GPUs) == 0 && gpuRunning >= c.GPU.MaxJobs {
 				gpuBlocked = true // no card readings: one machine-wide count, and it's now full
 			}
-			j.backfilled = headWaitsOnVRAM[card]
+			j.backfilled = headWaitsOnVRAM[card] || gpuHeadRAM
 			if len(d.snap.GPUs) > 1 {
 				j.device = card // and the client pins it there, in that vendor's numbering
 			}
@@ -1750,6 +1838,464 @@ func (d *Daemon) prune(now time.Time) {
 			if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > 7*24*time.Hour {
 				_ = os.Remove(filepath.Join(config.Home(), "logs", e.Name()))
 			}
+		}
+	}
+}
+
+// ---- RAM and disk pressure --------------------------------------------------------------------------
+
+const (
+	reclaimMinGB = 1.0              // a VM cache smaller than this isn't worth a reclaim
+	reclaimEvery = 60 * time.Second // between reclaims (doubled each time one returns next to nothing)
+	holdGap      = 5 * time.Second  // between two suspensions, so each one's effect is seen first
+	minHoldRAM   = 0.25             // GB: a job holding less isn't suspended or stopped for RAM
+)
+
+// reclaimState is one request to the local Linux VM to give its file cache back to the host.
+type reclaimState struct {
+	on     bool
+	at     time.Time // when it started
+	end    time.Time // when the last one finished
+	before float64   // free RAM when it started
+	misses int       // reclaims in a row that returned next to nothing
+}
+
+// refreshVM reads the local Linux VM's memory in the background every 5 s: what the host gave it
+// always (from the process list), its own numbers only while RAM is tight (wanted), because asking
+// runs a command inside the VM and would keep an idle one awake.
+func (d *Daemon) refreshVM(now time.Time, wanted int) {
+	if d.vmBusy.Load() || now.Sub(d.vmProbeAt) < 5*time.Second {
+		return
+	}
+	d.vmBusy.Store(true)
+	d.vmProbeAt = now
+	// The guest is asked every 5 s while RAM is tight, every 20 s while a job only waits for RAM.
+	guest := wanted == 2 || (wanted == 1 && now.Sub(d.vmGuestAt) >= 20*time.Second)
+	if guest {
+		d.vmGuestAt = now
+	}
+	go func() {
+		defer d.vmBusy.Store(false)
+		vm := sysinfo.VM{HostGB: sysinfo.VMHost()}
+		if !guest && vm.HostGB >= reclaimMinGB {
+			// Not asked this round: the last reading of the guest stands while it is fresh.
+			d.mu.Lock()
+			if d.vm.Guest && time.Since(d.vmAt) < 30*time.Second {
+				d.vm.HostGB = vm.HostGB
+				d.mu.Unlock()
+				return
+			}
+			d.mu.Unlock()
+		}
+		if guest && vm.HostGB >= reclaimMinGB {
+			if g, ok := sysinfo.VMGuest(vm.HostGB); ok {
+				vm = g
+			}
+		}
+		d.mu.Lock()
+		d.vm, d.vmAt = vm, time.Now()
+		d.mu.Unlock()
+	}()
+}
+
+// refreshDisks reads the free space of every drive in use (temp files, firefighter's state, each
+// open job's folder) in the background every 5 s.
+func (d *Daemon) refreshDisks(now time.Time, folders []string) {
+	if d.diskBusy.Load() || now.Sub(d.diskAt) < 5*time.Second {
+		return
+	}
+	d.diskBusy.Store(true)
+	d.diskAt = now
+	go func() {
+		defer d.diskBusy.Store(false)
+		disks, driveOf, sys := map[string]sysinfo.Disk{}, map[string]string{}, map[string]bool{}
+		for i, f := range folders {
+			if _, ok := driveOf[f]; ok {
+				continue
+			}
+			if dk, ok := sysinfo.DiskOf(f); ok {
+				disks[dk.Path], driveOf[f] = dk, dk.Path
+				if i < 2 {
+					sys[dk.Path] = true // the first two are the temp folder and firefighter's home
+				}
+			}
+		}
+		d.mu.Lock()
+		d.disks, d.driveOf, d.sysDrives = disks, driveOf, sys
+		d.mu.Unlock()
+	}()
+}
+
+// reclaimable is the RAM the local Linux VM would give back if asked (0 when unknown or stale).
+func (d *Daemon) reclaimable(now time.Time) float64 {
+	if !d.cfg.Reserve.ReclaimVMCache || !d.vm.Guest || now.Sub(d.vmAt) > 30*time.Second {
+		return 0
+	}
+	return d.vm.CacheGB
+}
+
+// reclaimVM asks the local Linux VM to give its file cache back to the host, in the background. It
+// is the first answer to a RAM shortage: it frees memory nobody needs, and no job is touched while
+// it runs. urgent: RAM is under the reserve (otherwise a job is only waiting for RAM, and the VM is
+// asked five times less often). Returns whether a reclaim is now under way.
+func (d *Daemon) reclaimVM(now time.Time, why string, urgent bool) bool {
+	if d.reclaim.on {
+		return true
+	}
+	wait := reclaimEvery * time.Duration(1<<min(d.reclaim.misses, 4))
+	if !urgent {
+		wait *= 5 // only a waiting job wants it: a running build re-reads what it loses, so not every minute
+	}
+	cache := d.reclaimable(now)
+	if cache < reclaimMinGB || now.Sub(d.reclaim.end) < wait {
+		return false
+	}
+	vm := d.vm
+	d.reclaim.on, d.reclaim.at, d.reclaim.before = true, now, d.snap.RAMAvailGB
+	logf("RAM: %s. The WSL/Docker VM (%s) holds %.1f GB but uses %.1f GB; asking it to give back its %.1f GB of file cache before any job is touched",
+		why, vm.Name, vm.HostGB, vm.UsedGB, cache)
+	d.broadcast()
+	go func() {
+		err := sysinfo.ReclaimVM(vm.Name)
+		// The pages come back to the host over some seconds: wait until free RAM stops growing.
+		after := sysinfo.AvailGB()
+		for i := 0; err == nil && i < 15; i++ {
+			time.Sleep(2 * time.Second)
+			next := sysinfo.AvailGB()
+			grew := next - after
+			after = next
+			if grew < 0.2 {
+				break
+			}
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		end := time.Now()
+		gained := after - d.reclaim.before
+		d.reclaim.on, d.reclaim.end = false, end
+		d.vm.Guest = false // read it again before counting on any more
+		switch {
+		case err != nil:
+			d.reclaim.misses++
+			logf("RAM: the VM's cache could not be reclaimed: %v", err)
+		case gained < 0.5:
+			d.reclaim.misses++
+			logf("RAM: reclaim returned next to nothing (free RAM %.1f -> %.1f GB in %.0f s)", d.reclaim.before, after, end.Sub(d.reclaim.at).Seconds())
+		default:
+			d.reclaim.misses = 0
+			logf("RAM: reclaimed %.1f GB from the WSL/Docker VM in %.0f s (free RAM %.1f -> %.1f GB); no job was stopped", gained, end.Sub(d.reclaim.at).Seconds(), d.reclaim.before, after)
+		}
+		d.broadcast()
+	}()
+	return true
+}
+
+// ramMargin is the RAM that must stay free beyond the reserve and a new job's own need.
+func (d *Daemon) ramMargin() float64 {
+	return d.snap.RAMTotalGB * d.cfg.Reserve.RAMMarginPct / 100
+}
+
+// ramSettling says why no job may start for RAM reasons right now ("" when none): a reclaim is
+// running, a job is suspended to free RAM (it comes back first), or RAM was under the reserve
+// within the last reserve.ram_shrink_seconds.
+func (d *Daemon) ramSettling(now time.Time) string {
+	if d.reclaim.on {
+		return "giving the WSL/Docker VM's file cache back to Windows first"
+	}
+	for _, j := range d.jobs {
+		if j.State == "running" && j.held == "ram" {
+			return j.Name + " is suspended to free RAM and resumes first"
+		}
+	}
+	if ago := now.Sub(d.ramLowLast).Seconds(); !d.ramLowLast.IsZero() && ago < d.cfg.Reserve.RAMShrinkSeconds {
+		if ago < 1 {
+			return fmt.Sprintf("RAM is under the human's %.0f%% reserve (%.1f GB free)", d.res.RAMPct, d.snap.RAMAvailGB)
+		}
+		return fmt.Sprintf("RAM was under the human's reserve %.0f s ago: waiting %.0f s for it to settle", ago, d.cfg.Reserve.RAMShrinkSeconds)
+	}
+	return ""
+}
+
+// heldForHuman: the human's state would hold this job anyway (a game holds the GPU or the network).
+func (d *Daemon) heldForHuman(j *job) bool {
+	return (j.GPU && d.gpuHeld()) || (j.Net && d.user == "game" && d.cfg.Network.PauseInGame)
+}
+
+// hold suspends a job to free a resource the human is short of. On Windows its RAM is also moved
+// out to the pagefile, so suspending really frees it. The job loses nothing: it resumes where it
+// stopped when there is room again (unhold).
+func (d *Daemon) hold(j *job, what, why string, now time.Time) {
+	if j.pausedAt.IsZero() {
+		j.pausedAt = now
+	}
+	_ = os.Remove(PauseFile(j.ID)) // frozen, not asked to pause: nothing for it to answer
+	j.held, j.heldAt, j.reason, j.okSince = what, now, why, time.Time{}
+	j.holds++
+	if j.suspended.IsZero() {
+		j.suspended = now
+		d.suspend(j)
+	}
+	if what == "ram" {
+		j.heldRAM, j.freedAt = j.ramGB, now
+		d.each(j, sysinfo.Trim)
+		logf("%s: suspended, not stopped: %s. Its %.1f GB of RAM moves to the pagefile; it resumes when RAM is back", j.Name, why, j.ramGB)
+	} else {
+		logf("%s: suspended, not stopped: %s. It resumes when there is space again", j.Name, why)
+	}
+	d.lastHold = now
+	d.broadcast()
+}
+
+// unhold lets a held job run again (or hands it back to the game rule, when a game still holds it).
+func (d *Daemon) unhold(j *job, now time.Time, why string) {
+	logf("%s: resumed after %.0f s suspended: %s", j.Name, now.Sub(j.heldAt).Seconds(), why)
+	if d.heldForHuman(j) {
+		j.heldTotal += now.Sub(j.heldAt)
+		j.held, j.heldDrive, j.okSince = "", "", time.Time{}
+		j.reason = "the human needs the GPU (" + d.why() + ")"
+	} else {
+		d.unpause(j, now)
+	}
+	d.lastHold = now
+	d.broadcast()
+}
+
+// ramVictim picks the job to suspend for RAM: one not already held whose RAM can be moved out,
+// preferring one that covers the shortfall alone, then the highest band, then the heaviest.
+func (d *Daemon) ramVictim(need float64) *job {
+	var best *job
+	w := func(j *job) float64 { return j.ramGB }
+	for _, j := range d.running() {
+		if !j.killedAt.IsZero() || !j.checkpoint.IsZero() || j.held == "ram" || j.trimFailed || j.container != "" || j.ramGB < minHoldRAM {
+			continue
+		}
+		if best == nil || better(j, best, need, w) {
+			best = j
+		}
+	}
+	return best
+}
+
+// ramPressure is the RAM ladder. In order, each step only if the one before did not fix it:
+//  1. Reclaim: memory nobody needs (the WSL/Docker VM's file cache) is given back first, as soon as
+//     RAM is under the reserve or a waiting job lacks only RAM. No job is touched while it runs.
+//  2. Suspend: after pressure_seconds (at once when RAM is critical) one job at a time is
+//     suspended, and where the OS allows (Windows) its RAM is moved to the pagefile. It resumes
+//     when RAM is back. Elsewhere the job is asked to checkpoint and exit instead.
+//  3. Stop: only when RAM stays critical, nothing is left to suspend, and the jobs' RAM is what
+//     is missing. A job whose RAM would not cover the shortfall is never stopped for it.
+func (d *Daemon) ramPressure(now time.Time, floor float64) {
+	c := d.cfg
+	total, avail := d.snap.RAMTotalGB, d.snap.RAMAvailGB
+	if total <= 0 {
+		return
+	}
+	critFloor := total * c.Ladder.KillBelowRAMPct / 100
+	short, critical := avail < floor, avail < critFloor
+	d.ramCrit = since(d.ramCrit, critical, now)
+	if short {
+		d.ramLowLast = now
+	}
+	// Read the VM's own numbers while RAM is tight or a job waits for RAM.
+	d.vmWanted = 0
+	if c.Reserve.ReclaimVMCache && avail < floor+d.ramMargin()+1 {
+		d.vmWanted = 2
+	} else if c.Reserve.ReclaimVMCache && d.ramBlocked {
+		d.vmWanted = 1
+	}
+
+	// What the last suspensions freed, measured a few seconds after the trim.
+	for _, j := range d.running() {
+		if j.held != "ram" || j.freedAt.IsZero() || now.Sub(j.freedAt) < 3*time.Second {
+			continue
+		}
+		j.freedAt = time.Time{}
+		freed := math.Max(0, j.heldRAM-j.ramGB)
+		j.freedGB = math.Max(j.freedGB, freed)
+		if j.trimFailed = freed < j.heldRAM/2; j.trimFailed {
+			logf("%s: suspending it freed only %.1f of its %.1f GB of RAM (locked or shared memory)", j.Name, freed, j.heldRAM)
+		} else {
+			logf("%s: suspending it freed %.1f GB of RAM (free RAM now %.1f GB)", j.Name, freed, avail)
+		}
+	}
+
+	// 1. Reclaim.
+	wait := false
+	if short || d.ramBlocked {
+		why := fmt.Sprintf("%.1f GB free, under the human's %.0f%% reserve", avail, d.res.RAMPct)
+		if !short {
+			why = "jobs are waiting for RAM"
+		}
+		wait = d.reclaimVM(now, why, short)
+	}
+	// The VM holds memory but its own numbers aren't in yet (they are read once RAM gets tight):
+	// that reading gets 10 s before anything else is tried.
+	if short && c.Reserve.ReclaimVMCache && d.vm.HostGB >= reclaimMinGB && !d.vm.Guest && d.reclaim.misses == 0 &&
+		now.Sub(d.ramLow) < 10*time.Second && now.Sub(d.reclaim.end) > reclaimEvery {
+		wait = true
+	}
+	// A reclaim gets up to 45 s of critical RAM to show its effect before anything else is tried.
+	wait = (wait || now.Sub(d.reclaim.end) < 3*time.Second) && (d.ramCrit.IsZero() || now.Sub(d.ramCrit) < 45*time.Second)
+
+	// 2. Suspend (or, where suspending frees nothing, checkpoint).
+	sustained := !d.ramLow.IsZero() && now.Sub(d.ramLow) > dur(c.Ladder.PressureSeconds)
+	if !wait && (sustained || critical) && now.Sub(d.lastHold) > holdGap {
+		need := floor - avail
+		why := fmt.Sprintf("RAM below the human's %.0f%% reserve (%.1f GB free, %.1f GB short)", d.res.RAMPct, avail, need)
+		if v := d.ramVictim(need); v != nil && sysinfo.CanTrim {
+			d.hold(v, "ram", why, now)
+			return
+		}
+		if sustained && !critical {
+			// Nothing can be suspended to any effect: ask the job that covers the shortfall to save
+			// and exit (requeued). A job whose RAM would not cover it is left alone.
+			held := func(j *job) bool { return j.ramGB >= minHoldRAM && d.ramCovers(j, need) }
+			if v := d.victim(held, true, false, need, func(j *job) float64 { return j.ramGB }); v != nil {
+				d.requestCheckpoint(v, now, why)
+			}
+		}
+	}
+
+	// 3. Stop: RAM critical, nothing left to suspend, and the jobs hold what is missing.
+	if critical && !wait && now.Sub(d.lastKill) > 5*time.Second && now.Sub(d.lastHold) > holdGap {
+		need := critFloor - avail
+		if sysinfo.CanTrim && d.ramVictim(need) != nil {
+			return // still something to suspend first
+		}
+		var v *job
+		for _, j := range d.running() {
+			if j.killedAt.IsZero() && (v == nil || better(j, v, need, func(j *job) float64 { return j.ramGB })) {
+				v = j
+			}
+		}
+		if v != nil && v.ramGB >= minHoldRAM && d.ramCovers(v, need) {
+			v.freedGB = math.Max(v.freedGB, v.ramGB)
+			v.reason = fmt.Sprintf("RAM critically low: %.1f GB free, %.1f GB short; stopping it frees %.1f GB", avail, need, v.ramGB)
+			d.killJob(v, now)
+		} else if now.Sub(d.critSaid) > time.Minute {
+			d.critSaid = now
+			logf("RAM critically low (%.1f GB free), but the jobs' RAM is not what is missing: stopping them would not fix it, so none is stopped", avail)
+		}
+		return
+	}
+
+	// Resume, one at a time: RAM has room for what the job takes back, plus the margin, and has had
+	// it for 5 s. Each time a job is held again it waits longer (15 s, 30 s, ... 10 min).
+	room := avail - floor
+	for _, j := range d.running() {
+		if j.held != "ram" || !j.checkpoint.IsZero() {
+			continue
+		}
+		back := math.Max(0, j.heldRAM-j.ramGB) + d.ramMargin()
+		minHold := time.Duration(math.Min(600, 15*math.Pow(2, float64(j.holds-1)))) * time.Second
+		ok := !short && !d.reclaim.on && room >= back && now.Sub(j.heldAt) >= minHold
+		j.okSince = since(j.okSince, ok, now)
+		if ok && now.Sub(j.okSince) >= 5*time.Second && now.Sub(d.lastHold) > holdGap {
+			d.unhold(j, now, fmt.Sprintf("RAM is back (%.1f GB free)", avail))
+			return
+		}
+	}
+}
+
+// ramCovers says whether stopping j would fix a RAM shortfall of need: alone, or as the next step
+// of stopping every job when together they hold what is missing.
+func (d *Daemon) ramCovers(j *job, need float64) bool {
+	if j.ramGB >= need {
+		return true
+	}
+	sum := 0.0
+	for _, o := range d.running() {
+		if o.killedAt.IsZero() {
+			sum += o.ramGB
+		}
+	}
+	return sum >= need
+}
+
+// diskFloor is the free space kept on a drive: reserve.disk_free_gb, at most a tenth of the drive.
+func (d *Daemon) diskFloor(dk sysinfo.Disk) float64 {
+	return math.Min(d.cfg.Reserve.DiskFreeGB, dk.TotalGB/10)
+}
+
+// drivesOf lists the drives a job can fill: its folder's, and the ones temp files and caches go to.
+func (d *Daemon) drivesOf(j *job) []string {
+	var out []string
+	if dr, ok := d.driveOf[j.Cwd]; ok {
+		out = append(out, dr)
+	}
+	for dr := range d.sysDrives {
+		if len(out) == 0 || out[0] != dr {
+			out = append(out, dr)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// diskWhy says which drive under the human's disk reserve keeps a job from starting ("" if none).
+func (d *Daemon) diskWhy(j *job) string {
+	if d.cfg.Reserve.DiskFreeGB <= 0 {
+		return ""
+	}
+	for _, dr := range d.drivesOf(j) {
+		if dk := d.disks[dr]; dk.TotalGB > 0 && dk.FreeGB < d.diskFloor(dk) {
+			return fmt.Sprintf("disk %s has %.1f GB free, under the %.0f GB kept for the human", dr, dk.FreeGB, d.diskFloor(dk))
+		}
+	}
+	return ""
+}
+
+// diskPressure keeps free space on every drive in use. A drive under the reserve for
+// pressure_seconds: the job writing the most to it is suspended (stopping it would free nothing,
+// and its files stay), one job at a time, and resumes when the drive has room again. No job starts
+// on a drive that is under the reserve (admit).
+func (d *Daemon) diskPressure(now time.Time) {
+	c := d.cfg
+	if d.diskLow == nil {
+		d.diskLow = map[string]time.Time{}
+	}
+	for dr := range d.diskLow {
+		if _, ok := d.disks[dr]; !ok {
+			delete(d.diskLow, dr)
+		}
+	}
+	for dr, dk := range d.disks {
+		floor := d.diskFloor(dk)
+		low := c.Reserve.DiskFreeGB > 0 && dk.FreeGB < floor
+		d.diskLow[dr] = since(d.diskLow[dr], low, now)
+		if !low || now.Sub(d.diskLow[dr]) <= dur(c.Ladder.PressureSeconds) || now.Sub(d.lastHold) <= holdGap {
+			continue
+		}
+		var v *job
+		for _, j := range d.running() {
+			if j.held != "" || !j.suspended.IsZero() || !j.killedAt.IsZero() || !j.checkpoint.IsZero() || j.writeRate < 1 {
+				continue
+			}
+			on := false
+			for _, jd := range d.drivesOf(j) {
+				on = on || jd == dr
+			}
+			if on && (v == nil || j.writeRate > v.writeRate) {
+				v = j
+			}
+		}
+		if v != nil {
+			v.heldDrive = dr
+			d.hold(v, "disk", fmt.Sprintf("disk %s has %.1f GB free, under the %.0f GB kept for the human, and it was writing %.0f MB/s", dr, dk.FreeGB, floor, v.writeRate), now)
+			return
+		}
+	}
+	for _, j := range d.running() {
+		if j.held != "disk" || !j.checkpoint.IsZero() {
+			continue
+		}
+		dk, known := d.disks[j.heldDrive]
+		floor := d.diskFloor(dk)
+		ok := c.Reserve.DiskFreeGB <= 0 || !known || dk.FreeGB >= floor+math.Max(1, floor/4)
+		j.okSince = since(j.okSince, ok, now)
+		if ok && now.Sub(j.okSince) >= 5*time.Second && now.Sub(d.lastHold) > holdGap {
+			d.unhold(j, now, fmt.Sprintf("disk %s has room again (%.1f GB free)", j.heldDrive, dk.FreeGB))
+			return
 		}
 	}
 }

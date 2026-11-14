@@ -39,7 +39,13 @@ code, with the numbers the code actually uses. If this page and the code disagre
   agent is told why and that there's nothing to resubmit.
 - **Polite preemption.** The ladder goes: shrink the job's CPU set, then cooperative pause at a step
   boundary, then suspend (for jobs that ignore the pause), then checkpoint-and-exit with automatic
-  requeue when you need the memory back, then kill, but only when RAM is critical.
+  requeue when you need the memory back, then kill, but only when RAM is critical, nothing is left
+  to suspend, and the job's RAM is what's missing.
+- **RAM nobody needs is reclaimed first.** On Windows the WSL2 VM (where Docker Desktop runs) keeps
+  file cache from builds and installs, and Windows counts all of it as used. When RAM runs short
+  FIREFIGHTER has the VM give that cache back before it touches any job, and says so in the log.
+- **Disk too.** It keeps free space on every drive jobs use (`reserve.disk_free_gb`): no job starts
+  on a drive under the reserve, and a job writing to one is suspended until there's room again.
 - **Network too.** Downloads and uploads (`docker pull`, pip/npm/cargo installs, `git clone`,
   model and dataset downloads; detected automatically, or `--net`) take turns, wait while you're
   using the link (a call, a stream: `network.human_busy_pct`), and pause while you game.
@@ -63,12 +69,12 @@ Zero config gives you the researched defaults below. You can swap each part by n
 
 | Stage | Default | What it does | Swap with |
 |---|---|---|---|
-| **You** | dynamic reserve | Four states: away, present, active and game. The reserve grows within one 0.5 s tick and gives back 1 CPU every 15 s, RAM after 60 s and VRAM after 120 s. Jobs are pinned to the CPUs outside your reserve (Windows and Linux; macOS uses background QoS instead). A state with `pause_gpu` (game, by default) pauses GPU jobs and starts no new ones. | `reserve.<state>.cpus / ram_pct / vram_gb / pause_gpu`, `reserve.exclusive_apps` |
+| **You** | dynamic reserve | Four states: away, present, active and game. The reserve grows within one 0.5 s tick and gives back 1 CPU every 15 s, RAM after 60 s and VRAM after 120 s. Jobs are pinned to the CPUs outside your reserve (Windows and Linux; macOS uses background QoS instead). While you're active or in a game the CPU reserve also follows what you and other programs use (that load + 2), up to `reserve.max_cpu_pct` (75%) of the CPUs: a Docker build on 13 of 16 CPUs leaves jobs 4, not 1. A state with `pause_gpu` (game, by default) pauses GPU jobs and starts no new ones. `reserve.disk_free_gb` (10, at most a tenth of the drive) is kept free on every drive jobs use. | `reserve.<state>.cpus / ram_pct / vram_gb / pause_gpu`, `reserve.max_cpu_pct`, `reserve.disk_free_gb`, `reserve.exclusive_apps` |
 | **Order** | `las` | The project with the least use goes first, with a 12 h half-life (Tiresias, Slurm fair share). A 45-minute wait cap overrides it. | `order.policy = las \| stride \| lottery \| drf \| fifo \| srpt` |
 | **Market** | `priced` | Price per machine-minute = tier (spot ⅓, normal 1, urgent 2) × congestion × 1.25 for projects whose jobs habitually overrun. Congestion is 0.5 × 8^u, where u is how committed the resource is over the next hour: 0.5 idle, about 1.4 at half load, 4 when full. The price is locked when the job is granted; overruns pay ×2 and adopted work ×1.5 on top. Urgent buys at most 30 min of queue lead under `las` and `stride`. | `pricing.policy = priced \| free`, `pricing.max_lead_minutes` |
 | **Budget** | `karma` | Steady refill of 240 machine-minutes a day (10 an hour), banked up to 2 days (Karma, OSDI '23). The first project on a machine starts full. Later new projects start at the median usage and draw their start and first day's refill from one pool all new projects share (120 a day), so inventing names doesn't mint budget or jump the queue. While a project's budget is empty, its waiting and running jobs are spot. | `budget.policy = karma \| daily \| none`, `budget.daily_minutes`, `budget.bank_days`, `budget.projects.<name>`, `budget.weights.<name>` |
 | **Charge** | DRF | One machine-minute is all of the GPU, VRAM, RAM or CPUs for one minute (Dominant Resource Fairness). Idle VRAM is charged ×3 (ESX idle tax), overruns ×2, and chronic under-estimates ×1.25. | built in |
-| **Admission** | learned peaks | A job's need is the larger of its declared size and 1.2 × its learned peak, checked against what's left on one GPU after your reserve and the unclaimed needs of jobs already there. Each card takes turns on its own (`gpu.max_jobs` per card, a second job only while that card's load leaves room), and a job goes to the least busy card that fits (fewest jobs, then lowest load, then most VRAM left); a need is clamped to what that card ever offers (its size, less your reserve, less the least others have held lately). The job is pinned to that card (`CUDA_VISIBLE_DEVICES` with PCI order, `HIP_VISIBLE_DEVICES`/`ROCR_VISIBLE_DEVICES`, or the oneAPI selector; `docker run --gpus` is narrowed too). First-time commands start 5 s apart so their real use shows. Short jobs (declared and predicted ≤ 10 min) may backfill behind a head that's waiting on VRAM. With no discrete GPU (Apple silicon), VRAM needs count as RAM. | `gpu.max_jobs` (per card), `gpu.pack_below_util`, `gpu.vram_margin`, `gpu.default_vram_gb` |
+| **Admission** | learned peaks | A job's need is the larger of its declared size and 1.2 × its learned peak, checked against what's left on one GPU after your reserve and the unclaimed needs of jobs already there. Each card takes turns on its own (`gpu.max_jobs` per card, a second job only while that card's load leaves room), and a job goes to the least busy card that fits (fewest jobs, then lowest load, then most VRAM left); a need is clamped to what that card ever offers (its size, less your reserve, less the least others have held lately). The job is pinned to that card (`CUDA_VISIBLE_DEVICES` with PCI order, `HIP_VISIBLE_DEVICES`/`ROCR_VISIBLE_DEVICES`, or the oneAPI selector; `docker run --gpus` is narrowed too). First-time commands start 5 s apart so their real use shows. Short jobs (declared and predicted ≤ 10 min) may backfill behind a head that's waiting on VRAM or on RAM, so the GPU isn't idle while a big job waits. RAM: a job starts only if its need plus `reserve.ram_margin_pct` (5% of RAM) fits beside your reserve, and not while RAM is, or within `reserve.ram_shrink_seconds` was, under the reserve; a GPU job with no `--ram` and no history is assumed to need `gpu.default_ram_gb` (3). A waiting job's line in `status` says what it lacks, and `status` leads with a note when the GPU is idle with jobs waiting. With no discrete GPU (Apple silicon), VRAM needs count as RAM. | `gpu.max_jobs` (per card), `gpu.pack_below_util`, `gpu.vram_margin`, `gpu.default_vram_gb`, `gpu.default_ram_gb`, `reserve.ram_margin_pct` |
 | **Preemption** | ladder | See [the ladder](#the-preemption-ladder) below. | `ladder.*` |
 | **Guard** | on | Heavy processes an agent CLI (Claude Code, Codex, Gemini, Grok, OpenCode, Kimi, Copilot, Amp, Qwen, Aider, Goose, Cline and more) starts outside FIREFIGHTER get adopted: spot band, idle priority, charged. IDE terminals are never adopted. Each project is capped at 20 open jobs. Agents can read the policy but can't change it unless you allow it, and even then only `order.*`, `pricing.*` and `gpu.*` (never presets, which set reserves). | `guard.auto_adopt`, `guard.agent_parents`, `guard.heavy_*`, `guard.agents_can_configure` |
 
@@ -94,19 +100,52 @@ Steps run in order, and each one fires only if the trigger is still there:
    exist, acknowledged but kept computing), it's suspended. It stays suspended while you need the
    GPU. Past 60 s, if the memory it holds is what you're short of, it's stopped and requeued (it
    ignored the pause, so it can't checkpoint). `--evict never` jobs stay suspended until you're done.
-4. **Checkpoint:** when RAM or VRAM (per card) stays under your reserve for 20 s, or when a spot job
+4. **Checkpoint:** when VRAM (per card) stays under your reserve for 20 s, or when a spot job
    has run its 10-minute minimum and an in-budget job is waiting on what it holds, FIREFIGHTER lifts
    any pause and creates `FIREFIGHTER_CHECKPOINT_FILE`. The job gets 60 s to save and exit. On Unix it then gets a
    SIGTERM, and 10 s later it's killed. A job that exits with 75, or exits at all after the
    request, is put back in line under the same id. `--evict force` jobs are killed at once (and put back in line the same way).
-5. **Kill:** if available RAM drops under 3%, one job is killed at once, even mid-grace, and the
-   next only after 5 s (memory takes a moment to come back).
 
 Victims are picked so one eviction fixes the problem: first jobs whose memory covers the shortfall,
 then the highest band (spot, past their lease, adopted), then the heaviest. One eviction at a time.
-`--evict never` jobs are only ever touched when RAM is critical. CUDA can't be checkpointed from outside on Windows
-or macOS, so the job has to cooperate. `firefighter protocol` prints a short Python helper you
-call once per step.
+CUDA can't be checkpointed from outside on Windows or macOS, so the job has to cooperate.
+`firefighter protocol` prints a short Python helper you call once per step.
+
+### When RAM runs short
+
+A kill throws away everything a job has computed since it last wrote a file, so RAM has its own
+order, and each step runs only if the one before didn't fix it:
+
+1. **Reclaim what nobody needs.** On Windows the WSL2 VM (Docker Desktop's engine runs in it) fills
+   with file cache during a build or an install; Windows sees one process, `vmmemWSL`, holding all
+   of it. FIREFIGHTER reads the VM's own numbers once RAM gets tight (`status` shows "holds 19.0 GB,
+   uses 0.9 GB"), and as soon as RAM is under your reserve, or a waiting job lacks only RAM, it has
+   the VM drop its page cache and compact its memory, which hands the pages back to Windows in
+   seconds without stopping anything inside. No job is touched while that runs. The log says what
+   was asked and what came back. Off with `reserve.reclaim_vm_cache false`.
+2. **Suspend, don't stop.** If RAM stays under your reserve for 20 s (or drops under 3%: at once),
+   one job at a time is suspended, the one whose RAM covers the shortfall first. On Windows its
+   memory is moved out to the pagefile, so suspending really frees it; the VRAM stays where it is.
+   It resumes where it stopped once RAM has room for what it takes back plus the margin, and its
+   receipt says how long it was held and how much RAM that gave back. Held time is not lease time
+   and is not charged. On macOS and Linux a stopped process keeps its RAM, so there the job that
+   covers the shortfall is asked to checkpoint and exit instead (step 4 above).
+3. **Stop, last.** Only when RAM stays under 3%, nothing is left to suspend (or suspending freed
+   nothing: locked memory, containers), and the jobs' RAM is what's missing. A job whose RAM would
+   not cover the shortfall, alone or with the other jobs, is never stopped for it: the log says the
+   jobs aren't the cause. The reason, the free RAM and the RAM the stop freed go in the log and the
+   receipt.
+
+Admission is the other half: a job is not granted into a shortage (see Admission above).
+
+### When a drive fills up
+
+`reserve.disk_free_gb` (10 GB, at most a tenth of the drive; 0 turns it off) is kept free on the
+drive of each job's folder and on the drives temp files and FIREFIGHTER's own state live on. No job
+starts on a drive under it. If a drive stays under it for 20 s, the running job writing the most to
+it is suspended (stopping it would free nothing, and its files stay), and resumes when the drive has
+room again. Disk I/O is handled by priority: on Windows and Linux jobs run at the lowest I/O
+priority, so your own reads and writes go first.
 
 
 ## The loop
@@ -126,7 +165,7 @@ Twice a second the daemon:
 
 | Idea | Source | In FIREFIGHTER | Where |
 |---|---|---|---|
-| Idle-core buffer protects latency, while priority and CPU caps don't | PerfIso (ATC '18) | The human's CPU reserve = max(state base, CPUs the human and other programs are using + 2) in the active and game states. Jobs are pinned to the CPUs outside it. Grows within one tick, gives back 1 CPU per 15 s. | `policy.ReserveCtl`, `daemon.enforceCPU` |
+| Idle-core buffer protects latency, while priority and CPU caps don't | PerfIso (ATC '18) | The human's CPU reserve = max(state base, CPUs the human and other programs are using + 2, up to `reserve.max_cpu_pct` of the machine) in the active and game states. The load it follows is the least of the last three readings (1.5 s), measured per job process, so a job starting or a worker exiting doesn't read as your demand. Jobs are pinned to the CPUs outside it. Grows within one tick, gives back 1 CPU per 15 s. | `policy.ReserveCtl`, `daemon.enforceCPU` |
 | Fast attack, slow decay; hold before giving back | PerfIso, Heracles, BOINC (15–20 s) | The RAM reserve holds 60 s and the VRAM reserve 120 s before shrinking. Game state holds 30 s after the game ends. | `ReserveCtl.Update`, `reserve.*_seconds` |
 | "User active" = input in the last 3 minutes; GPU work yields to the user | BOINC | `away_seconds = 180`; the game state pauses GPU jobs (`pause_gpu`, any state can set it). | `policy.UserState`, `daemon.ladder` |
 | Exclusive apps | BOINC `exclusive_gpu_apps` | `reserve.exclusive_apps` counts as the game state. | `daemon.senseUser` |
@@ -151,10 +190,12 @@ Twice a second the daemon:
 | Priority bands above the market | Borg | Band 0 (the human) is never in the market. Then 1 short, 2 batch, 3 spot, 4 harvester. | `policy.BandFor` |
 | Step-boundary suspend | Gandiva | Cooperative pause file; suspend only if not acknowledged in 10 s. | `daemon.ladder` |
 | Checkpoint on eviction | CheckFreq, Borg eviction notice | Checkpoint file plus 60 s grace, then SIGTERM (Unix), then kill. Exit 75 or any exit after the request requeues the job. | `daemon.requestCheckpoint`, CLI `run` |
-| Kill order under memory pressure | Android lmkd, earlyoom | Highest band first, then heaviest; evict=never jobs last. Critical RAM (3%) kills at once, even mid-grace. | `daemon.victim` |
+| Kill order under memory pressure | Android lmkd, earlyoom | Highest band first, then heaviest; evict=never jobs last. For RAM a kill is the last step: reclaim, then suspend, then stop only a job whose RAM covers the shortfall. | `daemon.victim`, `daemon.ramPressure` |
+| Reclaimable memory isn't demand | Linux MemAvailable; WSL2 free page reporting; balloon drivers (Waldspurger, ESX) | The WSL2/Docker VM's page cache is read from the guest and given back to Windows (drop caches + compaction) before any job is touched. | `sysinfo.VMGuest`, `daemon.reclaimVM` |
+| Suspend to swap instead of kill | Windows working-set trimming; Borg's "evict, don't lose work" | A job suspended for RAM has its working set emptied to the pagefile and resumes later. | `sysinfo.Trim`, `daemon.hold` |
 | Harvest idle GPU | PilotFish, Salad, BOINC | Band 4 harvester runs only after 180 s with no GPU jobs and no game. | `daemon.harvester` |
 | One broker, agent protocol | AgentLoom, Anvil, gpubroker | MCP tools, `wait`, receipts, leases, evict policy, `docker run` labelling. | `internal/mcp`, CLI |
-| Memory, not CPU, limits concurrent agents | AgentCgroup (2026) | RAM headroom gates every admission; the RAM reserve is part of the human's reserve. | `daemon.headroom` |
+| Memory, not CPU, limits concurrent agents | AgentCgroup (2026) | RAM headroom gates every admission, with a margin, and never into a shortage; the RAM reserve is part of the human's reserve. | `daemon.headroom`, `daemon.admit` |
 | Simple coordination captures most of the gain | AIOS | The defaults are simple and swappable. | `internal/config` |
 
 ## Not implemented, and why

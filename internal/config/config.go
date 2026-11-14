@@ -51,6 +51,7 @@ type Config struct {
 		PackBelowUtil float64 `toml:"pack_below_util"` // a second GPU job joins only below this GPU %
 		VRAMMargin    float64 `toml:"vram_margin"`     // learned peak VRAM is multiplied by this
 		DefaultVRAMGB float64 `toml:"default_vram_gb"` // need assumed for a GPU job with no history
+		DefaultRAMGB  float64 `toml:"default_ram_gb"`  // RAM need assumed for a GPU job with no --ram and no history
 	} `toml:"gpu"`
 
 	Reserve struct {
@@ -67,6 +68,10 @@ type Config struct {
 		GameCoolSeconds   float64  `toml:"game_cool_seconds"`   // game state holds this long after it ends
 		ExclusiveApps     []string `toml:"exclusive_apps"`      // process names that count as a game
 		IgnoreGPUApps     []string `toml:"ignore_gpu_apps"`     // compositors and harvesters: GPU use that isn't the human
+		MaxCPUPct         float64  `toml:"max_cpu_pct"`         // the CPU reserve follows other programs' load up to this share of the CPUs; jobs keep the rest
+		RAMMarginPct      float64  `toml:"ram_margin_pct"`      // a job starts only if this share of RAM stays free beyond the reserve and its need
+		DiskFreeGB        float64  `toml:"disk_free_gb"`        // free space kept on each drive jobs use (at most a tenth of the drive)
+		ReclaimVMCache    bool     `toml:"reclaim_vm_cache"`    // short of RAM: have the WSL2/Docker VM drop its file cache before any job is touched
 	} `toml:"reserve"`
 
 	Ladder struct {
@@ -135,6 +140,7 @@ func Defaults() Config {
 	c.GPU.PackBelowUtil = 70
 	c.GPU.VRAMMargin = 1.2
 	c.GPU.DefaultVRAMGB = 4
+	c.GPU.DefaultRAMGB = 3
 	c.Reserve.Away = Reserve{CPUs: 2, RAMPct: 5, VRAMGB: 1}
 	c.Reserve.Present = Reserve{CPUs: 4, RAMPct: 8, VRAMGB: 1.5}
 	c.Reserve.Active = Reserve{CPUs: 6, RAMPct: 10, VRAMGB: 2}
@@ -146,6 +152,10 @@ func Defaults() Config {
 	c.Reserve.RAMShrinkSeconds = 60
 	c.Reserve.VRAMShrinkSeconds = 120
 	c.Reserve.GameCoolSeconds = 30
+	c.Reserve.MaxCPUPct = 75
+	c.Reserve.RAMMarginPct = 5
+	c.Reserve.DiskFreeGB = 10
+	c.Reserve.ReclaimVMCache = true
 	c.Reserve.ExclusiveApps = []string{"gamescope"} // Steam's game compositor on Linux
 	c.Reserve.IgnoreGPUApps = []string{"dwm.exe", "csrss.exe", "explorer.exe", "windowserver", "xorg", "gnome-shell", "kwin_wayland", "kwin_x11", "firefighter.exe", "firefighter"}
 	c.Ladder.PauseAckSeconds = 10
@@ -289,6 +299,18 @@ func (c Config) Validate() error {
 	}
 	if c.GPU.MaxJobs < 1 {
 		return fmt.Errorf("gpu.max_jobs must be at least 1")
+	}
+	if c.GPU.DefaultRAMGB < 0 {
+		return fmt.Errorf("gpu.default_ram_gb can't be negative")
+	}
+	if c.Reserve.MaxCPUPct < 0 || c.Reserve.MaxCPUPct > 100 {
+		return fmt.Errorf("reserve.max_cpu_pct must be 0-100")
+	}
+	if c.Reserve.RAMMarginPct < 0 || c.Reserve.RAMMarginPct > 50 {
+		return fmt.Errorf("reserve.ram_margin_pct must be 0-50")
+	}
+	if c.Reserve.DiskFreeGB < 0 {
+		return fmt.Errorf("reserve.disk_free_gb can't be negative (0 turns the disk reserve off)")
 	}
 	return nil
 }

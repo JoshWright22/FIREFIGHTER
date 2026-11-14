@@ -7,7 +7,6 @@ package sysinfo
 import (
 	"context"
 	"encoding/csv"
-	"encoding/json"
 	psnet "github.com/shirou/gopsutil/v4/net"
 	"os"
 	"os/exec"
@@ -156,22 +155,8 @@ func (r *Reader) Read() Snapshot {
 // applyFake overlays FIREFIGHTER_FAKE_FILE (JSON) on a sample, so tests on headless VMs can
 // script the human (idle time, a fullscreen game), memory pressure and a GPU.
 func applyFake(s *Snapshot) {
-	path := os.Getenv("FIREFIGHTER_FAKE_FILE")
-	if path == "" {
-		return
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var f struct {
-		Idle       *float64 `json:"idle"`
-		Foreground *string  `json:"foreground"`
-		RAMAvailGB *float64 `json:"ram_avail_gb"`
-		NetMbps    *float64 `json:"net_mbps"`
-		GPUs       []GPU    `json:"gpus"`
-	}
-	if json.Unmarshal(b, &f) != nil {
+	f := readFake()
+	if f == nil {
 		return
 	}
 	if f.Idle != nil {
@@ -468,18 +453,23 @@ func Alive(pid int) bool {
 	return true
 }
 
-// Usage of a set of pids: CPU seconds so far and resident RAM.
-func Usage(pids []int) (cpuSeconds, ramGB float64) {
+// Usage of a set of pids: each one's CPU seconds so far (kept apart, so a worker that exits doesn't
+// read as the whole job going idle), their resident RAM, and the bytes they have written.
+func Usage(pids []int) (cpuSeconds map[int]float64, ramGB, writtenGB float64) {
+	cpuSeconds = make(map[int]float64, len(pids))
 	for _, pid := range pids {
 		p, err := process.NewProcess(int32(pid))
 		if err != nil {
 			continue
 		}
 		if t, err := p.Times(); err == nil {
-			cpuSeconds += t.User + t.System
+			cpuSeconds[pid] = t.User + t.System
 		}
 		if m, err := p.MemoryInfo(); err == nil {
 			ramGB += gb(m.RSS)
+		}
+		if io, err := p.IOCounters(); err == nil {
+			writtenGB += gb(io.WriteBytes)
 		}
 	}
 	return

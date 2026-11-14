@@ -42,9 +42,18 @@ else
   [ "$want" = "$got" ] || { echo "checksum mismatch for $name" >&2; exit 1; }
   # The checksum only proves the download wasn't corrupted. With the GitHub CLI signed in, also
   # check the release's signed build provenance (it can't be forged by editing the release).
+  # A release with none (made before releases were signed) still installs on its checksum, with a
+  # note; FIREFIGHTER_REQUIRE_PROVENANCE=1 refuses it.
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh attestation verify "$tmp/$name" --repo "$REPO" >/dev/null || { echo "provenance check failed for $name" >&2; exit 1; }
-    echo "verified signed build provenance"
+    if out=$(gh attestation verify "$tmp/$name" --repo "$REPO" 2>&1); then
+      echo "verified signed build provenance"
+    elif printf '%s' "$out" | grep -Eqi 'HTTP 404|no attestations? found|Not Found' && [ "${FIREFIGHTER_REQUIRE_PROVENANCE:-}" != 1 ]; then
+      echo "note: this release has no signed build provenance for $name; installing on its checksum alone"
+    else
+      printf '%s\n' "$out" >&2
+      echo "provenance check failed for $name" >&2
+      exit 1
+    fi
   fi
   tar -xzf "$tmp/$name" -C "$tmp"
   put "$tmp/firefighter"

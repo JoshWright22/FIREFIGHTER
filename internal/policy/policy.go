@@ -307,12 +307,18 @@ type ReserveCtl struct {
 
 // Update moves the reserve toward target. busyNonJobCPUs is how many CPUs the human and other
 // non-job programs are using right now; in active and game states the CPU reserve also covers that
-// plus 2 spare, so a compile or a game always finds idle cores.
-func (r *ReserveCtl) Update(c config.Config, state string, busyNonJobCPUs float64, now time.Time) {
+// plus 2 spare, so a compile or a game always finds idle cores. That part stops at
+// reserve.max_cpu_pct of the machine's ncpu CPUs: other programs' load (a Docker build, an
+// indexer) is not all the human's, and jobs pinned to one CPU do nobody any good.
+func (r *ReserveCtl) Update(c config.Config, state string, busyNonJobCPUs float64, ncpu int, now time.Time) {
 	t := c.ReserveFor(state)
 	cpu := float64(t.CPUs)
 	if state == "active" || state == "game" {
-		cpu = math.Max(cpu, math.Ceil(busyNonJobCPUs)+2)
+		follow := math.Ceil(busyNonJobCPUs) + 2
+		if most := math.Floor(float64(ncpu) * c.Reserve.MaxCPUPct / 100); ncpu > 0 && c.Reserve.MaxCPUPct > 0 {
+			follow = math.Min(follow, most)
+		}
+		cpu = math.Max(cpu, follow)
 	}
 	if cpu >= r.CPUs {
 		r.CPUs, r.cpuStep = cpu, now

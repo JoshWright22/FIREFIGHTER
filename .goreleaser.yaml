@@ -4,8 +4,11 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [windows, linux, darwin]
     goarch: [amd64, arm64]
-    # Keep the symbol table (-w only drops DWARF): fully stripped Go binaries (-s -w) trip
-    # Windows Defender's machine-learning detection (Bearfoos.A!ml) on install.
+    # Keep the symbol table (-w only drops DWARF): fully stripped Go binaries (-s -w) look more
+    # like packed malware to Windows Defender's machine-learning rules. That alone doesn't settle
+    # it: v0.1.0 is flagged by its file's cloud reputation (Bearfoos.A!ml, Colorexe.B,
+    # Behavior:Win32/Persistence.A!ml), which only code signing or a false-positive report to
+    # Microsoft clears. See docs/security.md.
     flags: ["-trimpath"]
     ldflags: ["-w -X main.version={{.Version}}"]
 archives:

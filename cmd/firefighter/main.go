@@ -568,6 +568,10 @@ loop:
 		if rec.Requeue && rec.Reason != "" && askedAt.IsZero() {
 			ui.Say(ui.Hot, "%s: stopped because %s", t.Name, rec.Reason)
 		}
+		if rec.Held > 0 {
+			ui.Say(ui.Hot, "%s: suspended %d time(s), %.1f min in all, to free RAM or disk for the human (%.1f GB of RAM given back); it resumed where it stopped",
+				t.Name, rec.Held, rec.HeldMinutes, rec.FreedRAM)
+		}
 		return code, rec.Requeue, nil
 	}
 	return code, v.Receipt != nil && v.Receipt.Requeue, nil
@@ -690,7 +694,20 @@ func status(args []string) error {
 	m := s.Machine
 	p("  CPU %.1f/%.0f busy (%.1f human+other)  RAM %.1f/%.1f GB free  GPU %.0f%%  VRAM %.1f/%.1f GB",
 		m["cpu_busy"], m["cpus"], m["user_cpus"], m["ram_avail_gb"], m["ram_total_gb"], m["gpu_util"], m["vram_used_gb"], m["vram_total_gb"])
+	if s.VM != nil && s.VM.HostGB >= 1 {
+		if s.VM.Guest {
+			p("  WSL/Docker VM: holds %.1f GB of RAM, uses %.1f GB; %.1f GB is file cache FIREFIGHTER reclaims before touching a job", s.VM.HostGB, s.VM.UsedGB, s.VM.CacheGB)
+		} else {
+			p("  WSL/Docker VM: holds %.1f GB of RAM (its file cache is reclaimed when RAM runs short)", s.VM.HostGB)
+		}
+	}
+	for _, dk := range s.Disks {
+		p("  disk %s %.1f/%.1f GB free (%.0f GB kept for the human)", dk.Path, dk.FreeGB, dk.TotalGB, min(s.Reserve["disk_free_gb"], dk.TotalGB/10))
+	}
 	p("  policy: preset %s, order %s, pricing %s, budget %s", s.Policy["preset"], s.Policy["order"], s.Policy["pricing"], s.Policy["budget"])
+	for _, n := range s.Notes {
+		p("  %s", ui.Paint(ui.Hot, "! "+n))
+	}
 	for _, k := range []string{"gpu", "cpu"} {
 		if q, ok := s.Market[k]; ok {
 			p("  %s", ui.Paint(ui.Coral, q.Line()))

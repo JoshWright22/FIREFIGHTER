@@ -233,24 +233,46 @@ func TestUserState(t *testing.T) {
 func TestReserveFastAttackSlowDecay(t *testing.T) {
 	c := config.Defaults()
 	r := &ReserveCtl{}
-	r.Update(c, "away", 0, t0)
+	r.Update(c, "away", 0, 16, t0)
 	if r.CPUs != 2 {
 		t.Fatalf("away cpus %v", r.CPUs)
 	}
-	r.Update(c, "active", 9, t0.Add(time.Second)) // busy 9 -> ceil(9)+2 = 11
+	r.Update(c, "active", 9, 16, t0.Add(time.Second)) // busy 9 -> ceil(9)+2 = 11
 	if r.CPUs != 11 || r.RAMPct != 10 {
 		t.Fatalf("attack must be immediate: %+v", r)
 	}
-	r.Update(c, "away", 0, t0.Add(2*time.Second))
+	r.Update(c, "away", 0, 16, t0.Add(2*time.Second))
 	if r.CPUs != 11 || r.RAMPct != 10 {
 		t.Fatalf("no instant decay: %+v", r)
 	}
-	r.Update(c, "away", 0, t0.Add(20*time.Second))
+	r.Update(c, "away", 0, 16, t0.Add(20*time.Second))
 	if r.CPUs != 10 {
 		t.Fatalf("give back one CPU per 15 s: %v", r.CPUs)
 	}
-	r.Update(c, "away", 0, t0.Add(70*time.Second))
+	r.Update(c, "away", 0, 16, t0.Add(70*time.Second))
 	if r.RAMPct != 5 {
 		t.Fatalf("RAM reserve shrinks after its hold: %v", r.RAMPct)
+	}
+}
+
+// Other programs' load grows the CPU reserve only up to reserve.max_cpu_pct: a 13-CPU Docker build
+// on a 16-CPU machine leaves jobs 4 CPUs, not 1.
+func TestReserveFollowsLoadOnlyUpToItsCap(t *testing.T) {
+	c := config.Defaults()
+	r := &ReserveCtl{}
+	r.Update(c, "active", 13, 16, t0)
+	if r.CPUs != 12 {
+		t.Fatalf("reserve = %v CPUs, want 12 (75%% of 16)", r.CPUs)
+	}
+	r = &ReserveCtl{}
+	r.Update(c, "game", 15, 4, t0) // a small machine: the state's own base still applies
+	if r.CPUs != float64(c.Reserve.Game.CPUs) {
+		t.Fatalf("game reserve on 4 CPUs = %v, want the base %d", r.CPUs, c.Reserve.Game.CPUs)
+	}
+	c.Reserve.MaxCPUPct = 0 // off: the old unbounded rule
+	r = &ReserveCtl{}
+	r.Update(c, "active", 13, 16, t0)
+	if r.CPUs != 15 {
+		t.Fatalf("uncapped reserve = %v, want 15", r.CPUs)
 	}
 }

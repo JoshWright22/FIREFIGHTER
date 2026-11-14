@@ -27,7 +27,7 @@ type Receipt struct {
 	Project  string    `json:"project"`
 	Name     string    `json:"name"`
 	Exit     int       `json:"exit"`
-	Outcome  string    `json:"outcome"` // ok | failed | evicted | cancelled | lost
+	Outcome  string    `json:"outcome"` // ok | failed | evicted | cancelled | lost | ended | killed (adopted work)
 	Minutes  float64   `json:"minutes"`
 	Declared float64   `json:"declared_minutes"`
 	Waited   float64   `json:"waited_minutes"`
@@ -37,9 +37,15 @@ type Receipt struct {
 	Log      string    `json:"log,omitempty"`
 	Ended    time.Time `json:"ended"`
 	Requeue  bool      `json:"requeue"`
-	Reason   string    `json:"reason,omitempty"`    // why firefighter stopped it (evicted/killed jobs)
-	Client   int       `json:"client,omitempty"`    // the client that ran it: only it may reuse the id
-	ClientAt int64     `json:"client_at,omitempty"` // its start time (a reused pid isn't the same client)
+	Reason   string    `json:"reason,omitempty"` // why firefighter stopped it (evicted/killed jobs)
+	// Held: times the guard suspended it to free RAM or disk for the human (it resumed each time
+	// where it stopped), for HeldMinutes in all. FreedRAM: the RAM that gave back, or, for a job
+	// stopped for RAM, what stopping it freed.
+	Held        int     `json:"held,omitempty"`
+	HeldMinutes float64 `json:"held_minutes,omitempty"`
+	FreedRAM    float64 `json:"freed_ram_gb,omitempty"`
+	Client      int     `json:"client,omitempty"`    // the client that ran it: only it may reuse the id
+	ClientAt    int64   `json:"client_at,omitempty"` // its start time (a reused pid isn't the same client)
 }
 
 // OpenJob is a running job's client, kept so that after a daemon restart only jobs this guard
