@@ -30,6 +30,8 @@ type GPU struct {
 	UsedGB  float64 `json:"used_gb"`
 	Vendor  string  `json:"vendor"`
 	PerProc bool    `json:"-"`
+	Watts   float64 `json:"watts,omitempty"`       // board power draw (NVIDIA), 0 if unknown
+	LimitW  float64 `json:"power_limit,omitempty"` // board power limit (NVIDIA), 0 if unknown
 }
 
 type ProcGPU struct {
@@ -232,7 +234,7 @@ func (r *Reader) readGPUs() []GPU {
 }
 
 func nvidiaGPUs() []GPU {
-	out, err := run(5*time.Second, "nvidia-smi", "--query-gpu=index,name,utilization.gpu,memory.total,memory.used", "--format=csv,noheader,nounits")
+	out, err := run(5*time.Second, "nvidia-smi", "--query-gpu=index,name,utilization.gpu,memory.total,memory.used,power.draw,power.limit", "--format=csv,noheader,nounits")
 	if err != nil {
 		return nil
 	}
@@ -247,6 +249,9 @@ func nvidiaGPUs() []GPU {
 		g.Util = num(r[2])
 		g.VRAMGB = num(r[3]) / 1024
 		g.UsedGB = num(r[4]) / 1024
+		if len(r) >= 7 { // "[N/A]" where the card doesn't report power: 0
+			g.Watts, g.LimitW = num(r[5]), num(r[6])
+		}
 		gs = append(gs, g)
 	}
 	return gs

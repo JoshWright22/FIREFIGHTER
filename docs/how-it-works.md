@@ -94,6 +94,30 @@ Zero config gives you the researched defaults below. You can swap each part by n
 | 3 · afterparty | over budget, `--spot`, past the lease, or adopted | anything |
 | 4 · harvester | optional idle-GPU program (Salad, BOINC, Folding@home) | anything |
 
+### Band 4: the harvester, and only while it pays
+
+`[harvester] start`/`stop` are shell commands. FIREFIGHTER runs `start` after the GPU has been
+idle `idle_seconds` (no GPU job queued or running, no game, no outside GPU work) and `stop` the
+moment any of that changes. Options:
+
+- `processes = ["vmmemWSL"]`: names whose GPU use is the harvester's own **while it runs**, so its
+  load isn't mistaken for outside work. When it's off, the same names count as outside work again
+  (the WSL VM also runs your own containers).
+- `running = "<command>"`: exits 0 while the harvester's work runs. Checked every 2 minutes while
+  FIREFIGHTER has it off; a harvester that started itself (its own auto-start) is stopped again.
+- `[harvester.profit]`: the profit guard. Set `cents_per_kwh` (all-in) to turn it on, and add
+  `[[harvester.profit.periods]]` (`months`, `days`, `from`, `to`, `cents`) for time-of-use prices.
+  While it runs, its power is priced into `harvest-ledger.csv`, one row per hour:
+  wall watts = (GPU board power from nvidia-smi + CPUs busy above the pre-start baseline ×
+  `cpu_watts` + `extra_watts`) / `psu_efficiency`. Before each start and every minute after, the
+  expected earnings per hour (`earn_per_hour` less `cut_pct`, replaced by the rate from reported
+  earnings once they cover `min_hours`) must beat the power cost at this hour's price, so hours
+  that would lose money are never harvested. Earnings go into `harvest-earnings.csv`
+  (`firefighter harvest earned 3.20`). If the trailing `trailing_days` net (earned less the cut,
+  less the power cost of the hours those reports cover) goes negative, it trips off and stays off
+  (`harvest-trip.txt`) until `firefighter harvest reset`. Harvested hours with no earnings report
+  for `stale_days` hold it off too. `firefighter harvest` prints the books and the next 24 h by price.
+
 ## The preemption ladder
 
 Steps run in order, and each one fires only if the trigger is still there:

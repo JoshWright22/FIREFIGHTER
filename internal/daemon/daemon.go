@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/config"
+	"github.com/JoshWright22/firefighter/internal/harvest"
 	"github.com/JoshWright22/firefighter/internal/policy"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
 	"github.com/JoshWright22/firefighter/internal/usage"
@@ -163,6 +164,13 @@ type Daemon struct {
 	harvest       struct {
 		on        bool
 		quietFrom time.Time
+		book      *harvest.Book // the profit guard's ledger (nil until the guard is configured)
+		check     harvest.Check // its last verdict
+		checkAt   time.Time     // when it was made
+		accAt     time.Time     // last ledger accrual
+		cpuBase   float64       // machine CPU busy while waiting to start (the harvester's CPU is what's above it)
+		runAt     time.Time     // last look for a harvester that started itself
+		probing   atomic.Bool   // that look is running
 	}
 	// owned by the Run goroutine only
 	scanner   *sysinfo.Scanner
@@ -787,7 +795,7 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 			continue
 		}
 		n := sysinfo.Name(pid)
-		if n == "" || contains(c.Reserve.IgnoreGPUApps, n) {
+		if n == "" || contains(c.Reserve.IgnoreGPUApps, n) || d.harvesterProc(n) {
 			continue
 		}
 		if d.containerGPUJob() && (strings.HasPrefix(strings.ToLower(n), "vmmem") || underContainerRuntime(pid)) {
@@ -1819,11 +1827,26 @@ func (d *Daemon) admit(now time.Time) {
 
 // ---- band 4: idle harvester ------------------------------------------------------------------------
 
+// harvesterProc says whether a GPU process is the harvester's own work (only while it runs: the
+// same WSL VM also runs the human's containers).
+func (d *Daemon) harvesterProc(name string) bool {
+	if !d.harvest.on {
+		return false
+	}
+	for _, p := range d.cfg.Harvester.Processes {
+		if sysinfo.NameIs(strings.ToLower(strings.TrimSuffix(name, ".exe")), strings.TrimSuffix(p, ".exe")) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Daemon) harvester(now time.Time) {
 	h := d.cfg.Harvester
 	if h.Start == "" {
 		return
 	}
+	d.harvestBooks(now)
 	busy := d.gpuHeld()
 	for _, j := range d.jobs {
 		busy = busy || (j.GPU && j.State != "done")
@@ -1831,22 +1854,126 @@ func (d *Daemon) harvester(now time.Time) {
 	if !d.harvest.on && len(d.outSince) > 0 {
 		busy = true // heavy GPU work outside firefighter (a render, a local model) is the human's
 	}
+	why := "GPU wanted"
+	if h.Profit.On() && !d.harvest.check.OK {
+		busy, why = true, "not paying: "+d.harvest.check.Why
+	}
 	if busy {
 		d.harvest.quietFrom = time.Time{}
 		if d.harvest.on {
 			d.harvest.on = false
-			logf("harvester: stop (GPU wanted)")
+			logf("harvester: stop (%s)", why)
 			go shell(h.Stop)
 		}
+		d.harvestSelfStarted(now)
 		return
 	}
 	if d.harvest.quietFrom.IsZero() {
 		d.harvest.quietFrom = now
+		d.harvest.cpuBase = d.snap.CPUBusy
+	}
+	if !d.harvest.on {
+		d.harvest.cpuBase += 0.05 * (d.snap.CPUBusy - d.harvest.cpuBase)
 	}
 	if !d.harvest.on && now.Sub(d.harvest.quietFrom).Seconds() >= h.IdleSeconds {
-		d.harvest.on = true
-		logf("harvester: start (GPU idle %.0fs)", h.IdleSeconds)
+		d.harvest.on, d.harvest.accAt = true, now
+		if h.Profit.On() {
+			logf("harvester: start (GPU idle %.0fs; %s)", h.IdleSeconds, d.harvest.check.Why)
+		} else {
+			logf("harvester: start (GPU idle %.0fs)", h.IdleSeconds)
+		}
 		go shell(h.Start)
+		return
+	}
+	d.harvestSelfStarted(now)
+}
+
+// harvestSelfStarted stops a harvester that started itself while firefighter has it off (its own
+// auto-start), so firefighter alone decides when it runs.
+func (d *Daemon) harvestSelfStarted(now time.Time) {
+	h := d.cfg.Harvester
+	if d.harvest.on || h.Running == "" || now.Sub(d.harvest.runAt) < 2*time.Minute || !d.harvest.probing.CompareAndSwap(false, true) {
+		return
+	}
+	d.harvest.runAt = now
+	go func() {
+		defer d.harvest.probing.Store(false)
+		if shellOK(h.Running, 30*time.Second) {
+			logf("harvester: it started on its own while off; stopping it")
+			shell(h.Stop)
+		}
+	}()
+}
+
+// harvestBooks prices the harvester's power into the ledger while it runs and, once a minute,
+// asks the profit guard whether it may run.
+func (d *Daemon) harvestBooks(now time.Time) {
+	p := d.cfg.Harvester.Profit
+	if !p.On() {
+		d.harvest.book = nil
+		return
+	}
+	if d.harvest.book == nil {
+		d.harvest.book = harvest.Open(config.Home())
+	}
+	b := d.harvest.book
+	gpuW, limitW := 0.0, 0.0
+	for _, g := range d.snap.GPUs {
+		gpuW += g.Watts
+		limitW += g.LimitW
+		if g.Watts == 0 && g.LimitW > 0 { // no reading: assume its share of the limit
+			gpuW += g.LimitW * g.Util / 100
+		}
+	}
+	if d.harvest.on {
+		cpus := math.Max(0, d.snap.CPUBusy-d.harvest.cpuBase)
+		b.Accrue(now, now.Sub(d.harvest.accAt), harvest.WallWatts(p, gpuW, cpus), gpuW, p.Price(now))
+		d.harvest.accAt = now
+	}
+	if now.Sub(d.harvest.checkAt) < time.Minute {
+		return
+	}
+	d.harvest.checkAt = now
+	if err := b.Save(); err != nil {
+		logf("harvest ledger: %v", err)
+	}
+	b.LoadEarnings()
+	if limitW == 0 {
+		limitW = 300
+	}
+	prev := d.harvest.check
+	c := b.Decide(p, now, harvest.WallWatts(p, limitW, 2))
+	if trip, err := os.ReadFile(harvest.TripPath(config.Home())); err == nil {
+		c.OK, c.Why = false, "tripped: "+strings.TrimSpace(string(trip))+" (delete harvest-trip.txt or run firefighter harvest reset to allow it again)"
+	} else if c.Trip {
+		_ = os.WriteFile(harvest.TripPath(config.Home()), []byte(now.Format("2006-01-02 15:04")+" "+c.Why+"\n"), 0o600)
+		logf("harvester: tripped off: %s", c.Why)
+	}
+	d.harvest.check = c
+	if prev.OK != c.OK || prev.Why == "" {
+		logf("harvest guard: %s", c.Why)
+	}
+}
+
+// shellOK runs cmd and says whether it exited 0 within limit.
+func shellOK(cmd string, limit time.Duration) bool {
+	argv := []string{"sh", "-c", cmd}
+	if runtime.GOOS == "windows" {
+		argv = []string{"cmd", "/c", cmd}
+	}
+	c := exec.Command(argv[0], argv[1:]...)
+	sysinfo.PrepareBackground(c)
+	if err := c.Start(); err != nil {
+		return false
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+	select {
+	case err := <-done:
+		return err == nil
+	case <-time.After(limit):
+		_ = c.Process.Kill()
+		return false
 	}
 }
 

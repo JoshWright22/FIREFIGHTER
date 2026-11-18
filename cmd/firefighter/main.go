@@ -50,6 +50,7 @@ Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your networ
   firefighter wait <id>          block until a job ends; prints its receipt and log tail
   firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
   firefighter forecast [--json]  what the human and each known command are expected to use, as learned
+  firefighter harvest [earned <usd> | reset]  the idle harvester's power bill, earnings and profit guard
   firefighter update [--check]   install the newest release now (the guard also does it by itself: update.auto)
   firefighter extend <id> <min>  lengthen a running job's lease
   firefighter cancel <id>        cancel a waiting or running job
@@ -103,6 +104,8 @@ func main() {
 		err = configCmd(args)
 	case "forecast":
 		err = forecast(args)
+	case "harvest":
+		err = harvestCmd(args)
 	case "update":
 		err = updateCmd(args)
 	case "protocol":

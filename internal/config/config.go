@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/JoshWright22/firefighter/internal/harvest"
 )
 
 // Reserve is what the human keeps in one user state. Jobs never get it.
@@ -127,6 +129,13 @@ type Config struct {
 		Start       string  `toml:"start"`
 		Stop        string  `toml:"stop"`
 		IdleSeconds float64 `toml:"idle_seconds"`
+		// Running: a command that exits 0 while the harvester's work runs. While firefighter has it
+		// off, a harvester that started itself (its own auto-start) is stopped again.
+		Running string `toml:"running"`
+		// Processes: names whose GPU and CPU use is the harvester's own while it runs (vmmemWSL for a
+		// WSL-based one): not outside work, and measured for its power bill.
+		Processes []string       `toml:"processes"`
+		Profit    harvest.Profit `toml:"profit"` // run only while it pays for its electricity
 	} `toml:"harvester"`
 }
 
