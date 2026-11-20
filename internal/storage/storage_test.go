@@ -217,7 +217,11 @@ func TestShrinkWhileDriveLowAndKeepBlocksDelete(t *testing.T) {
 	if _, err := p.Claim(home, "alpha", 20, ""); err == nil {
 		t.Fatal("growing on a full drive accepted")
 	}
-	if _, err := p.SetLabel(home, "alpha", "RESULTS", "keep", "final numbers"); err != nil {
+	typed := "results"
+	if foldCase {
+		typed = "RESULTS" // Windows and macOS: another case names the same folder
+	}
+	if _, err := p.SetLabel(home, "alpha", typed, "keep", "final numbers"); err != nil {
 		t.Fatal(err)
 	}
 	if g, _ := Grants(home); g["alpha"].Labels["results"].Rank != Keep {
