@@ -43,7 +43,7 @@ func lineOf(s daemon.Status) Line {
 		tip = append(tip, fmt.Sprintf("▶ %s (%s) until ~%s", v.Name, v.Project, v.ETA))
 	}
 	for _, v := range s.Waiting {
-		tip = append(tip, fmt.Sprintf("… #%d %s (%s) on ~%s: %s", v.Position, v.Name, v.Project, v.ETA, v.Why))
+		tip = append(tip, fmt.Sprintf("… #%d %s (%s) on %s: %s", v.Position, v.Name, v.Project, daemon.Approx(v.ETA), v.Why))
 	}
 	if ok {
 		tip = append(tip, q.Line())

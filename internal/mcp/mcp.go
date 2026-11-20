@@ -234,7 +234,7 @@ func jobLine(v daemon.View) string {
 		return fmt.Sprintf("%s done %s exit %d | ran %.0fm (declared %.0f) waited %.0fm | charged %.0f | peak %.1fGB VRAM %.1fGB RAM%s",
 			v.ID, r.Outcome, r.Exit, r.Minutes, r.Declared, r.Waited, r.Charged, r.PeakVRAM, r.PeakRAM, next)
 	case "waiting":
-		l := fmt.Sprintf("%s waiting #%d (%s), starts ~%s: %s | budget %.0f", v.ID, v.Position, v.Tier, v.ETA, v.Why, v.Budget)
+		l := fmt.Sprintf("%s waiting #%d (%s), starts %s: %s | budget %.0f", v.ID, v.Position, v.Tier, daemon.Approx(v.ETA), v.Why, v.Budget)
 		if v.Quote != nil {
 			l += " | do: " + v.Quote.Do
 		}
@@ -356,7 +356,7 @@ func call(name string, a map[string]any) (string, any, error) {
 			return jobLine(v) + "\nlog tail:\n" + client.Tail(client.LogPath(id), 1000), v, nil
 		}
 		if v.State == first.State && v.Position == first.Position && v.ETA == first.ETA {
-			return fmt.Sprintf("%s unchanged: %s #%d, ~%s | do: call firefighter_wait again", v.ID, v.State, v.Position, v.ETA), v, nil
+			return fmt.Sprintf("%s unchanged: %s #%d, %s | do: call firefighter_wait again", v.ID, v.State, v.Position, daemon.Approx(v.ETA)), v, nil
 		}
 		return jobLine(v), v, nil
 	case "firefighter_job":
@@ -421,7 +421,7 @@ func statusText(st daemon.Status) string {
 		fmt.Fprintf(&b, "running %s %q (%s) until ~%s\n", v.ID, v.Name, v.Project, v.ETA)
 	}
 	for _, v := range st.Waiting {
-		fmt.Fprintf(&b, "waiting #%d %s %q (%s) starts ~%s: %s\n", v.Position, v.ID, v.Name, v.Project, v.ETA, v.Why)
+		fmt.Fprintf(&b, "waiting #%d %s %q (%s) starts %s: %s\n", v.Position, v.ID, v.Name, v.Project, daemon.Approx(v.ETA), v.Why)
 	}
 	for _, p := range st.Plans {
 		fmt.Fprintf(&b, "plan %s: %s at %s, %.0fm\n", p.Project, p.What, p.When, p.Minutes)

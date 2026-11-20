@@ -526,3 +526,30 @@ func TestUserStateHysteresis(t *testing.T) {
 		t.Fatal("game held after the game left the front")
 	}
 }
+
+// 11/20: "starts ~8:31 AM" stayed up while the blocker went RAM, then VRAM, then OBS. The estimate
+// now follows what blocks the job: firefighter's own jobs (the schedule knows when they end), a
+// back-off (ends at a known time), or something outside it (no forecast).
+func TestETAFollowsTheBlocker(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	d.snap.RAMAvailGB = 20
+	j := d.addWaiting("t4sim", 2, 30, time.Minute)
+	j.NeedVRAM = 9
+	d.snap.GPUs[0].UsedGB = 12 // 4 GB free, held by something outside firefighter
+	if got := d.startsIn(j, 7, now); got != -1 {
+		t.Fatalf("VRAM held outside firefighter: %v, want no forecast", got)
+	}
+	r := d.addRunning("other job", 1, now.Add(-time.Minute))
+	r.vramGB, r.NeedVRAM = 8, 8 // now firefighter's own job holds it: the schedule's estimate holds
+	if got := d.startsIn(j, 7, now); got != 7 {
+		t.Fatalf("VRAM held by a running job: %v, want the schedule's 7", got)
+	}
+	d.backoff = map[string]backoff{j.ID: {n: 3, at: now.Add(-time.Minute), why: "RAM"}}
+	if got := d.startsIn(j, 1, now); got < 2.9 || got > 3.1 {
+		t.Fatalf("back-off: %v, want the 3 minutes it has left", got)
+	}
+	if Approx("unknown") != "unknown" || Approx("8:31 AM") != "~8:31 AM" {
+		t.Fatal("Approx")
+	}
+}

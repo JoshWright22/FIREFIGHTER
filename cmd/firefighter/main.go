@@ -404,7 +404,11 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 	for v.State == "waiting" {
 		moved := lastStart < 0 || math.Abs(v.StartsIn-lastStart) > math.Max(5, 0.2*lastStart)
 		if !quiet && (v.Position != lastPos || moved) {
-			ui.Say(ui.Ivory, "%s %s waiting #%d, starts ~%s (in %s): %s", t.ID, t.Name, v.Position, v.ETA, mins(v.StartsIn), v.Why)
+			when := daemon.Approx(v.ETA)
+			if v.StartsIn >= 0 {
+				when += " (in " + mins(v.StartsIn) + ")"
+			}
+			ui.Say(ui.Ivory, "%s %s waiting #%d, starts %s: %s", t.ID, t.Name, v.Position, when, v.Why)
 			lastPos, lastStart = v.Position, v.StartsIn
 			if v.Market != "" && time.Since(lastMarket) > 15*time.Minute {
 				ui.Note("%s", v.Market)
@@ -665,7 +669,7 @@ func wait(args []string) (int, error) {
 			}
 			continue
 		}
-		if line := fmt.Sprintf("%s: %s #%d ~%s %s", id, v.State, v.Position, v.ETA, v.Why); line != last {
+		if line := fmt.Sprintf("%s: %s #%d %s %s", id, v.State, v.Position, daemon.Approx(v.ETA), v.Why); line != last {
 			ui.Note("%s", line)
 			last = line
 		}
@@ -757,7 +761,7 @@ func status(args []string) error {
 	}
 	p("\n%s", ui.Paint(ui.Ivory, "in the wings"))
 	for _, v := range s.Waiting {
-		p("  %-8s #%d %-31s %-14s on ~%s %s", v.ID, v.Position, trunc(v.Name, 31), trunc(v.Project, 14), v.ETA, v.Why)
+		p("  %-8s #%d %-31s %-14s on %s %s", v.ID, v.Position, trunc(v.Name, 31), trunc(v.Project, 14), daemon.Approx(v.ETA), v.Why)
 	}
 	if len(s.Foreign) > 0 || len(s.Docker) > 0 {
 		p("\n%s", ui.Paint(ui.Coral, "other load (counted as the human's)"))
@@ -881,7 +885,7 @@ func rebid(args []string) error {
 	}
 	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b), Project: callerProject(), Force: force})
 	if err == nil {
-		ui.Say(ui.Ivory, "%s: bid %d, now #%d, on ~%s", v.Name, b, v.Position, v.ETA)
+		ui.Say(ui.Ivory, "%s: bid %d, now #%d, on %s", v.Name, b, v.Position, daemon.Approx(v.ETA))
 	}
 	return err
 }
@@ -906,7 +910,7 @@ func amend(args []string) error {
 	}
 	v, err := c.Act(id, "amend", daemon.Act{RAMGB: *ram, VRAMGB: *vram, Minutes: *minutes, Urgent: *urgent, Project: callerProject(), Force: *force})
 	if err == nil {
-		ui.Say(ui.Ivory, "%s: amended, #%d, on ~%s %s", v.Name, v.Position, v.ETA, v.Why)
+		ui.Say(ui.Ivory, "%s: amended, #%d, on %s %s", v.Name, v.Position, daemon.Approx(v.ETA), v.Why)
 	}
 	return err
 }

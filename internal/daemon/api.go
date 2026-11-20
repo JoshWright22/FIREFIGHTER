@@ -932,8 +932,11 @@ func (d *Daemon) view(j *job) View {
 		q := d.quote(*j.Ticket, now)
 		own, _ := q.Tier(tierOf(j.Ticket))
 		v.Position, v.Why = own.Position, d.blocker(j)
-		v.ETA = clock(now.Add(time.Duration(own.StartsIn * float64(time.Minute))))
-		v.StartsIn = own.StartsIn
+		v.StartsIn = d.startsIn(j, own.StartsIn, now)
+		v.ETA = "unknown"
+		if v.StartsIn >= 0 {
+			v.ETA = clock(now.Add(time.Duration(v.StartsIn * float64(time.Minute))))
+		}
 		v.Quote, v.Market = &q, q.Line()
 	case "running":
 		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
@@ -942,6 +945,64 @@ func (d *Daemon) view(j *job) View {
 		v.ETA = clock(now.Add(time.Duration(math.Max(1, j.PredMinutes+j.extended) * float64(time.Minute))))
 	}
 	return v
+}
+
+// Approx is a start or end time for display: "~8:31 AM", or "unknown" when there is no forecast.
+func Approx(eta string) string {
+	if eta == "" || eta == "unknown" {
+		return "unknown"
+	}
+	return "~" + eta
+}
+
+// startsIn is when a waiting job should start, in minutes, from what blocks it now (-1: no
+// forecast). The market's schedule knows when firefighter's own jobs end, so its estimate holds
+// when that is what the job waits for: a turn, or RAM/VRAM those jobs hold. A back-off ends at a
+// known time. RAM or VRAM held by other programs, outside GPU work, the human's game, a full disk or
+// the network end when they end: no forecast, rather than a time that silently goes stale (11/20:
+// "starts ~8:31 AM" stayed up while the blocker went RAM, then VRAM, then OBS).
+func (d *Daemon) startsIn(j *job, sim float64, now time.Time) float64 {
+	if left := d.backoffLeft(j.ID, now); left > 0 {
+		return math.Max(sim, left.Minutes())
+	}
+	if why := d.blockedByHuman(j, now); why != "" {
+		return -1
+	}
+	if d.diskWhy(j) != "" || (j.Net && !d.netFree()) {
+		return -1
+	}
+	if j.GPU && len(d.snap.GPUs) > 0 {
+		if card, _ := d.cardFor(j.Ticket); card < 0 {
+			return -1
+		}
+		if short := d.jobNeed(j) - d.cardLeft(j.Ticket); short > 0 {
+			held := 0.0 // VRAM firefighter's running jobs hold, given back when they end
+			for _, o := range d.running() {
+				if o.GPU {
+					held += math.Max(o.vramGB, o.NeedVRAM)
+				}
+			}
+			if held < short {
+				return -1
+			}
+		}
+	}
+	ram, _ := d.headroom(now)
+	if short := j.NeedRAM + d.ramMargin() - ram; short > 0 {
+		held := 0.0
+		for _, o := range d.jobs {
+			if o.State == "running" || o.State == "granted" {
+				held += o.ramGB + d.reservedRAM(o)
+			}
+		}
+		if held < short {
+			return -1
+		}
+	}
+	if j.GPU && len(d.busyOutside()) > 0 {
+		return -1
+	}
+	return sim
 }
 
 // blocker says what a waiting job waits for. A spot job (over budget, or --spot) waits for the same
@@ -1248,9 +1309,9 @@ func (d *Daemon) writeStatus() {
 	for _, v := range s.Running {
 		fmt.Fprintf(&b, "| %s | %s | ~%s | %s |\n", v.Name, v.Project, v.ETA, v.Why)
 	}
-	b.WriteString("\n## Waiting\n\n| # | Job | Project | Starts ~ | Waiting for |\n|---|---|---|---|---|\n")
+	b.WriteString("\n## Waiting\n\n| # | Job | Project | Starts | Waiting for |\n|---|---|---|---|---|\n")
 	for _, v := range s.Waiting {
-		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", v.Position, v.Name, v.Project, v.ETA, v.Why)
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", v.Position, v.Name, v.Project, Approx(v.ETA), v.Why)
 	}
 	b.WriteString("\n## Planned\n\n")
 	for _, p := range s.Plans {
