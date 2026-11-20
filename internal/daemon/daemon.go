@@ -111,6 +111,9 @@ type Daemon struct {
 	user          string
 	gameWhy       string
 	gameTill      time.Time
+	gameApp       string    // the app a fullscreen game was detected in: game holds while it stays in front
+	userSamples   []string  // the last raw readings of the human's state, 10 s apart (hysteresis)
+	userSampleAt  time.Time // when the last one was taken
 	busyUser      float64
 	utilEWMA      float64   // GPU utilization smoothed over ~30 s: packing decisions ignore momentary dips
 	cardUtil      []float64 // the same, per card: each card packs (and takes turns) on its own
@@ -1063,8 +1066,22 @@ func (d *Daemon) senseUser(now time.Time) {
 			why = fmt.Sprintf("%s using %.0f%% of the 3D engine", n, u)
 		}
 	}
+	// A fullscreen game that drops out of fullscreen for a moment (a menu, a loading screen, a
+	// borderless switch) is still the game while it stays the app in front (11/20: TF2 flipped
+	// game -> active -> game every 1-3 minutes).
+	if d.snap.Foreground != "" {
+		d.gameApp = d.snap.ForegroundApp
+		if d.gameApp == "" {
+			d.gameApp = d.snap.Foreground
+		}
+	}
+	if why == "" && d.gameApp != "" && now.Before(d.gameTill) && strings.EqualFold(d.snap.ForegroundApp, d.gameApp) {
+		why = d.gameWhy
+	}
 	if why != "" {
 		d.gameWhy, d.gameTill = why, now.Add(time.Duration(c.Reserve.GameCoolSeconds*float64(time.Second)))
+	} else if !now.Before(d.gameTill) {
+		d.gameApp = ""
 	}
 	game := now.Before(d.gameTill)
 	idle := d.snap.Idle
@@ -1072,11 +1089,53 @@ func (d *Daemon) senseUser(now time.Time) {
 		idle = (c.Reserve.ActiveSeconds + c.Reserve.AwaySeconds) / 2 // unknown (headless): present
 	}
 	prev := d.user
-	d.user = policy.UserState(c, idle, game)
+	d.user = d.steadyUser(policy.UserState(c, idle, game), now)
 	if d.user != prev {
 		logf("user: %s -> %s %s", prev, d.user, d.gameWhy)
 		d.broadcast()
 	}
+}
+
+// userRank orders the human's states by how much they protect the human.
+var userRank = map[string]int{"away": 0, "present": 1, "active": 2, "game": 3}
+
+// steadyUser is the human's state with hysteresis: a step up (toward game) takes effect at once,
+// since it protects the human; a step down needs the lower state in 2 of the last 3 readings,
+// taken 10 s apart, so one odd reading doesn't move jobs back onto the machine.
+func (d *Daemon) steadyUser(raw string, now time.Time) string {
+	cur := d.user
+	if cur == "" || userRank[raw] >= userRank[cur] {
+		d.userSamples, d.userSampleAt = []string{raw}, now
+		return raw
+	}
+	firstLower := true
+	for _, x := range d.userSamples {
+		if userRank[x] < userRank[cur] {
+			firstLower = false
+		}
+	}
+	if firstLower || now.Sub(d.userSampleAt) >= 10*time.Second {
+		d.userSamples = append(d.userSamples, raw)
+		if len(d.userSamples) > 3 {
+			d.userSamples = d.userSamples[len(d.userSamples)-3:]
+		}
+		d.userSampleAt = now
+	}
+	lower := 0
+	best := cur
+	for _, s := range d.userSamples {
+		if userRank[s] < userRank[cur] {
+			lower++
+			if userRank[s] > userRank[best] || best == cur {
+				best = s // the highest of the lower readings: step down no further than they agree
+			}
+		}
+	}
+	if lower >= 2 {
+		d.userSamples, d.userSampleAt = []string{best}, now
+		return best
+	}
+	return cur
 }
 
 // gpuHeld: the human's current state reserves the whole GPU (pause_gpu).

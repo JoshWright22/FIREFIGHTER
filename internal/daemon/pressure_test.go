@@ -483,3 +483,46 @@ func TestNearMissHint(t *testing.T) {
 		t.Fatal("a hint only when the job's own declaration sets the need and the miss is small")
 	}
 }
+
+// 11/20: the state flipped game/active/present every 1-3 minutes while TF2 was fullscreen. Stepping
+// down needs the lower state in 2 of 3 readings 10 s apart; stepping up is immediate.
+func TestUserStateHysteresis(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	d.user = "game"
+	if s := d.steadyUser("active", now); s != "game" {
+		t.Fatalf("one reading stepped down: %s", s)
+	}
+	if s := d.steadyUser("active", now.Add(3*time.Second)); s != "game" {
+		t.Fatalf("readings closer than 10 s count once: %s", s)
+	}
+	if s := d.steadyUser("active", now.Add(11*time.Second)); s != "active" {
+		t.Fatalf("two readings 10 s apart should step down: %s", s)
+	}
+	d.user = "active"
+	if s := d.steadyUser("game", now.Add(12*time.Second)); s != "game" {
+		t.Fatalf("a step up must be immediate: %s", s)
+	}
+	// A fullscreen game that leaves fullscreen but stays in front is still the game.
+	d.user = "present"
+	d.snap.Idle = 2
+	d.snap.Foreground, d.snap.ForegroundApp = "tf_win64.exe", "tf_win64.exe"
+	d.senseUser(now)
+	if d.user != "game" {
+		t.Fatalf("fullscreen game not detected: %s", d.user)
+	}
+	d.snap.Foreground = "" // a menu: not fullscreen for a moment
+	for i := 1; i <= 6; i++ {
+		d.senseUser(now.Add(time.Duration(i*10) * time.Second))
+		if d.user != "game" {
+			t.Fatalf("game dropped at +%ds while it stayed in front: %s", i*10, d.user)
+		}
+	}
+	d.snap.ForegroundApp = "code.exe" // the human alt-tabs away for good
+	for i := 7; i <= 12; i++ {
+		d.senseUser(now.Add(time.Duration(i*10) * time.Second))
+	}
+	if d.user == "game" {
+		t.Fatal("game held after the game left the front")
+	}
+}

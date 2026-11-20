@@ -373,7 +373,8 @@ func TestGamePausesGPUJobAndResumes(t *testing.T) {
 		t.Fatalf("user state %v, want game", st["user"])
 	}
 	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16}}})
-	eventually(t, "resume", 15*time.Second, func() bool { return strings.Contains(readFile(log), "resumed") })
+	// Stepping down from game needs two readings 10 s apart (hysteresis), then the job resumes.
+	eventually(t, "resume", 30*time.Second, func() bool { return strings.Contains(readFile(log), "resumed") })
 	if out, code := e.ff("wait", id, "--timeout", "60"); code != 0 {
 		t.Fatalf("finish after resume: %d\n%s", code, out)
 	}
