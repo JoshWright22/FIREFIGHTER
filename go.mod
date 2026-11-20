@@ -1,11 +1,13 @@
 module github.com/JoshWright22/firefighter
 
-go 1.23
+go 1.25.0
+
+toolchain go1.27.4
 
 require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/shirou/gopsutil/v4 v4.24.12
-	golang.org/x/sys v0.28.0
+	golang.org/x/sys v0.44.0
 )
 
 require (

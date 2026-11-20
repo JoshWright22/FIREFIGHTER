@@ -16,7 +16,7 @@ runs `firefighter setup` (start at logon, rules and MCP entries for the agent CL
 - macOS / Linux:
   `curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh`
   Binary: `~/.local/bin/firefighter`
-- With Go 1.23+ instead:
+- With Go 1.25+ instead:
   `go install github.com/JoshWright22/firefighter/cmd/firefighter@latest`
   Binary: `$(go env GOPATH)/bin/firefighter`
 

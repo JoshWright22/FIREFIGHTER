@@ -10,7 +10,7 @@ writes to your global instructions (see `internal/setup/setup.go`, `Instructions
 
 ## Working on this repo
 
-- Go 1.23+, no cgo. Build: `go build ./cmd/firefighter`. Test: `go test ./...` (the end-to-end
+- Go 1.25+, no cgo. Build: `go build ./cmd/firefighter`. Test: `go test ./...` (the end-to-end
   suite in `cmd/firefighter` starts real daemons in temp homes; ~3 minutes).
 - Layout: `internal/policy` is pure scheduling math (ordering, prices, budgets, reserve, market,
   no I/O); `internal/usage` is what is learned about use and the predictors built on it (decaying

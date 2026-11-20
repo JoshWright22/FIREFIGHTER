@@ -1534,6 +1534,7 @@ func memSize(v string) float64 {
 	case strings.HasSuffix(v, "k"), strings.HasSuffix(v, "kb"):
 		mult = 1.0 / (1 << 20)
 	case strings.HasSuffix(v, "b"):
+		mult = 1.0 / (1 << 30) // bytes, as with no unit
 	}
 	n, err := strconv.ParseFloat(strings.TrimRight(v, "gmkb"), 64)
 	if err != nil || n <= 0 {

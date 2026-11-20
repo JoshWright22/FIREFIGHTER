@@ -39,7 +39,7 @@ irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/inst
 curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh
 ```
 
-**Go 1.23+**:
+**Go 1.25+**:
 
 ```sh
 go install github.com/JoshWright22/firefighter/cmd/firefighter@latest && firefighter setup

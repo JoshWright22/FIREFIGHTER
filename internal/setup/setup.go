@@ -52,9 +52,7 @@ func Install(exe string) []Step {
 	for _, f := range instructionFiles() {
 		add("agent rules -> "+f, upsertBlock(f, Instructions))
 	}
-	for _, r := range registerMCP(exe) {
-		steps = append(steps, r)
-	}
+	steps = append(steps, registerMCP(exe)...)
 	for _, a := range agents() {
 		if a.installed() && a.mcp != nil && os.Getenv("FIREFIGHTER_NO_CLI_REGISTER") == "" {
 			add("MCP -> "+a.name, a.mcp(exe, true))

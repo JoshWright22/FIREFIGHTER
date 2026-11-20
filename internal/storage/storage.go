@@ -265,8 +265,7 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 	if p.GB <= 0 {
 		return "", ErrNoAllotment
 	}
-	dir, err := p.Dir(project)
-	if err != nil {
+	if _, err := p.Dir(project); err != nil { // validates the name; the folder is found below
 		return "", err
 	}
 	if math.IsNaN(gb) || math.IsInf(gb, 0) {
@@ -289,7 +288,7 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 		return "", err
 	}
 	project = canonical(f, project)
-	dir = filepath.Join(p.Root, project)
+	dir := filepath.Join(p.Root, project)
 	if c, ok := p.capOf(project); ok && gb > c {
 		return "", fmt.Errorf("%s may hold at most %.1f GB (storage.projects.%s, set by the human)", project, c, project)
 	}
@@ -349,8 +348,7 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 // Release gives a project's space back. A space that still holds files is kept unless deleteFiles,
 // which removes its folder and everything in it.
 func (p Pool) Release(home, project string, deleteFiles bool) (freedGB float64, err error) {
-	dir, err := p.Dir(project)
-	if err != nil {
+	if _, err := p.Dir(project); err != nil {
 		return 0, err
 	}
 	unlock, err := lock(home)
@@ -363,7 +361,7 @@ func (p Pool) Release(home, project string, deleteFiles bool) (freedGB float64, 
 		return 0, err
 	}
 	project = canonical(f, project)
-	dir = filepath.Join(p.Root, project)
+	dir := filepath.Join(p.Root, project)
 	g, granted := f.Grants[project]
 	if granted && g.Root != "" && !samePath(g.Root, p.Root) {
 		delete(f.Grants, project) // its files are in the old root, which firefighter no longer manages

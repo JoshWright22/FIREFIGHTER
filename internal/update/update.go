@@ -335,7 +335,7 @@ func runs(ctx context.Context, path, version string) bool {
 func build(ctx context.Context, tag, dir string) error {
 	goExe, err := exec.LookPath("go")
 	if err != nil {
-		return errors.New("Go isn't installed (https://go.dev/dl)")
+		return errors.New("go isn't installed (https://go.dev/dl)")
 	}
 	c, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
