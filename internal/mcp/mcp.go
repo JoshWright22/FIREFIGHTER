@@ -102,7 +102,7 @@ var baseTools = []tool{
 	})},
 	{"firefighter_job", "Change your job: extend (minutes = more lease), urgent / normal (tier, while waiting), amend (new ram_gb / vram_gb / minutes for a waiting job: keeps its place; don't cancel and resubmit), cancel.", obj(map[string]any{
 		"id": str("Job id"), "action": str("extend | urgent | normal | amend | cancel"), "minutes": num("For extend (more lease) or amend (new estimate)"),
-		"ram_gb": num("For amend"), "vram_gb": num("For amend"),
+		"ram_gb": num("For amend"), "vram_gb": num("For amend"), "cwd": str("Your absolute working directory (the project you act as)"),
 	}, "id", "action")},
 	{"firefighter_storage", "Disk space the human allots agents. show: the allotment and every space. claim: set your project's space to gb (new, bigger or smaller) and get its folder; keep the project's big files (data, checkpoints, models, caches) there and delete what you no longer need. label: rank a file or folder in your space (path) as keep (needed), useful (costly to remake) or scratch (temporary), with for = what uses it and until when; rank everything you save. items: your space's contents, least important first. free: delete the least important items until gb is freed (scratch first; upto=unranked or useful goes further; keep is never deleted; dry_run to preview). release: give it back (delete=true removes its files). While a space holds more than its claim, its project's new jobs wait.", obj(map[string]any{
 		"action": str("show | claim | label | items | free | release"), "gb": num("For claim: size of the space; for free: GB to free"), "why": str("For claim: what it holds"),
@@ -380,6 +380,9 @@ func call(name string, a map[string]any) (string, any, error) {
 		}
 		var v daemon.View
 		me := callerProject()
+		if cwd := s(a, "cwd"); cwd != "" { // the caller's workspace, as firefighter_submit uses
+			me = projectIn(cwd)
+		}
 		switch s(a, "action") {
 		case "extend":
 			v, err = c.Act(id, "extend", daemon.Act{Minutes: f(a, "minutes"), Project: me})
@@ -588,8 +591,12 @@ func storageCall(a map[string]any) (string, any, error) {
 		if err != nil {
 			return "", nil, err
 		}
-		return fmt.Sprintf("%s: %.1f GB space at %s | do: keep the project's big files there, delete what you no longer need, release it when done", project, f(a, "gb"), dir),
-			map[string]any{"project": project, "path": dir, "gb": f(a, "gb")}, nil
+		saved := f(a, "gb")
+		if g, err := storage.Grants(home); err == nil {
+			saved = g[filepath.Base(dir)].GB // what was stored (rounded down to 0.1 GB)
+		}
+		return fmt.Sprintf("%s: %.1f GB space at %s | do: keep the project's big files there, delete what you no longer need, release it when done", project, saved, dir),
+			map[string]any{"project": project, "path": dir, "gb": saved}, nil
 	case "release":
 		freed, err := pool.Release(home, project, b(a, "delete"))
 		if err != nil {

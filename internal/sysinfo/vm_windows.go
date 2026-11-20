@@ -129,5 +129,22 @@ func vmReclaim(name string) error {
 
 // volume is the drive a path is on ("C:\").
 func volume(abs string) string {
+	// The volume the path is really on: a second disk mounted as a folder (C:\AgentStorage) is
+	// its own volume, not C: (review 11/20). Asked for the nearest folder that exists.
+	p := abs
+	for {
+		if _, err := os.Stat(p); err == nil || filepath.Dir(p) == p {
+			break
+		}
+		p = filepath.Dir(p)
+	}
+	if name, err := windows.UTF16PtrFromString(p); err == nil {
+		buf := make([]uint16, windows.MAX_LONG_PATH)
+		if windows.GetVolumePathName(name, &buf[0], uint32(len(buf))) == nil {
+			if v := windows.UTF16ToString(buf); len(v) >= 2 {
+				return strings.ToUpper(v[:1]) + v[1:] // "C:\" as before for a plain drive
+			}
+		}
+	}
 	return strings.ToUpper(filepath.VolumeName(abs)) + `\`
 }

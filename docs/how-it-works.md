@@ -151,7 +151,7 @@ it didn't make as spaces; `storage.projects.<name>` caps one project). Agents ma
 - `firefighter storage` (MCP: `firefighter_storage`) shows the allotment and every space, with
   folders in the root nobody claimed. The guard measures the spaces every 2 minutes (at once after a
   claim or release). While a space holds more than its claim, or a folder in the root holds files
-  without a claim, that project's new jobs wait (`--quick` ones still run, for cleanup) and status
+  without a claim, that project's new jobs wait (`--quick` ones too; cleaning up needs no job) and status
   says why.
 
 ### Band 4: the harvester, and only while it pays

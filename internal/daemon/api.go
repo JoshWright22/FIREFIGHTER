@@ -964,6 +964,9 @@ func (d *Daemon) view(j *job) View {
 			// no market line with a start in it, and the advice says what it waits for (review 11/20).
 			q.Do = "keep working meanwhile; it starts when this clears: " + v.Why
 			v.Market = ""
+			for i := range q.Menu {
+				q.Menu[i].StartsIn = -1 // unknown in the structured quote too, not the schedule's guess
+			}
 		}
 	case "running":
 		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
@@ -1325,6 +1328,7 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 	defer d.mu.Unlock()
 	id := r.PathValue("id")
 	var keep []*Plan
+	removed := 0
 	for _, p := range d.st.Plans {
 		// The human removes any plan; an agent removes its own session's (or, after a restart
 		// forgot who added it, its project's).
@@ -1334,15 +1338,18 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 			keep = append(keep, p) // the human's plan
 			continue
 		}
-		mine := human || (p.Owner > 0 && p.Owner == agent && p.OwnerAt == agentAt) || p.Project == id ||
-			(p.ID == id && p.Owner == 0)
+		// Naming a project is not ownership (review 11/20: any agent could remove another's plans by
+		// passing its project); only an ownerless plan (its owner forgotten in a restart) goes to
+		// whoever names it.
+		mine := human || (p.Owner > 0 && p.Owner == agent && p.OwnerAt == agentAt) || p.Owner == 0
 		if (p.ID == id || p.Project == id) && mine {
+			removed++
 			continue
 		}
 		keep = append(keep, p)
 	}
 	d.st.Plans = keep
-	reply(w, map[string]int{"plans": len(keep)})
+	reply(w, map[string]int{"plans": len(keep), "removed": removed})
 }
 
 // writeStatus mirrors the status to STATUS.md for agents that read files instead of calling tools.
@@ -1485,25 +1492,10 @@ func (d *Daemon) jobNeed(j *job) float64 {
 // dockerMemGB is the --memory (-m) limit of a `docker run` / `podman run` command line, in GB (0
 // when there is none).
 func dockerMemGB(command string) float64 {
-	f := strings.Fields(command)
-	run := false
+	// Only the container's own options, up to the image: a --memory after it belongs to the
+	// program inside (review 11/20).
+	f, _ := DockerRunOptions(command)
 	for i, a := range f {
-		base := strings.TrimSuffix(strings.ToLower(filepath.Base(a)), ".exe")
-		if !run && (base == "docker" || base == "podman") && i+1 < len(f) {
-			for _, b := range f[i+1:] {
-				if b == "run" || b == "create" {
-					run = true
-					break
-				}
-				if !strings.HasPrefix(b, "-") {
-					break
-				}
-			}
-			continue
-		}
-		if !run {
-			continue
-		}
 		v := ""
 		switch {
 		case a == "--memory" || a == "-m":

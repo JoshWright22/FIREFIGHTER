@@ -653,11 +653,30 @@ func TestStorageOverClaimHoldsNewJobs(t *testing.T) {
 		t.Fatalf("notes %v", n)
 	}
 	j.Quick = true
-	if w := d.storageWhy(j); w != "" {
-		t.Fatalf("a --quick job (cleanup) is held: %q", w)
+	if w := d.storageWhy(j); w == "" {
+		t.Fatal("a --quick job got past the storage hold (review round 2: its lease can be overrun)")
 	}
 	j.Quick, j.Project = false, "beta"
 	if w := d.storageWhy(j); w != "" {
 		t.Fatalf("another project is held: %q", w)
+	}
+}
+
+// Review round 2 (GPT): docker options end at the image; -d is refused by run.
+func TestDockerRunOptions(t *testing.T) {
+	if got := dockerMemGB("docker run --rm -e X=1 img python app.py --memory=64m"); got != 0 {
+		t.Fatalf("a --memory after the image was read as the container's: %v", got)
+	}
+	if got := dockerMemGB("docker run --rm -m 2g img"); got != 2 {
+		t.Fatalf("-m 2g: %v", got)
+	}
+	for cmd, want := range map[string]bool{
+		"docker run -d img": true, "docker run -dit img": true, "docker run --detach img": true,
+		"docker run --rm -it img": false, "docker run -e -d=1 img": false, "docker run img sh -c 'x -d'": false,
+		`"C:\Program Files\Docker\docker.exe" run -d img`: true, "docker ps -d": false,
+	} {
+		if DockerDetached(cmd) != want {
+			t.Errorf("DockerDetached(%q) != %v", cmd, want)
+		}
 	}
 }

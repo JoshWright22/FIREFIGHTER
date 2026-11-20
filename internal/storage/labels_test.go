@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -125,5 +128,78 @@ func TestFreeDeletesLeastImportantNeverKeep(t *testing.T) {
 	}
 	if _, _, err := p.Free(home, "alpha", 1, Keep, false); err == nil {
 		t.Fatal("--upto keep accepted")
+	}
+}
+
+// Review round 2 (GPT): a folder swapped for a junction (Windows) or link after the walk must not
+// lead a delete outside the space.
+func TestRemoveFilesRefusesASwappedJunction(t *testing.T) {
+	base := t.TempDir()
+	space, outside := filepath.Join(base, "space"), filepath.Join(base, "outside")
+	write(t, filepath.Join(space, "tmp", "a.bin"), 10)
+	write(t, filepath.Join(outside, "a.bin"), 10)           // the human's file with the same name
+	files := []string{filepath.Join(space, "tmp", "a.bin")} // what the walk saw
+	if err := os.RemoveAll(filepath.Join(space, "tmp")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(space, "tmp")
+	var err error
+	if runtime.GOOS == "windows" {
+		err = exec.Command("cmd", "/c", "mklink", "/J", link, outside).Run()
+	} else {
+		err = os.Symlink(outside, link)
+	}
+	if err != nil {
+		t.Skipf("can't make a link here: %v", err)
+	}
+	rt, err := os.OpenRoot(space)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	gone, left := removeFiles(rt, space, files)
+	if _, err := os.Stat(filepath.Join(outside, "a.bin")); err != nil {
+		t.Fatal("a file outside the space was deleted through a swapped-in link")
+	}
+	if gone != 0 || left != 1 {
+		t.Fatalf("gone %d left %d", gone, left)
+	}
+}
+
+// Review round 2 (GPT): an empty folder ranked keep survives free and blocks release --delete; two
+// labels on one file in different case keep the more protective one; a NaN target is refused.
+func TestKeepEmptyFolderDuplicateLabelsAndNaN(t *testing.T) {
+	p, home, dir := rankedSpace(t)
+	if err := os.MkdirAll(filepath.Join(dir, "tmp", "empty-keep"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.SetLabel(home, "alpha", "tmp/empty-keep", Keep, "mount point a job expects"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.Free(home, "alpha", 100, Scratch, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tmp", "empty-keep")); err != nil {
+		t.Fatal("an empty folder ranked keep was pruned")
+	}
+	if _, err := p.SetLabel(home, "alpha", "results", "none", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.SetLabel(home, "alpha", "tmp/keepme", "none", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Release(home, "alpha", true); err == nil || !strings.Contains(err.Error(), "empty-keep") {
+		t.Fatalf("release --delete with an empty keep folder: %v", err)
+	}
+	if _, _, err := p.Free(home, "alpha", math.NaN(), Useful, false); err == nil {
+		t.Fatal("NaN accepted")
+	}
+	labels := map[string]Label{"data": {Rank: Keep, For: "x"}, "DATA": {Rank: Scratch, For: "y"}}
+	for i := 0; i < 20 && foldCase; i++ { // map order varies: keep must win every time
+		for _, it := range items(dir, labels) {
+			if strings.EqualFold(it.Path, "data") && it.Files > 0 && it.Rank != Keep {
+				t.Fatalf("duplicate labels: %+v", it)
+			}
+		}
 	}
 }

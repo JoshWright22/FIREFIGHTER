@@ -368,6 +368,11 @@ func run(args []string) (int, error) {
 	if r.id == "" {
 		r.id = daemon.NewID()
 	}
+	if daemon.DockerDetached(strings.Join(argv, " ")) {
+		// The CLI would return at once and the container would run on unseen: never governed,
+		// never stopped for the human (review 11/20).
+		return 2, errors.New("docker run -d returns at once while the container keeps running outside firefighter's sight: drop -d (to not wait yourself, use firefighter run --detach)")
+	}
 	argv, container := dockerize(argv, r.id)
 	t := policy.Ticket{ID: r.id, Project: r.project, Name: r.name, Cwd: cwd, Command: strings.Join(argv, " "), CmdHash: hashCmd(argv),
 		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, Quick: r.quick, ClientPID: os.Getpid(), WantVendor: r.vendor, Net: r.net || netCommand(argv), NetAuto: !r.net && netCommand(argv)}

@@ -172,6 +172,7 @@ type Daemon struct {
 	rng           *rand.Rand
 	harvest       struct {
 		on        bool
+		stop      string // the stop command of the harvester that was started (config can change while it runs)
 		quietFrom time.Time
 		book      *harvest.Book // the profit guard's ledger (nil until the guard is configured)
 		check     harvest.Check // its last verdict
@@ -2116,6 +2117,15 @@ func (d *Daemon) harvesterProc(name string) bool {
 func (d *Daemon) harvester(now time.Time) {
 	h := d.cfg.Harvester
 	if h.Start == "" {
+		// Unconfigured while it ran: stop it with the command it was started with (review 11/20:
+		// it ran on, even when a job later wanted the GPU).
+		if d.harvest.on {
+			d.harvest.on = false
+			logf("harvester: stop (no longer configured)")
+			if d.harvest.stop != "" {
+				go shell(d.harvest.stop)
+			}
+		}
 		return
 	}
 	d.harvestBooks(now)
@@ -2135,7 +2145,11 @@ func (d *Daemon) harvester(now time.Time) {
 		if d.harvest.on {
 			d.harvest.on = false
 			logf("harvester: stop (%s)", why)
-			go shell(h.Stop)
+			stop := d.harvest.stop
+			if stop == "" {
+				stop = h.Stop
+			}
+			go shell(stop)
 		}
 		d.harvestSelfStarted(now)
 		return
@@ -2148,7 +2162,7 @@ func (d *Daemon) harvester(now time.Time) {
 		d.harvest.cpuBase += 0.05 * (d.snap.CPUBusy - d.harvest.cpuBase)
 	}
 	if !d.harvest.on && now.Sub(d.harvest.quietFrom).Seconds() >= h.IdleSeconds {
-		d.harvest.on, d.harvest.accAt = true, now
+		d.harvest.on, d.harvest.accAt, d.harvest.stop = true, now, h.Stop
 		if h.Profit.On() {
 			logf("harvester: start (GPU idle %.0fs; %s)", h.IdleSeconds, d.harvest.check.Why)
 		} else {
@@ -2438,10 +2452,11 @@ func (d *Daemon) refreshStorage(now time.Time, cfg config.Config) {
 	}()
 }
 
-// storageWhy keeps a project's new jobs (not --quick ones, which may be its cleanup) waiting while
-// its storage space holds more than it claimed ("" otherwise).
+// storageWhy keeps a project's new jobs waiting while its storage space holds more than it claimed
+// ("" otherwise). No exception for --quick: a quick job's lease can be overrun, and cleaning up
+// (`firefighter storage free`, deleting files) needs no job (review 11/20).
 func (d *Daemon) storageWhy(j *job) string {
-	if d.storeRep == nil || j.State != "waiting" || j.Quick {
+	if d.storeRep == nil || j.State != "waiting" {
 		return ""
 	}
 	for _, s := range d.storeRep.Spaces {

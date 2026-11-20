@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -131,29 +130,21 @@ func lock(home string) (func(), error) {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, err
 	}
+	// An OS lock on a file that is never deleted: released by the kernel when its holder exits, so
+	// it is never "stale" and never taken from a live holder, however long a claim's walk takes
+	// (review 11/20: the earlier lock file could be broken while its owner still worked).
 	l := filepath.Join(home, "storage.lock")
+	f, err := os.OpenFile(l, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
 	for start := time.Now(); ; {
-		f, err := os.OpenFile(l, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			me := strconv.Itoa(os.Getpid())
-			f.WriteString(me)
+		if tryLock(f) == nil {
+			return func() { f.Close() }, nil
+		}
+		if time.Since(start) > 2*time.Minute {
 			f.Close()
-			return func() {
-				if b, _ := os.ReadFile(l); string(b) == me { // never another process's lock
-					os.Remove(l)
-				}
-			}, nil
-		}
-		if fi, e := os.Stat(l); e == nil && time.Since(fi.ModTime()) > time.Second {
-			b, _ := os.ReadFile(l)
-			pid, perr := strconv.Atoi(strings.TrimSpace(string(b)))
-			if (perr == nil && !sysinfo.Alive(pid)) || time.Since(fi.ModTime()) > 10*time.Minute {
-				os.Remove(l) // left by a process that died holding it
-				continue
-			}
-		}
-		if time.Since(start) > 30*time.Second {
-			return nil, fmt.Errorf("%s is held by another firefighter: try again", l)
+			return nil, fmt.Errorf("%s is held by another firefighter for over 2 minutes: try again", l)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -179,11 +170,19 @@ func load(home string) (file, error) {
 
 func save(home string, f file) error {
 	b, _ := json.MarshalIndent(f, "", "  ")
-	tmp := path(home) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	t, err := os.CreateTemp(home, "storage-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path(home))
+	_, werr := t.Write(b)
+	if cerr := t.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(t.Name())
+		return werr
+	}
+	return os.Rename(t.Name(), path(home))
 }
 
 // Grants reads the claimed spaces.
@@ -252,12 +251,13 @@ func canonical(f file, project string) string {
 
 // capOf is the human's most for a project, whatever the spelling of its config key.
 func (p Pool) capOf(project string) (float64, bool) {
-	for name, c := range p.Caps {
+	low, found := math.Inf(1), false
+	for name, c := range p.Caps { // "Alpha = 2" and "alpha = 20" both set: the lower one holds
 		if strings.EqualFold(name, project) || strings.EqualFold(Name(name), project) {
-			return c, true
+			low, found = math.Min(low, c), true
 		}
 	}
-	return 0, false
+	return low, found
 }
 
 // Claim sets a project's space to gb (a new claim, or a bigger or smaller one) and returns its folder.
@@ -372,9 +372,9 @@ func (p Pool) Release(home, project string, deleteFiles bool) (freedGB float64, 
 		return 0, fmt.Errorf("%s has no space", project)
 	}
 	if files > 0 && deleteFiles {
-		for _, it := range items(dir, g.Labels) {
-			if it.Rank == Keep && it.Files > 0 {
-				return 0, fmt.Errorf("%s holds %s, ranked keep (%s): move it out, or rank it none first, then release --delete", project, it.Path, it.For)
+		for path, l := range g.Labels {
+			if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(path))); l.Rank == Keep && err == nil {
+				return 0, fmt.Errorf("%s holds %s, ranked keep (%s): move it out, or rank it none first, then release --delete", project, path, l.For)
 			}
 		}
 	}
@@ -407,7 +407,14 @@ func removeSpace(root, dir string) error {
 	if err1 != nil || err2 != nil || !strings.EqualFold(filepath.Dir(d), r) || filepath.Dir(r) == r {
 		return fmt.Errorf("refusing to delete %s: not a space inside %s", dir, root)
 	}
-	return os.RemoveAll(d)
+	// Through an os.Root on the storage root: nothing reached through a link or junction outside
+	// it is removed, even if one is swapped in while this runs.
+	rt, err := os.OpenRoot(r)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	return rt.RemoveAll(filepath.Base(d))
 }
 
 // Look measures every space, claimed or not, in the root.

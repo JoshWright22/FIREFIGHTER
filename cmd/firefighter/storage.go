@@ -97,7 +97,11 @@ func storageCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s: %.1f GB space at %s\n", *project, *gb, dir)
+		saved := *gb
+		if g, err := storage.Grants(home); err == nil {
+			saved = g[filepath.Base(dir)].GB // what was stored (rounded down to 0.1 GB)
+		}
+		fmt.Printf("%s: %.1f GB space at %s\n", *project, saved, dir)
 		fmt.Println("do: keep the project's big files (data, checkpoints, models, caches) there, delete what you no longer need, `firefighter storage release` when done")
 	case "path":
 		dir, err := pool.Dir(*project)

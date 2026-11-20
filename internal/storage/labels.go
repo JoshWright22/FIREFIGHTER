@@ -107,6 +107,11 @@ func (p Pool) SetLabel(home, project, path, rank, purpose string) (string, error
 	if g.Labels == nil {
 		g.Labels = map[string]Label{}
 	}
+	for other := range g.Labels {
+		if other != rel && foldKey(other) == foldKey(rel) {
+			delete(g.Labels, other) // one label per file
+		}
+	}
 	if rank == "none" {
 		delete(g.Labels, rel)
 	} else {
@@ -174,7 +179,11 @@ func items(dir string, labels map[string]Label) []Item {
 	byKey := map[string]string{} // foldKey(label path) -> label path
 	for path, l := range labels {
 		byPath[path] = &Item{Path: path, Rank: l.Rank, For: l.For}
-		byKey[foldKey(path)] = path
+		// Two labels that name one file in different case (set before labels were resolved): the
+		// more protective rank wins, so a keep is never lost to a scratch.
+		if prev, ok := byKey[foldKey(path)]; !ok || rankOrder(l.Rank) > rankOrder(labels[prev].Rank) {
+			byKey[foldKey(path)] = path
+		}
 	}
 	var bytes = map[string]int64{}
 	_ = filepath.WalkDir(dir, func(full string, e fs.DirEntry, err error) error {
@@ -250,8 +259,8 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 	if upto != Scratch && upto != Unranked && upto != Useful {
 		return nil, 0, fmt.Errorf("--upto %q: scratch, unranked or useful (keep is never deleted)", upto)
 	}
-	if gb <= 0 {
-		return nil, 0, errors.New("--gb must be more than 0")
+	if !(gb > 0) || math.IsInf(gb, 0) { // also NaN: it would pass every stop check and delete everything eligible
+		return nil, 0, errors.New("--gb must be a number more than 0")
 	}
 	if _, err := p.Dir(project); err != nil {
 		return nil, 0, err
@@ -274,9 +283,18 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 		return nil, 0, fmt.Errorf("%s isn't a storage root firefighter made: nothing deleted", p.Root)
 	}
 	dir := filepath.Join(p.Root, project)
-	realDir, err := filepath.EvalSymlinks(dir)
+	// Every delete goes through an os.Root on the space: a path that resolves outside it (a folder
+	// swapped for a junction or link after the walk) is refused by the OS-level lookup itself.
+	rt, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, 0, err
+	}
+	defer rt.Close()
+	protected := map[string]bool{} // labeled folders that are not being freed: never pruned
+	for path, l := range g.Labels {
+		if rankOrder(l.Rank) > rankOrder(upto) {
+			protected[foldKey(path)] = true
+		}
 	}
 	for _, it := range items(dir, g.Labels) {
 		if freed >= gb || rankOrder(it.Rank) > rankOrder(upto) {
@@ -290,29 +308,12 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 			freed += it.GB
 			continue
 		}
-		var gone int64
-		for _, file := range it.files {
-			// Checked again just before deleting: a plain file whose real path (links and junctions
-			// resolved) is still inside the space. A folder swapped for a junction since the walk
-			// would point outside it.
-			fi, err := os.Lstat(file)
-			if err != nil || !fi.Mode().IsRegular() || !inside(dir, file) {
-				continue
-			}
-			if real, err := filepath.EvalSymlinks(file); err != nil || !inside(realDir, real) {
-				it.Left++
-				continue
-			}
-			if os.Remove(file) == nil {
-				gone += fi.Size()
-			} else {
-				it.Left++ // in use (a running job holds it) or not ours to delete
-			}
-		}
+		gone, left := removeFiles(rt, dir, it.files)
+		it.Left += left
 		it.GB = math.Round(float64(gone)/(1<<30)*1000) / 1000
 		chosen = append(chosen, it)
 		freed += float64(gone) / (1 << 30)
-		pruneEmpty(dir, filepath.Join(dir, filepath.FromSlash(it.Path)))
+		pruneEmpty(rt, dir, it.Path, protected)
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(it.Path))); err != nil {
 			delete(g.Labels, it.Path)
 		}
@@ -324,23 +325,48 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 	return chosen, freed, err
 }
 
-func inside(dir, path string) bool {
-	r, err := filepath.Rel(dir, path)
-	return err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) && !filepath.IsAbs(r)
+// removeFiles deletes plain files (full paths under dir) through rt, the space's os.Root: a path
+// that now resolves outside the space is refused by the lookup itself. It returns the bytes really
+// removed and how many files it could not remove.
+func removeFiles(rt *os.Root, dir string, files []string) (gone int64, left int) {
+	for _, file := range files {
+		rel, err := filepath.Rel(dir, file)
+		if err != nil {
+			left++
+			continue
+		}
+		fi, err := rt.Lstat(rel)
+		if err != nil {
+			left++
+			continue
+		}
+		if !fi.Mode().IsRegular() {
+			continue
+		}
+		if rt.Remove(rel) == nil {
+			gone += fi.Size()
+		} else {
+			left++ // in use (a running job holds it), or it now resolves outside the space
+		}
+	}
+	return gone, left
 }
 
-// pruneEmpty removes path's now-empty folders, deepest first, never the space itself.
-func pruneEmpty(dir, path string) {
+// pruneEmpty removes the now-empty folders under one item (inside the space, through rt), deepest
+// first, never the space itself and never a folder labeled with a rank that is not being freed.
+func pruneEmpty(rt *os.Root, dir, item string, protected map[string]bool) {
 	var dirs []string
-	_ = filepath.WalkDir(path, func(p string, e fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(filepath.Join(dir, filepath.FromSlash(item)), func(p string, e fs.DirEntry, err error) error {
 		if err == nil && e.IsDir() {
-			dirs = append(dirs, p)
+			if rel, err := filepath.Rel(dir, p); err == nil && rel != "." {
+				dirs = append(dirs, filepath.ToSlash(rel))
+			}
 		}
 		return nil
 	})
 	for i := len(dirs) - 1; i >= 0; i-- {
-		if d := dirs[i]; d != dir && inside(dir, d) {
-			os.Remove(d) // fails, harmlessly, while it still holds something
+		if !protected[foldKey(dirs[i])] {
+			rt.Remove(filepath.FromSlash(dirs[i])) // fails, harmlessly, while it still holds something
 		}
 	}
 }
