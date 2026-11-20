@@ -474,8 +474,8 @@ func (d *Daemon) refreshDocker(now time.Time) {
 	d.dockerAt = now
 	// The docker/podman CLIs inside running jobs, read here (not under the lock): a container a
 	// job's own script starts (run_matrix.py -> docker run) is that job's, not the human's.
-	clis := map[string][]string{} // job id -> the pids of its docker/podman CLIs
-	d.mu.Lock()                   // called from the loop outside the lock
+	clis := map[string][]string{}   // job id -> the pids of its docker/podman CLIs
+	d.mu.Lock()                     // called from the loop outside the lock
 	for _, j := range d.running() { // adopted ones too: their containers' RAM is theirs either way
 		for p := range j.pids {
 			n := strings.TrimSuffix(strings.ToLower(sysinfo.Name(p)), ".exe")
