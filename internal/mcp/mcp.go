@@ -96,8 +96,9 @@ var baseTools = []tool{
 	{"firefighter_status", "The shared machine in a few lines: the human, what runs until when, the queue, budgets, plans, do:. Pass minutes (and gpu) to also price a job without queuing it.", obj(map[string]any{
 		"minutes": num("Price a job of this runtime"), "gpu": boo("...on the GPU"), "vram_gb": num("...needing this VRAM"), "project": str("Your project (folder name)"),
 	})},
-	{"firefighter_job", "Change your job: extend (minutes = more lease), urgent / normal (tier, while waiting), cancel.", obj(map[string]any{
-		"id": str("Job id"), "action": str("extend | urgent | normal | cancel"), "minutes": num("For extend"),
+	{"firefighter_job", "Change your job: extend (minutes = more lease), urgent / normal (tier, while waiting), amend (new ram_gb / vram_gb / minutes for a waiting job: keeps its place; don't cancel and resubmit), cancel.", obj(map[string]any{
+		"id": str("Job id"), "action": str("extend | urgent | normal | amend | cancel"), "minutes": num("For extend (more lease) or amend (new estimate)"),
+		"ram_gb": num("For amend"), "vram_gb": num("For amend"),
 	}, "id", "action")},
 	{"firefighter_plan", "Announce heavy work later so others plan around it (reserves nothing). done=true removes your project's plans.", obj(map[string]any{
 		"what": str("What"), "at": str("HH:MM or now"), "minutes": num("Minutes"), "gpu_pct": num("GPU %"), "vram_gb": num("VRAM GB"), "project": str("Project"), "done": boo("Remove"),
@@ -372,10 +373,12 @@ func call(name string, a map[string]any) (string, any, error) {
 			v, err = c.Act(id, "bid", daemon.Act{Minutes: 10, Project: me})
 		case "normal":
 			v, err = c.Act(id, "bid", daemon.Act{Minutes: 5, Project: me})
+		case "amend":
+			v, err = c.Act(id, "amend", daemon.Act{RAMGB: f(a, "ram_gb"), VRAMGB: f(a, "vram_gb"), Minutes: f(a, "minutes"), Project: me})
 		case "cancel":
 			v, err = c.Act(id, "cancel", daemon.Act{Project: me})
 		default:
-			return "", nil, fmt.Errorf("action must be extend, urgent, normal or cancel")
+			return "", nil, fmt.Errorf("action must be extend, urgent, normal, amend or cancel")
 		}
 		if err != nil {
 			return "", nil, err

@@ -472,3 +472,14 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 		t.Fatal("isDockerRun")
 	}
 }
+
+// 11/20: an agent cancelled and resubmitted its job 8 times to change --vram/--ram. The wait line
+// says what declaration would start it, and amend changes it in place.
+func TestNearMissHint(t *testing.T) {
+	if h := nearMiss("335c69a6", "vram", 9, 9, 8.86); !strings.Contains(h, "would start now with --vram 8.8 (declared 9.0): firefighter amend 335c69a6 --vram 8.8") {
+		t.Fatalf("hint %q", h)
+	}
+	if nearMiss("x", "vram", 9, 0, 8.8) != "" || nearMiss("x", "vram", 12, 9, 8.8) != "" || nearMiss("x", "ram", 14, 14, 3) != "" {
+		t.Fatal("a hint only when the job's own declaration sets the need and the miss is small")
+	}
+}

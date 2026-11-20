@@ -498,6 +498,10 @@ type Act struct {
 	Project string `json:"project,omitempty"`
 	Force   bool   `json:"force,omitempty"`
 	Engine  string `json:"engine,omitempty"` // container engine: docker | podman
+	// amend: new declarations for a waiting job (0 = unchanged).
+	RAMGB  float64 `json:"ram_gb,omitempty"`
+	VRAMGB float64 `json:"vram_gb,omitempty"`
+	Urgent bool    `json:"urgent,omitempty"`
 }
 
 // validID: ticket ids end up in file names, so only what NewID makes is accepted.
@@ -536,7 +540,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	// Who may change a job: the human (no agent above the caller: a terminal, the VS Code button),
 	// the agent session that submitted it, or an agent in the same project. Other agents need
 	// --force. A guard against agents touching each other's work by accident, not a sandbox.
-	if verb == "cancel" || verb == "bid" || verb == "extend" || verb == "done" {
+	if verb == "cancel" || verb == "bid" || verb == "amend" || verb == "extend" || verb == "done" {
 		sameSession := callerAgent != 0 && (callerAgent == j.ownerAgent && callerAgentAt == j.ownerCreated ||
 			caller == j.ClientPID) // the job's own client always may (an unknown agent's own job)
 		if !callerHuman && j.human && !sameSession && !a.Force {
@@ -630,6 +634,39 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 				logf("%s: container limited to %.1f GB (it asked --memory %.1f GB; that is what firefighter reserved for it)", j.Name, j.NeedRAM, dm)
 			}
 		}
+	case "amend": // new declarations for a waiting job: same id, same client, same place in line
+		if j.State != "waiting" {
+			fail(w, http.StatusConflict, "job "+id+" is "+j.State+"; amend only changes a waiting job")
+			return
+		}
+		if a.RAMGB < 0 || a.VRAMGB < 0 || a.Minutes < 0 || a.Minutes > d.cfg.Ladder.MaxLeaseMinutes || (a.VRAMGB > 0 && !j.GPU) {
+			fail(w, 400, "amend: --ram/--vram in GB (--vram only for a GPU job), --minutes up to the longest lease")
+			return
+		}
+		var changed []string
+		if a.RAMGB > 0 {
+			changed = append(changed, fmt.Sprintf("ram %.1f -> %.1f GB", j.RAMGB, a.RAMGB))
+			j.RAMGB = a.RAMGB
+		}
+		if a.VRAMGB > 0 {
+			changed = append(changed, fmt.Sprintf("vram %.1f -> %.1f GB", j.VRAMGB, a.VRAMGB))
+			j.VRAMGB = a.VRAMGB
+		}
+		if a.Minutes > 0 {
+			changed = append(changed, fmt.Sprintf("minutes %.0f -> %.0f", j.Minutes, a.Minutes))
+			j.Minutes = a.Minutes
+		}
+		if a.Urgent && j.Bid < policy.BidUrgent {
+			changed = append(changed, "urgent")
+			j.Bid, j.Spot = policy.BidUrgent, false
+			j.Band = policy.BandFor(j.Ticket, d.account(j.Project, now).Left(d.cfg, d.cfg.Allowance(j.Project)) > 0)
+		}
+		if len(changed) == 0 {
+			fail(w, 400, "amend: nothing to change (--ram, --vram, --minutes, --urgent)")
+			return
+		}
+		d.fillNeeds(j.Ticket)
+		logf("%s: amended (%s); now needs %.1f GB RAM %.1f GB VRAM", j.Name, strings.Join(changed, ", "), j.NeedRAM, j.NeedVRAM)
 	case "bid": // re-bid while waiting, after reading the market
 		if a.Minutes < 1 || a.Minutes > 10 {
 			fail(w, 400, "bid must be 1-10")
@@ -923,9 +960,12 @@ func (d *Daemon) blockerOf(j *job) string {
 	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.Ticket); return c < 0 }():
 		return "waiting for a " + j.WantVendor + " GPU (none is reporting right now)"
 	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.Ticket):
-		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), math.Max(0, d.cardLeft(j.Ticket)))
+		left := math.Max(0, d.cardLeft(j.Ticket))
+		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), left) +
+			nearMiss(j.ID, "vram", d.jobNeed(j), j.VRAMGB, left)
 	case j.NeedRAM+d.ramMargin() > ram:
-		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram)) + d.ramNote(now)
+		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram)) + d.ramNote(now) +
+			nearMiss(j.ID, "ram", j.NeedRAM, j.RAMGB, ram-d.ramMargin())
 	case d.ramSettling(now) != "":
 		return d.ramSettling(now)
 	case j.GPU && len(d.busyOutside()) > 0:
@@ -1391,4 +1431,14 @@ func (d *Daemon) outsideContainers() []sysinfo.Container {
 		}
 	}
 	return out
+}
+
+// nearMiss: when a job misses by a little and its own declaration is what sets the need, the
+// declaration that would start it now (11/20: an agent resubmitted 8 times, missing by 0.1-3 GB).
+func nearMiss(id, flag string, need, declared, fits float64) string {
+	fits = math.Floor(fits*10) / 10
+	if declared <= 0 || fits <= 0 || math.Abs(need-declared) > 0.05 || need-fits > math.Max(1, need*0.35) {
+		return ""
+	}
+	return fmt.Sprintf("; would start now with --%s %.1f (declared %.1f): firefighter amend %s --%s %.1f", flag, fits, declared, id, flag, fits)
 }

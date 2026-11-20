@@ -1102,3 +1102,29 @@ func TestBusyCardDoesNotBlockTheIdleOne(t *testing.T) {
 		t.Fatalf("job should run on the idle card 1:\n%s", got)
 	}
 }
+
+// 11/20: an agent cancelled and resubmitted its job 8 times, changing --vram 14 -> 12 -> 10 -> 9 and
+// missing each time by a little. The wait line says what would start it, and `amend` changes the
+// waiting job in place: same id, same waiting client, and it then runs.
+func TestAmendWaitingJob(t *testing.T) {
+	// 16 GB card with 6.5 GB in use: 9.5 free, less the human's reserve.
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16, "used_gb": 6.5}}})
+	id := e.detach("exit:0", "--gpu", "--minutes", "1", "--vram", "9")
+	time.Sleep(2 * time.Second)
+	out, _ := e.ff("wait", id, "--timeout", "1")
+	if !strings.Contains(out, "would start now with --vram") || !strings.Contains(out, "firefighter amend "+id) {
+		t.Fatalf("the wait line should say what would start it:\n%s", out)
+	}
+	if out, code := e.ff("amend", id, "--vram", "7", "--minutes", "2"); code != 0 || !strings.Contains(out, "amended") {
+		t.Fatalf("amend: %d\n%s", code, out)
+	}
+	if out, code := e.ff("wait", id, "--timeout", "30"); code != 0 || !strings.Contains(out, `"outcome": "ok"`) {
+		t.Fatalf("the amended job should run under its original id: %d\n%s", code, out)
+	}
+	if !strings.Contains(e.log(), "amended (vram 9.0 -> 7.0 GB, minutes 1 -> 2)") {
+		t.Fatalf("log:\n%s", e.log())
+	}
+	if out, code := e.ff("amend", id, "--ram", "2"); code == 0 || !strings.Contains(out, "only changes a waiting job") {
+		t.Fatalf("amending a finished job must fail: %d\n%s", code, out)
+	}
+}

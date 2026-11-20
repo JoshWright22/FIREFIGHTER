@@ -47,6 +47,7 @@ Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your networ
   firefighter quote [--gpu] --minutes N [--vram GB] [--ram GB]
                                  the market: price now, start time and cost per bid, busy odds
   firefighter bid <id> <1-10>    change a waiting job's tier (5 normal, 10 urgent)
+  firefighter amend <id> [--ram GB] [--vram GB] [--minutes N] [--urgent]  change a waiting job's declarations; it keeps its place and its waiting run
   firefighter wait <id>          block until a job ends; prints its receipt and log tail
   firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
   firefighter forecast [--json]  what the human and each known command are expected to use, as learned
@@ -94,6 +95,8 @@ func main() {
 		err = events(args)
 	case "bid":
 		err = rebid(args)
+	case "amend":
+		err = amend(args)
 	case "cancel":
 		err = act(args, "cancel")
 	case "adopt":
@@ -869,6 +872,31 @@ func rebid(args []string) error {
 	v, err := c.Act(args[0], "bid", daemon.Act{Minutes: float64(b), Project: callerProject(), Force: force})
 	if err == nil {
 		ui.Say(ui.Ivory, "%s: bid %d, now #%d, on ~%s", v.Name, b, v.Position, v.ETA)
+	}
+	return err
+}
+
+func amend(args []string) error {
+	fs := flag.NewFlagSet("amend", flag.ContinueOnError)
+	ram := fs.Float64("ram", 0, "peak RAM GB")
+	vram := fs.Float64("vram", 0, "peak VRAM GB")
+	minutes := fs.Float64("minutes", 0, "runtime estimate (lease)")
+	urgent := fs.Bool("urgent", false, "the human is waiting on the result")
+	force := fs.Bool("force", false, "another project's job")
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return errors.New("usage: firefighter amend <id> [--ram GB] [--vram GB] [--minutes N] [--urgent]")
+	}
+	id := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	v, err := c.Act(id, "amend", daemon.Act{RAMGB: *ram, VRAMGB: *vram, Minutes: *minutes, Urgent: *urgent, Project: callerProject(), Force: *force})
+	if err == nil {
+		ui.Say(ui.Ivory, "%s: amended, #%d, on ~%s %s", v.Name, v.Position, v.ETA, v.Why)
 	}
 	return err
 }
