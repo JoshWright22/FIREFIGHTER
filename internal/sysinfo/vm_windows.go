@@ -115,6 +115,9 @@ func vmGuest() (name, meminfo string, ok bool) {
 
 func vmReclaim(name string) error {
 	if name == "" {
+		name = vmDistro() // the guest's numbers weren't read: any running distro reaches the same VM
+	}
+	if name == "" {
 		return errors.New("no running WSL distro")
 	}
 	// Page cache only (1): dropping dentries and inodes too would cost a running build more than

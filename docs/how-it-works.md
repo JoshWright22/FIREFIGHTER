@@ -180,6 +180,16 @@ values.
 
 ### When RAM runs short
 
+**The floor.** Free RAM never planned below `reserve.min_free_gb` (4 GB, at most 15% of RAM), even
+when the learned reserve is smaller: under it Windows pages and the desktop stalls. A job starts
+only when its full need plus the margin fits above that floor, and on Windows only when the commit
+left (RAM + pagefile promised to programs) covers its need plus `reserve.commit_free_gb` (3 GB). A
+container's `docker run --memory` counts: its reservation is the declared or learned need plus
+half, never above the limit (the whole limit when nothing is known), and once it runs the
+container is held to that reservation with `docker update`, so it can't grow into paging. When RAM
+is critical and the WSL VM holds 2 GB or more, its cache is reclaimed even if its own numbers
+aren't in or the last reclaim returned little.
+
 A kill throws away everything a job has computed since it last wrote a file, so RAM has its own
 order, and each step runs only if the one before didn't fix it:
 

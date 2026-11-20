@@ -31,9 +31,10 @@ type fake struct {
 	RAMAvailGB *float64 `json:"ram_avail_gb"`
 	NetMbps    *float64 `json:"net_mbps"`
 	GPUs       []GPU    `json:"gpus"`
-	VMHostGB   *float64 `json:"vm_host_gb"`   // a scripted WSL VM: what the host gave it
-	VMCacheGB  *float64 `json:"vm_cache_gb"`  // and how much of that is cache
-	DiskFreeGB *float64 `json:"disk_free_gb"` // free space on every drive
+	CommitFree *float64 `json:"commit_free_gb"` // scripted commit headroom
+	VMHostGB   *float64 `json:"vm_host_gb"`     // a scripted WSL VM: what the host gave it
+	VMCacheGB  *float64 `json:"vm_cache_gb"`    // and how much of that is cache
+	DiskFreeGB *float64 `json:"disk_free_gb"`   // free space on every drive
 }
 
 func readFake() *fake {

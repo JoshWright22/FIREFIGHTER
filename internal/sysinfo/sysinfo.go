@@ -96,11 +96,15 @@ type Snapshot struct {
 	CPUBusy    float64 // logical CPUs busy, machine-wide
 	RAMTotalGB float64
 	RAMAvailGB float64
-	NetMbps    float64 // network throughput, received + sent, all non-loopback interfaces (megabits/s)
-	GPUs       []GPU
-	ProcGPU    map[int]ProcGPU
-	Idle       float64 // seconds since the human's last input; -1 unknown
-	Foreground string  // process name of a fullscreen foreground window, "" if none
+	// Windows commit: what programs have been promised (RAM + pagefile). 0 where unknown. Near the
+	// limit, Windows grows the pagefile and pages; past it, allocations fail.
+	CommitLimitGB float64
+	CommitUsedGB  float64
+	NetMbps       float64 // network throughput, received + sent, all non-loopback interfaces (megabits/s)
+	GPUs          []GPU
+	ProcGPU       map[int]ProcGPU
+	Idle          float64 // seconds since the human's last input; -1 unknown
+	Foreground    string  // process name of a fullscreen foreground window, "" if none
 	// ForegroundApp is the process that owns the focused window ("" where unknown).
 	ForegroundApp string
 	// ProcUtilKnown: per-process GPU utilization is measured (Windows GPU counters). Without it
@@ -161,6 +165,7 @@ func (r *Reader) Read() Snapshot {
 		s.RAMTotalGB = gb(v.Total)
 		s.RAMAvailGB = gb(v.Available)
 	}
+	s.CommitLimitGB, s.CommitUsedGB = commit()
 	if c, err := psnet.IOCounters(true); err == nil {
 		var total uint64
 		for _, n := range c {
@@ -219,6 +224,9 @@ func applyFake(s *Snapshot) {
 	}
 	if f.RAMAvailGB != nil {
 		s.RAMAvailGB = *f.RAMAvailGB
+	}
+	if f.CommitFree != nil {
+		s.CommitLimitGB, s.CommitUsedGB = 100, 100-*f.CommitFree
 	}
 	if f.NetMbps != nil {
 		s.NetMbps = *f.NetMbps
@@ -609,4 +617,12 @@ func size(s string) float64 {
 		}
 	}
 	return num(s)
+}
+
+// CommitFreeGB is the commit left before the limit (-1 where commit isn't measured).
+func (s Snapshot) CommitFreeGB() float64 {
+	if s.CommitLimitGB <= 0 {
+		return -1
+	}
+	return s.CommitLimitGB - s.CommitUsedGB
 }

@@ -1004,7 +1004,7 @@ func (d *Daemon) ladder(now time.Time) {
 
 	// Memory pressure, measured first: the game ladder below only evicts suspended jobs when the
 	// memory they hold is what the human is short of.
-	ramFloor := d.snap.RAMTotalGB * d.res.RAMPct / 100
+	ramFloor := d.ramFloor()
 	ramShort := d.snap.RAMTotalGB > 0 && d.snap.RAMAvailGB < ramFloor
 	vramCard := d.vramShortCard()
 	d.ramLow = since(d.ramLow, ramShort, now)
@@ -1430,7 +1430,13 @@ func (d *Daemon) waiting() []*policy.Ticket {
 // that freed its cache while paused will take it back). VRAM is per card: the freest GPU, less the
 // unclaimed needs of jobs placed on it.
 func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
-	ram = d.snap.RAMAvailGB - d.snap.RAMTotalGB*d.res.RAMPct/100
+	ram = d.snap.RAMAvailGB - d.ramFloor()
+	// Windows commit: a job's allocations are promised against RAM + pagefile. Near the limit
+	// Windows grows the pagefile and pages (41.1 of 44.1 GB on 2026-11-20, as the desktop froze), so
+	// the commit left beyond reserve.commit_free_gb bounds what a new job may take too.
+	if cf := d.snap.CommitFreeGB(); cf >= 0 && d.cfg.Reserve.CommitFreeGB > 0 {
+		ram = math.Min(ram, cf-d.cfg.Reserve.CommitFreeGB)
+	}
 	card, free := d.freestCard()
 	vram = free - d.res.VRAMGB
 	for _, j := range d.jobs {
@@ -1442,6 +1448,14 @@ func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 		}
 	}
 	return
+}
+
+// ramFloor is the free RAM kept for the human: the learned (or configured) reserve, and never less
+// than reserve.min_free_gb (at most 15% of RAM). Admission keeps it free beside every job's full
+// need, and the RAM ladder acts as soon as free RAM falls under it.
+func (d *Daemon) ramFloor() float64 {
+	total := d.snap.RAMTotalGB
+	return math.Max(total*d.res.RAMPct/100, math.Min(d.cfg.Reserve.MinFreeGB, total*0.15))
 }
 
 // ramMost is the most RAM a job can ever count on: the machine's, less what is always in use
@@ -2202,6 +2216,29 @@ func (d *Daemon) reclaimVM(now time.Time, why string, urgent bool) bool {
 	return true
 }
 
+// reclaimCritical asks the VM for its cache when RAM is critical and the VM holds memory, even when
+// its own numbers aren't in, are stale, or the last reclaims returned little: the VM can fill with
+// cache within a minute (2026-11-20: 2.1 GB at 07:13, about 11 GB by 07:20, and no second reclaim
+// came while Windows sat at 0.8 GB free). At most every 30 s.
+func (d *Daemon) reclaimCritical(now time.Time, avail float64) bool {
+	if !d.cfg.Reserve.ReclaimVMCache || d.vm.HostGB < 2 || now.Sub(d.reclaim.end) < 30*time.Second {
+		return false
+	}
+	saved := d.vm
+	if !d.vm.Guest || now.Sub(d.vmAt) > 30*time.Second || d.vm.CacheGB < reclaimMinGB {
+		// Unknown split: assume what the VM holds beyond 1 GB may be cache.
+		d.vm = sysinfo.VM{Name: d.vm.Name, HostGB: d.vm.HostGB, UsedGB: 1, CacheGB: d.vm.HostGB - 1, Guest: true}
+		d.vmAt = now
+	}
+	misses := d.reclaim.misses
+	d.reclaim.misses, d.reclaim.end = 0, time.Time{}
+	ok := d.reclaimVM(now, fmt.Sprintf("RAM critically low (%.1f GB free)", avail), true)
+	if !ok {
+		d.vm, d.reclaim.misses = saved, misses
+	}
+	return ok
+}
+
 // ramMargin is the RAM that must stay free beyond the reserve and a new job's own need.
 func (d *Daemon) ramMargin() float64 {
 	return d.snap.RAMTotalGB * d.cfg.Reserve.RAMMarginPct / 100
@@ -2339,6 +2376,9 @@ func (d *Daemon) ramPressure(now time.Time, floor float64) {
 			why = "jobs are waiting for RAM"
 		}
 		wait = d.reclaimVM(now, why, short)
+		if !wait && critical {
+			wait = d.reclaimCritical(now, avail)
+		}
 	}
 	// The VM holds memory but its own numbers aren't in yet (they are read once RAM gets tight):
 	// that reading gets 10 s before anything else is tried.

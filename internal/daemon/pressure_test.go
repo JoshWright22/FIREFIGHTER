@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,7 @@ func testDaemon(t *testing.T) *Daemon {
 		stop: make(chan struct{}), dockerQ: make(chan []string, 8)}
 	d.cfg = config.Defaults()
 	d.cfg.Guard.AutoAdopt = false
+	d.cfg.Reserve.MinFreeGB = 0 // the tests below do their arithmetic on the percentage reserve; floor tests set it
 	d.cfgShared.Store(&d.cfg)
 	d.snap = sysinfo.Snapshot{CPUs: 16, RAMTotalGB: 32, RAMAvailGB: 20, Idle: 60,
 		GPUs: []sysinfo.GPU{{Name: "test", Vendor: "nvidia", VRAMGB: 16, UsedGB: 1}}}
@@ -325,5 +327,109 @@ func TestVideoEncodeIsNotOutsideGPUWork(t *testing.T) {
 	d.applyMeasurements(nil, time.Now(), time.Second)
 	if out := d.busyOutside(); len(out) != 1 {
 		t.Fatalf("outside CUDA work must still count: %v", out)
+	}
+}
+
+// 2026-11-20: the learned reserve (9% of 31.6 GB = 2.8 GB) let free RAM fall to where Windows pages.
+// reserve.min_free_gb holds a floor under it, for admission and for the ladder.
+func TestMinFreeFloor(t *testing.T) {
+	d := testDaemon(t)
+	d.cfg.Reserve.MinFreeGB = 4
+	now := time.Now()
+	j := d.addWaiting("eval", 2.0, 30, time.Minute)
+	// 8% of 32 = 2.56 GB reserve; 6.5 GB free would leave 3.9 after it, but the floor is 4 GB:
+	// 2.5 GB left, not enough for 2 GB plus the 1.6 GB margin.
+	d.snap.RAMAvailGB = 6.5
+	d.admit(now)
+	if j.State != "waiting" {
+		t.Fatalf("granted into the floor:\n%s", daemonLog(t))
+	}
+	d.snap.RAMAvailGB = 8
+	d.admit(now)
+	if j.State != "granted" {
+		t.Fatalf("not granted with room above the floor: %s", d.blocker(j))
+	}
+	if f := d.ramFloor(); f != 4 {
+		t.Fatalf("floor %v", f)
+	}
+	d.cfg.Reserve.MinFreeGB = 20 // capped at 15% of RAM
+	if f := d.ramFloor(); f != 32*0.15 {
+		t.Fatalf("floor cap %v", f)
+	}
+}
+
+// Commit nearly spent: Windows would grow the pagefile and page. A job waits even with RAM free.
+func TestCommitHeadroomHoldsAdmission(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addWaiting("eval", 4.0, 30, time.Minute)
+	d.snap.RAMAvailGB = 20
+	d.snap.CommitLimitGB, d.snap.CommitUsedGB = 44.1, 41.1 // the freeze: 3 GB of commit left
+	d.admit(now)
+	if j.State != "waiting" {
+		t.Fatalf("granted with 3 GB of commit left:\n%s", daemonLog(t))
+	}
+	d.snap.CommitUsedGB = 30
+	d.admit(now)
+	if j.State != "granted" {
+		t.Fatalf("not granted with commit to spare: %s", d.blocker(j))
+	}
+}
+
+// A container's --memory is what it may take from Windows (through the WSL VM): it counts as the
+// job's RAM need even when a smaller --ram was declared (2026-11-20: --ram 6, --memory=28g).
+func TestDockerMemoryLimitIsTheNeed(t *testing.T) {
+	for cmd, want := range map[string]float64{
+		"docker run --rm --gpus all --memory=28g img python x.py": 28,
+		"docker run -m 512m img":                                  0.5,
+		"docker.exe run --memory 2.5G img":                        2.5,
+		"docker run -m4g img":                                     4,
+		"docker build -m 4g .":                                    0,
+		"python train.py --memory 8g":                             0,
+		"podman run --memory=1073741824 img":                      1,
+	} {
+		if got := dockerMemGB(cmd); math.Abs(got-want) > 1e-9 {
+			t.Errorf("%q: %v, want %v", cmd, got, want)
+		}
+	}
+	d := testDaemon(t)
+	tk := &policy.Ticket{Project: "UnomiBackend", Name: "t4sim", GPU: true, RAMGB: 6, VRAMGB: 9, Minutes: 50,
+		Command: "docker run --rm --gpus all --memory=28g unomi python stages.py"}
+	d.fillNeeds(tk)
+	if tk.NeedRAM != 9 {
+		t.Fatalf("need %.1f: declared 6 GB + half = 9 GB reserved (and the container held to it)", tk.NeedRAM)
+	}
+	unknown := &policy.Ticket{Project: "UnomiBackend", Name: "inspect", Command: "docker run --rm -m 28g unomi ls"}
+	d.fillNeeds(unknown)
+	if unknown.WantRAM != 28 || unknown.NeedRAM < 20 {
+		t.Fatalf("nothing declared: the whole 28 GB limit counts (cut to what the machine can give): need %.1f want %.1f", unknown.NeedRAM, unknown.WantRAM)
+	}
+}
+
+// RAM critical, the VM's numbers not read and the last reclaim a miss: the VM is asked anyway.
+func TestCriticalRAMReclaimsTheVMEvenAfterAMiss(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	d.snap.RAMAvailGB = 0.8
+	d.vm, d.vmAt = sysinfo.VM{HostGB: 11}, now // host side only: the guest wasn't asked
+	d.reclaim.misses, d.reclaim.end = 1, now.Add(-40*time.Second)
+	d.ramLow = now.Add(-time.Minute)
+	d.mu.Lock()
+	d.ladder(now)
+	on := d.reclaim.on
+	d.mu.Unlock()
+	if !on {
+		t.Fatalf("no reclaim at 0.8 GB free with the VM holding 11 GB:\n%s", daemonLog(t))
+	}
+	for end := time.Now().Add(20 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		d.mu.Lock()
+		on = d.reclaim.on
+		d.mu.Unlock()
+		if !on {
+			break
+		}
+	}
+	if b, _ := os.ReadFile(os.Getenv("FIREFIGHTER_FAKE_FILE") + ".reclaim"); len(b) == 0 {
+		t.Fatal("the VM was never asked")
 	}
 }

@@ -406,6 +406,18 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 			t.NeedRAM = d.cfg.GPU.DefaultRAMGB
 		}
 	}
+	// A container's --memory is what it may take (inside the WSL VM, which takes it from Windows),
+	// so a smaller declaration alone can't keep the machine out of paging (2026-11-20: --ram 6,
+	// --memory=28g). The reservation is the declared or learned need with half again on top (the
+	// whole limit when nothing is known), never above the limit; once the container runs it is held
+	// to that reservation (docker update), so it can't grow past what admission counted.
+	if dm := dockerMemGB(t.Command); dm > t.NeedRAM {
+		want := dm
+		if t.RAMGB > 0 || (h.RAM != nil && h.RAM.N > 0) {
+			want = math.Min(dm, math.Max(1, t.NeedRAM*1.5))
+		}
+		t.NeedRAM = math.Max(t.NeedRAM, want)
+	}
 	t.WantRAM = 0
 	if most := d.ramMost(); d.snap.RAMTotalGB > 0 && t.NeedRAM > most {
 		// A need the machine can never free would hold the line forever: the job starts when the
@@ -610,6 +622,13 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			// Later pause/kill calls use the full id: a name or prefix could point at another
 			// container once this one is gone.
 			j.container, j.engine = full, a.Engine
+			// A container whose --memory is above what was reserved for it is held to the
+			// reservation: past it, the container's own OOM killer acts, not Windows' paging.
+			if dm := dockerMemGB(j.Command); dm > j.NeedRAM+0.05 && j.NeedRAM > 0 {
+				lim := fmt.Sprintf("%dm", int(j.NeedRAM*1024))
+				d.docker(a.Engine, "update", "--memory", lim, "--memory-swap", lim, full)
+				logf("%s: container limited to %.1f GB (it asked --memory %.1f GB; that is what firefighter reserved for it)", j.Name, j.NeedRAM, dm)
+			}
 		}
 	case "bid": // re-bid while waiting, after reading the market
 		if a.Minutes < 1 || a.Minutes > 10 {
@@ -1289,4 +1308,64 @@ func (d *Daemon) sessionOf(caller int) (session int, human bool) {
 func (d *Daemon) jobNeed(j *job) float64 {
 	card, _ := d.cardFor(j.Ticket)
 	return d.needOn(j.Ticket, card)
+}
+
+// dockerMemGB is the --memory (-m) limit of a `docker run` / `podman run` command line, in GB (0
+// when there is none).
+func dockerMemGB(command string) float64 {
+	f := strings.Fields(command)
+	run := false
+	for i, a := range f {
+		base := strings.TrimSuffix(strings.ToLower(filepath.Base(a)), ".exe")
+		if !run && (base == "docker" || base == "podman") && i+1 < len(f) {
+			for _, b := range f[i+1:] {
+				if b == "run" || b == "create" {
+					run = true
+					break
+				}
+				if !strings.HasPrefix(b, "-") {
+					break
+				}
+			}
+			continue
+		}
+		if !run {
+			continue
+		}
+		v := ""
+		switch {
+		case a == "--memory" || a == "-m":
+			if i+1 < len(f) {
+				v = f[i+1]
+			}
+		case strings.HasPrefix(a, "--memory="):
+			v = strings.TrimPrefix(a, "--memory=")
+		case strings.HasPrefix(a, "-m") && len(a) > 2 && a[2] >= '0' && a[2] <= '9':
+			v = a[2:]
+		}
+		if v != "" {
+			return memSize(v)
+		}
+	}
+	return 0
+}
+
+// memSize parses docker's size syntax (512m, 28g, 1.5G, 1073741824) into GB.
+func memSize(v string) float64 {
+	v = strings.ToLower(strings.TrimSpace(v))
+	mult := 1.0 / (1 << 30)
+	switch {
+	case strings.HasSuffix(v, "g"), strings.HasSuffix(v, "gb"):
+		mult = 1
+	case strings.HasSuffix(v, "m"), strings.HasSuffix(v, "mb"):
+		mult = 1.0 / 1024
+	case strings.HasSuffix(v, "k"), strings.HasSuffix(v, "kb"):
+		mult = 1.0 / (1 << 20)
+	case strings.HasSuffix(v, "b"):
+	}
+	n, err := strconv.ParseFloat(strings.TrimRight(v, "gmkb"), 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n * mult
 }

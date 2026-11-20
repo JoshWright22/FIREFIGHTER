@@ -72,9 +72,14 @@ type Config struct {
 		IgnoreGPUApps     []string `toml:"ignore_gpu_apps"`     // compositors and harvesters: GPU use that isn't the human
 		MaxCPUPct         float64  `toml:"max_cpu_pct"`         // the CPU reserve follows other programs' load up to this share of the CPUs; jobs keep the rest
 		RAMMarginPct      float64  `toml:"ram_margin_pct"`      // a job starts only if this share of RAM stays free beyond the reserve and its need
-		DiskFreeGB        float64  `toml:"disk_free_gb"`        // free space kept on each drive jobs use (at most a tenth of the drive)
-		ReclaimVMCache    bool     `toml:"reclaim_vm_cache"`    // short of RAM: have the WSL2/Docker VM drop its file cache before any job is touched
-		Learn             bool     `toml:"learn"`               // size each state's reserve from what the human is seen to use (the values above bound it)
+		DiskFreeGB        float64  `toml:"disk_free_gb"`
+		// MinFreeGB: free RAM kept for the human whatever the learned reserve says (at most 15% of
+		// RAM): under it Windows starts paging and the desktop stalls (2026-11-20: 0.5 GB free froze it).
+		MinFreeGB float64 `toml:"min_free_gb"`
+		// CommitFreeGB: Windows commit headroom kept beyond a new job's need (0 = not checked).
+		CommitFreeGB   float64 `toml:"commit_free_gb"`   // free space kept on each drive jobs use (at most a tenth of the drive)
+		ReclaimVMCache bool    `toml:"reclaim_vm_cache"` // short of RAM: have the WSL2/Docker VM drop its file cache before any job is touched
+		Learn          bool    `toml:"learn"`            // size each state's reserve from what the human is seen to use (the values above bound it)
 	} `toml:"reserve"`
 
 	Ladder struct {
@@ -171,6 +176,8 @@ func Defaults() Config {
 	c.Reserve.MaxCPUPct = 75
 	c.Reserve.RAMMarginPct = 5
 	c.Reserve.DiskFreeGB = 10
+	c.Reserve.MinFreeGB = 4
+	c.Reserve.CommitFreeGB = 3
 	c.Reserve.ReclaimVMCache = true
 	c.Reserve.Learn = true
 	c.Reserve.ExclusiveApps = []string{"gamescope"} // Steam's game compositor on Linux
