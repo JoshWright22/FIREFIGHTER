@@ -40,7 +40,7 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 		heavy[p.PID] = p
 	}
 	for pid, u := range snap.ProcGPU {
-		if u.Util-u.Util3D >= c.Reserve.ForeignGPUPct { // compute, not graphics
+		if u.Compete()-u.Util3D >= c.Reserve.ForeignGPUPct { // compute, not graphics or video
 			if _, ok := heavy[pid]; !ok {
 				heavy[pid] = sysinfo.Proc{PID: pid, Name: sysinfo.Name(pid)}
 			}
@@ -104,7 +104,7 @@ func (d *Daemon) findRogues(now time.Time, c config.Config, snap sysinfo.Snapsho
 			project = cleanText(projectOf(cwd), 100)
 		}
 		u := snap.ProcGPU[pid]
-		out = append(out, rogue{proc: p, agent: agent, project: project, gpu: u.Util-u.Util3D >= c.Reserve.ForeignGPUPct,
+		out = append(out, rogue{proc: p, agent: agent, project: project, gpu: u.Compete()-u.Util3D >= c.Reserve.ForeignGPUPct,
 			vramGB: u.VRAMGB, created: created, owner: owner})
 	}
 	return out

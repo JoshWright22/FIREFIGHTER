@@ -174,7 +174,8 @@ func (p *platformReader) array(counter uintptr) map[string]float64 {
 	return out
 }
 
-// procGPU returns per-pid GPU engine use (summed over engines, capped at 100) and dedicated VRAM.
+// procGPU returns per-pid GPU engine use (summed over engines, capped at 100; media engines also
+// kept apart, see ProcGPU.Compete) and dedicated VRAM.
 func (p *platformReader) procGPU() map[int]ProcGPU {
 	m := map[int]ProcGPU{}
 	if !p.ok {
@@ -186,10 +187,7 @@ func (p *platformReader) procGPU() map[int]ProcGPU {
 	for inst, v := range p.array(p.util) {
 		if pid := pidOf(inst); pid > 0 {
 			g := m[pid]
-			g.Util = min(100, g.Util+v)
-			if strings.HasSuffix(strings.ToLower(inst), "engtype_3d") {
-				g.Util3D = min(100, g.Util3D+v)
-			}
+			g.AddEngine(inst, v)
 			m[pid] = g
 		}
 	}

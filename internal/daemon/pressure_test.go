@@ -303,3 +303,27 @@ func TestGPUJobDefaultRAMNeed(t *testing.T) {
 		t.Fatalf("needs: gpu %.1f, cpu %.1f, declared %.1f", gpu.NeedRAM, cpu.NeedRAM, declared.NeedRAM)
 	}
 }
+
+// 2026-11-20: OBS recording on NVENC (32% of the video encoders, 2% of 3D) held every GPU job as
+// "GPU busy outside firefighter". Encoder use isn't outside GPU work; real compute still is.
+func TestVideoEncodeIsNotOutsideGPUWork(t *testing.T) {
+	d := testDaemon(t)
+	me := os.Getpid() // a real process with a name, standing in for obs64.exe
+	var obs sysinfo.ProcGPU
+	obs.AddEngine("pid_1_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 2.3)
+	obs.AddEngine("pid_1_luid_0x0_0x1_phys_0_eng_5_engtype_VideoEncode", 15.2)
+	obs.AddEngine("pid_1_luid_0x0_0x1_phys_0_eng_6_engtype_VideoEncode", 17.3)
+	d.snap.ProcUtilKnown = true
+	d.snap.ProcGPU = map[int]sysinfo.ProcGPU{me: obs}
+	d.applyMeasurements(nil, time.Now(), time.Second)
+	if out := d.busyOutside(); len(out) != 0 {
+		t.Fatalf("a recorder on NVENC blocks GPU jobs: %v", out)
+	}
+	var cuda sysinfo.ProcGPU
+	cuda.AddEngine("pid_1_luid_0x0_0x1_phys_0_eng_3_engtype_Compute_0", 60)
+	d.snap.ProcGPU = map[int]sysinfo.ProcGPU{me: cuda}
+	d.applyMeasurements(nil, time.Now(), time.Second)
+	if out := d.busyOutside(); len(out) != 1 {
+		t.Fatalf("outside CUDA work must still count: %v", out)
+	}
+}

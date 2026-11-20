@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/csv"
 	psnet "github.com/shirou/gopsutil/v4/net"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +38,56 @@ type GPU struct {
 type ProcGPU struct {
 	Util   float64 // percent of the GPU this process's engines used
 	Util3D float64 // of that, the 3D (graphics) engine: games and video, not CUDA compute
-	VRAMGB float64 // dedicated VRAM held
+	// UtilMedia: of Util, the video encode/decode/processing engines (NVENC, NVDEC, Quick Sync):
+	// separate hardware blocks that don't compete with CUDA. A recorder or a video call uses them.
+	UtilMedia float64
+	VRAMGB    float64 // dedicated VRAM held
+	// compete: engines that share what a GPU job needs (3D, compute, copy, ...), capped at 100.
+	compete    float64
+	competeSet bool
+}
+
+// Compete is the share of the GPU this process takes from compute work: every engine but the
+// media ones. Readings that don't split engines (Linux, scripted) count all of Util.
+func (g ProcGPU) Compete() float64 {
+	if g.competeSet {
+		return g.compete
+	}
+	return math.Max(0, g.Util-g.UtilMedia)
+}
+
+// AddEngine adds one engine's utilization (a Windows "GPU Engine" counter instance such as
+// pid_1_luid_..._eng_5_engtype_VideoEncode) to the process's totals.
+func (g *ProcGPU) AddEngine(instance string, v float64) {
+	eng := strings.ToLower(instance)
+	if k := strings.LastIndex(eng, "engtype_"); k >= 0 {
+		eng = eng[k+8:]
+	} else {
+		eng = ""
+	}
+	g.Util = min(100, g.Util+v)
+	switch {
+	case eng == "3d":
+		g.Util3D = min(100, g.Util3D+v)
+	case MediaEngine(eng):
+		g.UtilMedia = min(100, g.UtilMedia+v)
+		g.competeSet = true
+		return
+	}
+	g.compete = min(100, g.compete+v)
+	g.competeSet = true
+}
+
+// MediaEngine says whether a GPU engine type is a fixed-function video block (encode, decode,
+// processing, JPEG): work on it doesn't slow CUDA or 3D.
+func MediaEngine(engtype string) bool {
+	e := strings.ToLower(engtype)
+	for _, m := range []string{"video", "codec", "encode", "decode", "jpeg", "nvenc", "nvdec", "ofa", "opticalflow"} {
+		if strings.Contains(e, m) {
+			return true
+		}
+	}
+	return false
 }
 
 type Snapshot struct {

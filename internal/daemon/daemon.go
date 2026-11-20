@@ -791,7 +791,9 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 	for pid, g := range d.snap.ProcGPU {
 		// Where per-process utilization is measured, only real use counts (a browser holding VRAM
 		// isn't GPU work). Where it isn't (Linux), holding over 1 GB of VRAM is the only sign.
-		if jobPIDs[pid] || (d.snap.ProcUtilKnown && g.Util < 1) || (!d.snap.ProcUtilKnown && g.VRAMGB < 1) {
+		// Video encode/decode engines (OBS recording on NVENC, a video call) are separate hardware:
+		// they don't slow a CUDA job, so they aren't outside GPU work.
+		if jobPIDs[pid] || (d.snap.ProcUtilKnown && g.Compete() < 1) || (!d.snap.ProcUtilKnown && g.VRAMGB < 1) {
 			continue
 		}
 		n := sysinfo.Name(pid)
@@ -803,7 +805,7 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 			// shim (Linux): firefighter's own, not an outsider's.
 			continue
 		}
-		u := g.Util
+		u := g.Compete()
 		if u < 1 {
 			// Unknown per-process load (Linux): holding VRAM isn't computing. Count it busy only
 			// while the card itself is busy beyond what firefighter's own jobs explain.
