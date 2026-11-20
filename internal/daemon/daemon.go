@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -534,11 +535,24 @@ func (d *Daemon) refreshDocker(now time.Time) {
 	}()
 }
 
+// namedIn says whether a docker CLI line names its container exactly name (--name x / --name=x).
+func namedIn(cl, name string) bool {
+	f := strings.Fields(cl)
+	for i, a := range f {
+		a = strings.Trim(a, `"'`)
+		if (a == "--name" && i+1 < len(f) && strings.Trim(f[i+1], `"'`) == name) || a == "--name="+name {
+			return true
+		}
+	}
+	return false
+}
+
 // isDockerRun says whether a command line is `docker run` / `podman run` (or create).
 func isDockerRun(cl string) bool {
 	f := strings.Fields(strings.ToLower(cl))
 	for i, a := range f {
-		b := strings.Trim(strings.TrimSuffix(filepath.Base(strings.Trim(a, `"`)), ".exe"), `"`)
+		// Both separators on every OS: a Windows path (C:\Program Files\Docker\docker.exe) seen in a log or test on Linux.
+		b := strings.Trim(strings.TrimSuffix(path.Base(strings.ReplaceAll(strings.Trim(a, `"`), `\`, "/")), ".exe"), `"`)
 		if (b == "docker" || b == "podman") && i+1 < len(f) {
 			for _, x := range f[i+1:] {
 				if x == "run" || x == "create" {
@@ -567,6 +581,10 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 	if d.seenCtr == nil {
 		d.seenCtr = map[string]bool{}
 	}
+	seenBefore := map[string]bool{} // as it was before this scan: marking one container seen must not hide it from the next one's check
+	for id := range d.seenCtr {
+		seenBefore[id] = true
+	}
 	live := map[string]bool{}
 	for _, c := range cs {
 		live[c.ID] = true
@@ -593,7 +611,7 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 				continue
 			}
 			for _, l := range ls {
-				if strings.Contains(l, "--name "+c.Name) || strings.Contains(l, "--name="+c.Name) {
+				if namedIn(l, c.Name) {
 					owner, cl, n, byName = j, l, 1, true
 					break
 				}
@@ -611,17 +629,20 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		if n != 1 || owner == nil {
 			continue // two jobs could have started it: no guess
 		}
-		// Without a --name match, the container must have been created after the job's docker run
-		// started (Review 11/20: the human's database, already running, was otherwise guessed to be
-		// the job's and capped, paused or killed with it), and be the only such container.
+		// The container must have been created after the job's docker run started (Review 11/20: the
+		// human's database, already running, was otherwise guessed to be the job's and capped, paused
+		// or killed with it). Without an exact --name match it must also be the only such container.
+		start := since[owner.ID]
+		if !c.Created.IsZero() && !start.IsZero() && c.Created.Before(start.Add(-2*time.Second)) {
+			continue
+		}
 		if !byName {
-			start := since[owner.ID]
-			if start.IsZero() || c.Created.IsZero() || c.Created.Before(start.Add(-2*time.Second)) {
+			if start.IsZero() || c.Created.IsZero() {
 				continue
 			}
 			others := 0
 			for _, o := range cs {
-				if o.ID != c.ID && !d.seenCtr[o.ID] && !o.Created.Before(start.Add(-2*time.Second)) && !o.Created.IsZero() {
+				if o.ID != c.ID && !seenBefore[o.ID] && !o.Created.IsZero() && !o.Created.Before(start.Add(-2*time.Second)) {
 					others++
 				}
 			}
@@ -634,7 +655,9 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 			owner.engine = "podman"
 		}
 		logf("%s: container %s (%s) was started by this job; it counts as the job's", owner.Name, c.Name, c.ID)
-		if dm := dockerMemGB(cl); owner.NeedRAM > 0 {
+		// A container with no --memory is capped only when the job declared --ram: the need of a job
+		// with no declaration may be a guess (0.5 GB), and capping on it OOM-kills real work (review 11/20).
+		if dm := dockerMemGB(cl); owner.NeedRAM > 0 && (dm > 0 || owner.RAMGB > 0) {
 			// The limit is the job's need, not more: the container's file cache counts toward it,
 			// and with half again on top (11.6 GB for a 7.7 GB job, 11/20) the cache it read filled
 			// the WSL VM, Windows fell under the floor and the job was stopped four times.

@@ -217,12 +217,19 @@ func Apply(ctx context.Context, rel Release, exe string, say func(string)) error
 			return errors.New("the firefighter built from source doesn't run either")
 		}
 	}
+	old := ""
 	if runtime.GOOS == "windows" {
-		if err := os.Rename(exe, exe+".old-"+time.Now().Format("20060102150405")); err != nil {
+		old = exe + ".old-" + time.Now().Format("20060102150405")
+		if err := os.Rename(exe, old); err != nil {
 			return err
 		}
 	}
 	if err := os.Rename(next, exe); err != nil {
+		if old != "" { // put the running guard's program back: never leave no firefighter.exe (review 11/20)
+			if rerr := os.Rename(old, exe); rerr != nil {
+				return fmt.Errorf("%w; and restoring %s failed: %v (the previous program is at %s)", err, exe, rerr, old)
+			}
+		}
 		return err
 	}
 	say("installed " + rel.Tag + " at " + exe)

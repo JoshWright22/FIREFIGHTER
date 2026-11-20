@@ -372,7 +372,7 @@ func run(args []string) (int, error) {
 	t := policy.Ticket{ID: r.id, Project: r.project, Name: r.name, Cwd: cwd, Command: strings.Join(argv, " "), CmdHash: hashCmd(argv),
 		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, Quick: r.quick, ClientPID: os.Getpid(), WantVendor: r.vendor, Net: r.net || netCommand(argv), NetAuto: !r.net && netCommand(argv)}
 	for attempt := 1; ; attempt++ {
-		code, requeue, err := turn(c, t, argv, container, r.quiet)
+		code, requeue, err := turn(c, &t, argv, container, r.quiet) // &t: an amend while waiting carries into the next attempt
 		if err != nil || !requeue {
 			return code, err
 		}
@@ -381,8 +381,8 @@ func run(args []string) (int, error) {
 }
 
 // turn is one wait-run-receipt cycle. requeue is true when the guard evicted the job gracefully.
-func turn(c *client.Client, t policy.Ticket, argv []string, container string, quiet bool) (int, bool, error) {
-	v, err := c.Create(daemon.Request{Ticket: t})
+func turn(c *client.Client, t *policy.Ticket, argv []string, container string, quiet bool) (int, bool, error) {
+	v, err := c.Create(daemon.Request{Ticket: *t})
 	if err != nil {
 		return 1, false, err
 	}
@@ -426,7 +426,7 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		}
 		nv, err := c.Get(t.ID, "waiting", 20)
 		if errors.Is(err, client.ErrNotFound) { // the daemon restarted: get back in line
-			nv, err = c.Create(daemon.Request{Ticket: t})
+			nv, err = c.Create(daemon.Request{Ticket: *t})
 		}
 		if err != nil {
 			if c2, err2 := client.Connect(); err2 == nil {
@@ -566,7 +566,7 @@ loop:
 				_ = sysinfo.Interrupt(cmd.Process.Pid)
 			}
 			if errors.Is(err, client.ErrNotFound) {
-				t2 := t
+				t2 := *t // a copy: the running registration, not the ticket the next attempt queues with
 				t2.PID = cmd.Process.Pid
 				t2.Device, t2.Vendor = v.Device, v.Vendor // back on the same card
 				_, _ = c.Create(daemon.Request{Ticket: t2, Running: true})

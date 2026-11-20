@@ -601,6 +601,38 @@ func TestHumansContainerIsNotGuessed(t *testing.T) {
 	}
 }
 
+// Review round 2 (Fable): two new containers in one scan, either order: neither is guessed. And a
+// --name that only shares a prefix with the human's container is no match.
+func TestContainerGuessNeedsOneNewAndExactName(t *testing.T) {
+	for _, flip := range []bool{false, true} {
+		d := testDaemon(t)
+		now := time.Now()
+		j := d.addRunning("job", 1, now.Add(-time.Minute))
+		start := map[string]time.Time{j.ID: now.Add(-30 * time.Second)}
+		a := sysinfo.Container{ID: "aaaaaaaaaaaa", Name: "jobs", Created: now.Add(-20 * time.Second)}
+		b := sysinfo.Container{ID: "bbbbbbbbbbbb", Name: "humans", Created: now.Add(-10 * time.Second)}
+		cs := []sysinfo.Container{a, b}
+		if flip {
+			cs = []sysinfo.Container{b, a}
+		}
+		d.adoptContainers(cs, map[string][]string{j.ID: {"docker run img"}}, start)
+		if j.container != "" {
+			t.Fatalf("flip=%v: one of two new containers was guessed: %q", flip, j.container)
+		}
+	}
+	if namedIn("docker run --name app-test img", "app") || !namedIn(`docker run --name "app" img`, "app") || !namedIn("docker run --name=app img", "app") {
+		t.Fatal("namedIn")
+	}
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addRunning("job", 1, now.Add(-time.Minute))
+	app := sysinfo.Container{ID: "cccccccccccc", Name: "app", Created: now.Add(-24 * time.Hour)}
+	d.adoptContainers([]sysinfo.Container{app}, map[string][]string{j.ID: {"docker run --name app img"}}, map[string]time.Time{j.ID: now.Add(-30 * time.Second)})
+	if j.container != "" {
+		t.Fatal("a container older than the job's docker run was taken by name")
+	}
+}
+
 // 11/20: agents manage the storage the human allots them. A project whose space holds more than
 // it claimed starts no new jobs (except --quick ones, which may be its cleanup) until it deletes
 // files or claims more.

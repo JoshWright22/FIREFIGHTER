@@ -546,14 +546,19 @@ func storageCall(a map[string]any) (string, any, error) {
 	if project == "" {
 		switch s(a, "action") {
 		case "free", "release":
-			return "", nil, fmt.Errorf("%s deletes files: pass project (or cwd, your working folder)", s(a, "action"))
+			return "", nil, fmt.Errorf("%s deletes files: pass cwd (your working folder)", s(a, "action"))
 		}
 		project = callerProject()
 	}
 	project = storage.Name(project)
-	if own := storage.Name(projectIn(s(a, "cwd"))); s(a, "cwd") != "" && !strings.EqualFold(project, own) && !b(a, "force") {
-		switch s(a, "action") {
-		case "claim", "label", "free", "release":
+	// Changing a space needs cwd, so the guard below always has the caller's own project to compare
+	// with (review round 2: project without cwd skipped it).
+	switch s(a, "action") {
+	case "claim", "label", "free", "release":
+		if s(a, "cwd") == "" {
+			return "", nil, fmt.Errorf("%s changes a space: pass cwd (your absolute working directory)", s(a, "action"))
+		}
+		if own := storage.Name(projectIn(s(a, "cwd"))); !strings.EqualFold(project, own) && !b(a, "force") {
 			return "", nil, fmt.Errorf("%s is another project's space (cwd is in %s): pass force=true if you mean it", project, own)
 		}
 	}

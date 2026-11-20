@@ -88,7 +88,7 @@ on stage
   3f2a91c0 nanoGPT train                      nanoGPT        until ~2:45 PM paused: the human needs the GPU (eldenring.exe using 64% of the 3D engine)
 
 in the wings
-  a81c0d42 #1 eval sweep                      evals          on ~3:20 PM the human needs the GPU (eldenring.exe using 64% of the 3D engine)
+  a81c0d42 #1 eval sweep                      evals          on unknown the human needs the GPU (eldenring.exe using 64% of the 3D engine)
   77d0e5b1 #2 docs build                      site           on ~2:31 PM needs 6.0 GB RAM, 4.2 GB free after the human's reserve
 
 budgets (machine-minutes left)
@@ -109,7 +109,8 @@ The full mechanics (the decision table, the preemption ladder, the market math) 
 - **Posted prices, no bidding war.** Spot (1/3 price), normal and urgent (2x) tiers against a daily
   budget, summed up in one ~60-token line per reply.
 - **It keeps itself current.** A released guard installs newer releases by itself, checked against
-  the release's checksums and signed build provenance, when no job is running.
+  the release's checksums (and its signed build provenance when the GitHub CLI is signed in), when
+  no job is running.
 - **It learns instead of guessing.** Every run teaches it what that command needs (RAM, VRAM,
   CPUs, GPU load, disk, network), and your own use teaches it how much to keep free for you.
   `firefighter forecast` shows what it expects.
@@ -124,7 +125,8 @@ The full mechanics (the decision table, the preemption ladder, the market math) 
 - **Disk space you hand out.** Give agents a folder and a size (`storage.gb`). Each project claims
   a space in it, ranks what it saves (keep, useful, scratch) and says what each thing is for, and
   frees the least important first. Nothing ranked keep is deleted by `storage free`, and a project
-  over its claim starts no new jobs until it cleans up.
+  over its claim starts no new jobs (except 3-minute `--quick` ones, for its cleanup) until it
+  cleans up.
 - **Honest waiting.** A waiting job's line says what it waits for, with the numbers, and its start
   time is "unknown" when nothing can forecast it. `firefighter amend` fixes a waiting job's
   declarations without losing its place.
@@ -140,7 +142,8 @@ The full mechanics (the decision table, the preemption ladder, the market math) 
 
 Claude Code, Codex, Gemini CLI, Antigravity, Cursor, Grok Build, OpenCode, Kimi CLI and Kimi Code,
 Pi, Muse Code, fx, Kiro, Windsurf/Devin, Copilot CLI, Amp, Qwen Code, Crush, Cline, Goose and Droid
-(and apps built on them, like T3 Code), each with its MCP server entry and a short rule block.
+(and apps built on them, like T3 Code). Each gets what it supports: an MCP server entry, a short
+rule block in its global instructions, or both.
 
 ## CLI cheat sheet
 

@@ -633,7 +633,8 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			// A container whose --memory is above what was reserved for it is held to the
 			// reservation: past it, the container's own OOM killer acts, not Windows' paging.
 			// One with no --memory at all could otherwise grow until Windows pages (review 11/20).
-			if dm := dockerMemGB(j.Command); j.NeedRAM > 0 && (dm == 0 || dm > j.NeedRAM+0.05) {
+			// Not on a guessed need (no --ram, no --memory): that OOM-kills real work.
+			if dm := dockerMemGB(j.Command); j.NeedRAM > 0 && ((dm == 0 && j.RAMGB > 0) || dm > j.NeedRAM+0.05) {
 				lim := fmt.Sprintf("%dm", int(j.NeedRAM*1024))
 				d.docker(a.Engine, "update", "--memory", lim, "--memory-swap", lim, full)
 				asked := "no --memory"

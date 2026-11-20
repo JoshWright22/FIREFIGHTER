@@ -146,7 +146,7 @@ it didn't make as spaces; `storage.projects.<name>` caps one project). Agents ma
   human moves `storage.root`, earlier spaces are reported "elsewhere" and their files are left
   alone. `free` counts only what it really deleted (files in use are kept and reported). The
   storage root's drive gets the same free-space reserve as the drives jobs run on. The MCP tool
-  takes `cwd` like `firefighter_submit`, and `free`/`release` need `project` or `cwd`. Claiming, ranking,
+  takes `cwd` like `firefighter_submit`; claim, label, free and release need `cwd`. Claiming, ranking,
   freeing or releasing another project's space takes `--force` (MCP: `force`).
 - `firefighter storage` (MCP: `firefighter_storage`) shows the allotment and every space, with
   folders in the root nobody claimed. The guard measures the spaces every 2 minutes (at once after a
