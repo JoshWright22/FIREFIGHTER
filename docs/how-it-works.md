@@ -94,6 +94,27 @@ Zero config gives you the researched defaults below. You can swap each part by n
 | 3 · afterparty | over budget, `--spot`, past the lease, or adopted | anything |
 | 4 · harvester | optional idle-GPU program (Salad, BOINC, Folding@home) | anything |
 
+### Waiting jobs, quick looks, the human's state
+
+- **Amend, don't resubmit.** `firefighter amend <id> [--ram GB] [--vram GB] [--minutes N] [--urgent]`
+  changes a waiting job's declarations in place: same id, same waiting `firefighter run`, same place
+  in line. When a job's own declaration misses by a little, its wait line says what would start it
+  ("would start now with --vram 8.8 (declared 9.0): firefighter amend <id> --vram 8.8").
+- **Start estimates follow the blocker.** The schedule's time is shown when the job waits for a turn
+  or for what firefighter's running jobs hold; a back-off shows when it ends; anything else (RAM or
+  VRAM held by other programs, outside GPU work, the human's game, disk, network) shows "unknown".
+- **Stop reasons carry numbers.** "RAM: 2.7 GB free, 1.3 GB under the 4.0 GB floor kept for the human
+  (...); the WSL/Docker VM holds 12.2 GB, 10.2 GB of it file cache". A requeued job's wait line says
+  what it was stopped for and when it tries again.
+- **Containers.** A container a job starts (directly or from its own script) is the job's: its
+  memory adds to the job's in receipts and in what is learned, its VRAM (seen through the WSL VM) is
+  the card's use beyond the usual floor, and its limit is set to the job's need (its file cache
+  counts toward it). `firefighter run --quick -- docker run --rm <image> ls` is the cheap path for a
+  look inside an image: a 2-minute lease, starts at once when RAM allows, and the VM's file cache is
+  dropped when it ends.
+- **Hysteresis.** Stepping up (toward game) is immediate. Stepping down needs the lower state in 2 of
+  3 readings 10 s apart, and a fullscreen game stays the game while it is the app in front.
+
 ### Band 4: the harvester, and only while it pays
 
 `[harvester] start`/`stop` are shell commands. FIREFIGHTER runs `start` after the GPU has been
