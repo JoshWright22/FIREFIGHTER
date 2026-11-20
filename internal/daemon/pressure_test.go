@@ -455,7 +455,7 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 	}
 	select {
 	case args := <-d.dockerQ:
-		if got := strings.Join(args, " "); got != "docker update --memory 9216m --memory-swap 9216m 1a9a7107362a" {
+		if got := strings.Join(args, " "); got != "docker update --memory 6144m --memory-swap 6144m 1a9a7107362a" {
 			t.Fatalf("docker call %q", got)
 		}
 	default:

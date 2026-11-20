@@ -283,8 +283,19 @@ func (d *Daemon) nobodyAtKeyboard() bool {
 
 // backoff: how often in a row a job was stopped for the human, and when it last was.
 type backoff struct {
-	n  int
-	at time.Time
+	n   int
+	at  time.Time
+	why string // what it was stopped for, with the numbers
+}
+
+// backoffLeft is how long a requeued job still waits after its last eviction (0: none).
+func (d *Daemon) backoffLeft(id string, now time.Time) time.Duration {
+	b, ok := d.backoff[id]
+	if !ok {
+		return 0
+	}
+	wait := time.Duration(math.Min(30, math.Pow(2, float64(b.n-1)))) * time.Minute
+	return max(0, wait-now.Sub(b.at))
 }
 
 // backingOff says whether a requeued job still waits out its back-off: 1, 2, 4, ... up to 30
@@ -584,7 +595,10 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		}
 		logf("%s: container %s (%s) was started by this job; it counts as the job's", owner.Name, c.Name, c.ID)
 		if dm := dockerMemGB(cl); owner.NeedRAM > 0 {
-			lim := math.Max(owner.NeedRAM*1.5, c.MemGB*1.2+0.5)
+			// The limit is the job's need, not more: the container's file cache counts toward it,
+			// and with half again on top (11.6 GB for a 7.7 GB job, 11/20) the cache it read filled
+			// the WSL VM, Windows fell under the floor and the job was stopped four times.
+			lim := math.Max(owner.NeedRAM, c.MemGB*1.2+0.5)
 			if dm == 0 || dm > lim+0.05 {
 				s := fmt.Sprintf("%dm", int(lim*1024))
 				d.docker(owner.engine, "update", "--memory", s, "--memory-swap", s, c.ID)
@@ -2336,6 +2350,28 @@ func (d *Daemon) reclaimVM(now time.Time, why string, urgent bool) bool {
 	return true
 }
 
+// ramWhy says why RAM is short, with the numbers: free RAM, the floor and what sets it, and what
+// the WSL VM holds (its file cache is RAM no Windows program shows).
+func (d *Daemon) ramWhy(avail, floor float64) string {
+	total := d.snap.RAMTotalGB
+	what := fmt.Sprintf("the human's %.0f%% reserve", d.res.RAMPct)
+	if pct := total * d.res.RAMPct / 100; floor > pct+0.01 {
+		what = fmt.Sprintf("the %.1f GB minimum (reserve.min_free_gb; the human's %.0f%% reserve is %.1f GB)", floor, d.res.RAMPct, pct)
+	}
+	return fmt.Sprintf("RAM: %.1f GB free, %.1f GB under the %.1f GB floor kept for the human (%s)%s", avail, floor-avail, floor, what, d.vmNote())
+}
+
+// vmNote: what the WSL/Docker VM holds, when that is a large part of the story ("" otherwise).
+func (d *Daemon) vmNote() string {
+	if d.vm.HostGB < 2 {
+		return ""
+	}
+	if d.vm.Guest {
+		return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache", d.vm.HostGB, d.vm.CacheGB)
+	}
+	return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB", d.vm.HostGB)
+}
+
 // reclaimCritical asks the VM for its cache when RAM is critical and the VM holds memory, even when
 // its own numbers aren't in, are stale, or the last reclaims returned little: the VM can fill with
 // cache within a minute (2026-11-20: 2.1 GB at 07:13, about 11 GB by 07:20, and no second reclaim
@@ -2513,7 +2549,7 @@ func (d *Daemon) ramPressure(now time.Time, floor float64) {
 	sustained := !d.ramLow.IsZero() && now.Sub(d.ramLow) > dur(c.Ladder.PressureSeconds)
 	if !wait && (sustained || critical) && now.Sub(d.lastHold) > holdGap {
 		need := floor - avail
-		why := fmt.Sprintf("RAM below the human's %.0f%% reserve (%.1f GB free, %.1f GB short)", d.res.RAMPct, avail, need)
+		why := d.ramWhy(avail, floor)
 		if v := d.ramVictim(need); v != nil && sysinfo.CanTrim {
 			d.hold(v, "ram", why, now)
 			return
@@ -2542,7 +2578,7 @@ func (d *Daemon) ramPressure(now time.Time, floor float64) {
 		}
 		if v != nil && v.ramGB >= minHoldRAM && d.ramCovers(v, need) {
 			v.freedGB, v.oom = math.Max(v.freedGB, v.ramGB), true
-			v.reason = fmt.Sprintf("RAM critically low: %.1f GB free, %.1f GB short; stopping it frees %.1f GB", avail, need, v.ramGB)
+			v.reason = fmt.Sprintf("RAM critically low: %.1f GB free (under %.1f GB), %.1f GB short; stopping it frees %.1f GB%s", avail, critFloor, need, v.ramGB, d.vmNote())
 			d.killJob(v, now)
 		} else if now.Sub(d.critSaid) > time.Minute {
 			d.critSaid = now

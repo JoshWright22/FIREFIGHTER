@@ -762,7 +762,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		d.backoff = map[string]backoff{}
 	}
 	if outcome == "evicted" {
-		d.backoff[id] = backoff{n: d.backoff[id].n + 1, at: now}
+		d.backoff[id] = backoff{n: d.backoff[id].n + 1, at: now, why: j.reason}
 	} else {
 		delete(d.backoff, id)
 	}
@@ -958,7 +958,13 @@ func (d *Daemon) ramNote(now time.Time) string {
 func (d *Daemon) blockedByHuman(j *job, now time.Time) string {
 	switch {
 	case d.backingOff(j.ID, now):
-		return "stopped for the human a moment ago: waiting a while before trying again"
+		b := d.backoff[j.ID]
+		why := b.why
+		if why == "" {
+			why = "for the human"
+		}
+		return fmt.Sprintf("stopped %s ago (%s); tries again in %s (stopped %d time(s) in a row; the wait doubles each time, up to 30 min)",
+			now.Sub(b.at).Round(time.Second), why, d.backoffLeft(j.ID, now).Round(time.Second), b.n)
 	case j.GPU && d.waitsForAway(j.Ticket):
 		return "needs more VRAM than the card frees beside the human's reserve: starts while the human is away"
 	case j.Net && !d.netFree():

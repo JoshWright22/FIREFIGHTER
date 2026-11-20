@@ -435,7 +435,7 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 			if strings.Contains(out, "back in line") || !strings.Contains(out, "suspended 1 time(s)") || strings.Contains(e.log(), "killed") {
 				t.Fatalf("a suspended job should resume where it stopped, and its receipt should say so:\n%s\n%s", out, e.log())
 			}
-		} else if !strings.Contains(out, "back in line") || !strings.Contains(out, "RAM below the human") {
+		} else if !strings.Contains(out, "back in line") || !strings.Contains(out, "floor kept for the human") {
 			t.Fatalf("evicted job should be told why and requeue:\n%s", out)
 		}
 	case <-time.After(120 * time.Second):
