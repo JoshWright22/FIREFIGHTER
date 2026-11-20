@@ -479,6 +479,9 @@ func TestNearMissHint(t *testing.T) {
 	if h := nearMiss("335c69a6", "vram", 9, 9, 8.86); !strings.Contains(h, "would start now with --vram 8.8 (declared 9.0): firefighter amend 335c69a6 --vram 8.8") {
 		t.Fatalf("hint %q", h)
 	}
+	if h := nearMiss("x", "ram", 13.3, 14, 11); !strings.Contains(h, "--ram 11.0 (declared 14.0)") {
+		t.Fatalf("a declaration cut to the machine's most still gets the hint: %q", h)
+	}
 	if nearMiss("x", "vram", 9, 0, 8.8) != "" || nearMiss("x", "vram", 12, 9, 8.8) != "" || nearMiss("x", "ram", 14, 14, 3) != "" {
 		t.Fatal("a hint only when the job's own declaration sets the need and the miss is small")
 	}
@@ -551,5 +554,27 @@ func TestETAFollowsTheBlocker(t *testing.T) {
 	}
 	if Approx("unknown") != "unknown" || Approx("8:31 AM") != "~8:31 AM" {
 		t.Fatal("Approx")
+	}
+}
+
+// 11/20: a stopped job's wait line said only "stopped for the human a moment ago: waiting a while
+// before trying again". It now says what it was stopped for, with the numbers, and when it retries.
+func TestBackoffLineSaysWhy(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addWaiting("cpu-scaling", 2, 30, time.Minute)
+	d.snap.RAMTotalGB, d.vm = 31.6, sysinfo.VM{HostGB: 12.2, CacheGB: 10.2, Guest: true}
+	d.res.RAMPct = 10
+	d.cfg.Reserve.MinFreeGB = 4
+	why := d.ramWhy(2.7, d.ramFloor())
+	for _, want := range []string{"2.7 GB free", "1.3 GB under the 4.0 GB floor", "reserve.min_free_gb", "10% reserve is 3.2 GB", "VM holds 12.2 GB, 10.2 GB of it file cache"} {
+		if !strings.Contains(why, want) {
+			t.Fatalf("reason %q lacks %q", why, want)
+		}
+	}
+	d.backoff = map[string]backoff{j.ID: {n: 2, at: now.Add(-30 * time.Second), why: why}}
+	line := d.blockedByHuman(j, now)
+	if !strings.Contains(line, "stopped 30s ago (RAM: 2.7 GB free") || !strings.Contains(line, "tries again in 1m30s") {
+		t.Fatalf("wait line %q", line)
 	}
 }

@@ -1010,7 +1010,11 @@ func (d *Daemon) startsIn(j *job, sim float64, now time.Time) float64 {
 func (d *Daemon) blocker(j *job) string {
 	why := d.blockerOf(j)
 	if j.WantRAM > 0 {
-		why += fmt.Sprintf(" (its past runs point to %.1f GB of RAM, more than this machine ever has free for a job: counted as %.1f GB; declare --ram to set it yourself)", j.WantRAM, j.NeedRAM)
+		src := "its past runs point to"
+		if j.RAMGB >= j.WantRAM-0.05 {
+			src = "it declared"
+		}
+		why += fmt.Sprintf(" (%s %.1f GB of RAM, more than this machine ever has free for a job: counted as %.1f GB; declare --ram to set it yourself)", src, j.WantRAM, j.NeedRAM)
 	}
 	if j.Band == policy.BandSpot {
 		why += " [spot: over budget or --spot, so it goes after in-budget jobs and is preempted first; it still runs whenever there is room]"
@@ -1509,7 +1513,7 @@ func (d *Daemon) outsideContainers() []sysinfo.Container {
 // declaration that would start it now (11/20: an agent resubmitted 8 times, missing by 0.1-3 GB).
 func nearMiss(id, flag string, need, declared, fits float64) string {
 	fits = math.Floor(fits*10) / 10
-	if declared <= 0 || fits <= 0 || math.Abs(need-declared) > 0.05 || need-fits > math.Max(1, need*0.35) {
+	if declared <= 0 || fits <= 0 || declared+0.05 < need || need-fits > math.Max(1, need*0.35) {
 		return ""
 	}
 	return fmt.Sprintf("; would start now with --%s %.1f (declared %.1f): firefighter amend %s --%s %.1f", flag, fits, declared, id, flag, fits)
