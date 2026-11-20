@@ -571,9 +571,12 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 			owner, cl = j, ls[0]
 			n++
 		}
+		if n == 0 {
+			continue // no job's docker CLI seen yet (just after a restart, its processes aren't measured): look again
+		}
 		d.seenCtr[c.ID] = true
 		if n != 1 || owner == nil {
-			continue
+			continue // two jobs could have started it: no guess
 		}
 		owner.container, owner.engine = c.ID, "docker"
 		if strings.Contains(strings.ToLower(cl), "podman") {

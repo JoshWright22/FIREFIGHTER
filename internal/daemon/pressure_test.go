@@ -445,7 +445,11 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 	other := d.addRunning("unrelated", 1, now.Add(-time.Minute))
 	cs := []sysinfo.Container{{ID: "1a9a7107362a", Name: "keen_grothendieck", MemGB: 1.3}}
 	lines := map[string][]string{j.ID: {"docker run --rm --gpus all --cpus=4 --memory=16g --shm-size=8g img python stage.py"}}
-	d.adoptContainers(cs, lines)
+	d.adoptContainers(cs, nil) // just after a restart: the job's processes aren't measured yet
+	if j.container != "" {
+		t.Fatal("assigned with no CLI seen")
+	}
+	d.adoptContainers(cs, lines) // the next look finds the job's docker run
 	if j.container != "1a9a7107362a" || other.container != "" {
 		t.Fatalf("container not given to the job that started it: %q / %q\n%s", j.container, other.container, daemonLog(t))
 	}
