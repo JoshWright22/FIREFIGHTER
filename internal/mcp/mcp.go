@@ -107,8 +107,8 @@ var baseTools = []tool{
 	{"firefighter_storage", "Disk space the human allots agents. show: the allotment and every space. claim: set your project's space to gb (new, bigger or smaller) and get its folder; keep the project's big files (data, checkpoints, models, caches) there and delete what you no longer need. label: rank a file or folder in your space (path) as keep (needed), useful (costly to remake) or scratch (temporary), with for = what uses it and until when; rank everything you save. items: your space's contents, least important first. free: delete the least important items until gb is freed (scratch first; upto=unranked or useful goes further; keep is never deleted; dry_run to preview). release: give it back (delete=true removes its files). While a space holds more than its claim, its project's new jobs wait.", obj(map[string]any{
 		"action": str("show | claim | label | items | free | release"), "gb": num("For claim: size of the space; for free: GB to free"), "why": str("For claim: what it holds"),
 		"project": str("Project (default: the repo or folder of cwd)"), "cwd": str("Your absolute working directory (sets the default project)"),
-		"delete": boo("For release: delete the space's files"),
-		"path":   str("For label: file or folder in your space (relative to it, or absolute)"), "rank": str("For label: keep | useful | scratch | none"),
+		"delete": boo("For release: delete the space's files"), "force": boo("Change another project's space (not the one cwd is in)"),
+		"path": str("For label: file or folder in your space (relative to it, or absolute)"), "rank": str("For label: keep | useful | scratch | none"),
 		"for": str("For label: what uses it, and until when"), "upto": str("For free: scratch (default) | unranked | useful"), "dry_run": boo("For free: only list what would go"),
 	}, "action")},
 	{"firefighter_plan", "Announce heavy work later so others plan around it (reserves nothing). done=true removes your project's plans.", obj(map[string]any{
@@ -551,6 +551,12 @@ func storageCall(a map[string]any) (string, any, error) {
 		project = callerProject()
 	}
 	project = storage.Name(project)
+	if own := storage.Name(projectIn(s(a, "cwd"))); s(a, "cwd") != "" && !strings.EqualFold(project, own) && !b(a, "force") {
+		switch s(a, "action") {
+		case "claim", "label", "free", "release":
+			return "", nil, fmt.Errorf("%s is another project's space (cwd is in %s): pass force=true if you mean it", project, own)
+		}
+	}
 	switch s(a, "action") {
 	case "show", "":
 		r, err := pool.Look(home)

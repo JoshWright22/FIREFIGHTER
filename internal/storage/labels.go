@@ -120,6 +120,9 @@ func (p Pool) SetLabel(home, project, path, rank, purpose string) (string, error
 // and each top-level entry no label covers. Least important first: scratch, unranked, useful, keep;
 // within a rank, the longest untouched first.
 func (p Pool) Items(home, project string) ([]Item, error) {
+	if _, err := p.Dir(project); err != nil {
+		return nil, err
+	}
 	f, err := load(home)
 	if err != nil {
 		return nil, err
@@ -271,6 +274,10 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 		return nil, 0, fmt.Errorf("%s isn't a storage root firefighter made: nothing deleted", p.Root)
 	}
 	dir := filepath.Join(p.Root, project)
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, 0, err
+	}
 	for _, it := range items(dir, g.Labels) {
 		if freed >= gb || rankOrder(it.Rank) > rankOrder(upto) {
 			break
@@ -285,8 +292,15 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 		}
 		var gone int64
 		for _, file := range it.files {
-			fi, err := os.Stat(file)
-			if err != nil || !inside(dir, file) {
+			// Checked again just before deleting: a plain file whose real path (links and junctions
+			// resolved) is still inside the space. A folder swapped for a junction since the walk
+			// would point outside it.
+			fi, err := os.Lstat(file)
+			if err != nil || !fi.Mode().IsRegular() || !inside(dir, file) {
+				continue
+			}
+			if real, err := filepath.EvalSymlinks(file); err != nil || !inside(realDir, real) {
+				it.Left++
 				continue
 			}
 			if os.Remove(file) == nil {

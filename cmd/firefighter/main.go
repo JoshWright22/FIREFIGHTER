@@ -421,6 +421,9 @@ func turn(c *client.Client, t policy.Ticket, argv []string, container string, qu
 		if cancelled.Load() {
 			return 130, false, errors.New("cancelled while waiting")
 		}
+		if v.Declared != nil { // amended or re-bid while waiting: re-register with those
+			t.RAMGB, t.VRAMGB, t.Minutes, t.Bid, t.Spot = v.Declared.RAMGB, v.Declared.VRAMGB, v.Declared.Minutes, v.Declared.Bid, v.Declared.Spot
+		}
 		nv, err := c.Get(t.ID, "waiting", 20)
 		if errors.Is(err, client.ErrNotFound) { // the daemon restarted: get back in line
 			nv, err = c.Create(daemon.Request{Ticket: t})

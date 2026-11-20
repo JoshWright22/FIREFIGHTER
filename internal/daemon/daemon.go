@@ -511,17 +511,24 @@ func (d *Daemon) refreshDocker(now time.Time) {
 	go func() {
 		cs := sysinfo.Containers()
 		lines := map[string][]string{}
+		since := map[string]time.Time{} // job id -> when its first live docker run started
 		for id, pids := range clis {
 			for _, ps := range pids {
 				p, _ := strconv.Atoi(ps)
 				if cl := sysinfo.Cmdline(p); isDockerRun(cl) {
 					lines[id] = append(lines[id], cl)
+					if t := sysinfo.StartTime(p); !t.IsZero() && (since[id].IsZero() || t.Before(since[id])) {
+						since[id] = t
+					}
 				}
 			}
 		}
+		if len(lines) > 0 && len(cs) > 0 {
+			sysinfo.FillCreated(cs)
+		}
 		d.mu.Lock()
 		d.others = cs
-		d.adoptContainers(cs, lines)
+		d.adoptContainers(cs, lines, since)
 		d.mu.Unlock()
 		d.docking.Store(false)
 	}()
@@ -553,7 +560,10 @@ func isDockerRun(cl string) bool {
 // under what it uses now). 2026-11-20: a job's script started `docker run --memory=16g`, the
 // container counted as the human's load, and free RAM sat at 0.4 GB for five minutes with "the jobs'
 // RAM is not what is missing".
-func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]string) {
+func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]string, since map[string]time.Time) {
+	// Without a --name match, a container is guessed to be a job's only when it is the one new
+	// container in this scan, and never in the first scan after the guard starts: then every
+	// container already running (the human's database, say) would be "new". (Review 11/20.)
 	if d.seenCtr == nil {
 		d.seenCtr = map[string]bool{}
 	}
@@ -576,7 +586,7 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		// The owner: the one job with a live `docker run`, or the one whose CLI names the container.
 		var owner *job
 		var cl string
-		n := 0
+		n, byName := 0, false
 		for id, ls := range lines {
 			j := d.jobs[id]
 			if j == nil || j.State != "running" || len(ls) == 0 {
@@ -584,7 +594,7 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 			}
 			for _, l := range ls {
 				if strings.Contains(l, "--name "+c.Name) || strings.Contains(l, "--name="+c.Name) {
-					owner, cl, n = j, l, 1
+					owner, cl, n, byName = j, l, 1, true
 					break
 				}
 			}
@@ -600,6 +610,24 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		d.seenCtr[c.ID] = true
 		if n != 1 || owner == nil {
 			continue // two jobs could have started it: no guess
+		}
+		// Without a --name match, the container must have been created after the job's docker run
+		// started (Review 11/20: the human's database, already running, was otherwise guessed to be
+		// the job's and capped, paused or killed with it), and be the only such container.
+		if !byName {
+			start := since[owner.ID]
+			if start.IsZero() || c.Created.IsZero() || c.Created.Before(start.Add(-2*time.Second)) {
+				continue
+			}
+			others := 0
+			for _, o := range cs {
+				if o.ID != c.ID && !d.seenCtr[o.ID] && !o.Created.Before(start.Add(-2*time.Second)) && !o.Created.IsZero() {
+					others++
+				}
+			}
+			if others > 0 {
+				continue // several new containers since then: no guess
+			}
 		}
 		owner.container, owner.engine = c.ID, "docker"
 		if strings.Contains(strings.ToLower(cl), "podman") {
@@ -624,6 +652,7 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 			delete(d.seenCtr, id)
 		}
 	}
+
 }
 
 func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []rogue, now time.Time, dt time.Duration) {

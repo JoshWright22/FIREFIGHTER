@@ -23,6 +23,7 @@ const storageUsage = `usage:
   firefighter storage free --gb N [--upto scratch|unranked|useful] [--dry-run]
                                                         delete the least important items until N GB is free (keep is never deleted)
   firefighter storage release [--delete] [--project P]  give the space back (--delete removes its files)
+Changing another project's space (claim, label, free, release) takes --force.
 The human sets the allotment: firefighter config set storage.gb <GB> (folder: storage.root,
 per-project most: storage.projects.<name>).`
 
@@ -46,6 +47,7 @@ func storageCmd(args []string) error {
 	purpose := fs.String("for", "", "label: what uses it, and until when")
 	upto := fs.String("upto", "scratch", "free: delete up to this rank (scratch, unranked, useful)")
 	dry := fs.Bool("dry-run", false, "free: only say what would be deleted")
+	force := fs.Bool("force", false, "change another project's space")
 	asJSON := fs.Bool("json", false, "show: JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -66,6 +68,15 @@ func storageCmd(args []string) error {
 		*project = callerProject()
 	}
 	*project = storage.Name(*project) // "My Project" -> "My-Project": the same name its jobs are matched by
+	// Another project's space is that project's: claiming, ranking, freeing or releasing it takes
+	// --force (as cancelling another project's job does), so a mistyped --project can't delete
+	// someone else's work.
+	if own := storage.Name(callerProject()); !strings.EqualFold(*project, own) && !*force {
+		switch sub {
+		case "claim", "label", "free", "release":
+			return fmt.Errorf("%s is another project's space (you are in %s): pass --force if you mean it", *project, own)
+		}
+	}
 	switch sub {
 	case "show", "status", "ls":
 		r, err := pool.Look(home)

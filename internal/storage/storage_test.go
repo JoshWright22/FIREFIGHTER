@@ -86,8 +86,10 @@ func TestShrinkBelowUseAndRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, "sub", "data.bin"), 3<<20)
-	p.GB = 10
-	if _, err := p.Claim(home, "alpha", 0.001, ""); err == nil || !strings.Contains(err.Error(), "already holds") {
+	if err := os.Truncate(filepath.Join(dir, "sub", "data.bin"), 200<<20); err != nil { // 0.2 GB, sparse
+		t.Fatal(err)
+	}
+	if _, err := p.Claim(home, "alpha", 0.1, ""); err == nil || !strings.Contains(err.Error(), "already holds") {
 		t.Fatalf("shrink below use: %v", err)
 	}
 	if _, err := p.Release(home, "alpha", false); err == nil || !strings.Contains(err.Error(), "still holds") {
@@ -243,5 +245,19 @@ func TestMovedRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "x.bin")); err != nil {
 		t.Fatal("a release under the new root deleted files in the old one")
+	}
+}
+
+// Review 11/20 (GPT): the saved grant is the checked one (rounded down, never up past the pool).
+func TestClaimRoundsDown(t *testing.T) {
+	p, home := pool(t, 1.06, 500)
+	if _, err := p.Claim(home, "alpha", 1.06, ""); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := Grants(home); g["alpha"].GB != 1.0 {
+		t.Fatalf("saved %v, want 1.0", g["alpha"].GB)
+	}
+	if _, err := p.Items(home, ".."); err == nil {
+		t.Fatal("items for a path outside the root accepted")
 	}
 }

@@ -269,8 +269,12 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 	if err != nil {
 		return "", err
 	}
-	if gb <= 0 || math.IsNaN(gb) || math.IsInf(gb, 0) {
-		return "", errors.New("--gb must be more than 0 (to give a space back: firefighter storage release)")
+	if math.IsNaN(gb) || math.IsInf(gb, 0) {
+		gb = 0
+	}
+	gb = math.Floor(gb*10+1e-9) / 10 // stored as checked: tenths of a GB, rounded down
+	if gb <= 0 {
+		return "", errors.New("--gb must be at least 0.1 (to give a space back: firefighter storage release)")
 	}
 	unlock, err := lock(home)
 	if err != nil {
@@ -333,7 +337,7 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 	if g.At.IsZero() {
 		g.At = time.Now()
 	}
-	g.GB = round1(gb)
+	g.GB = gb
 	g.Root = p.Root
 	if why != "" {
 		g.Why = why

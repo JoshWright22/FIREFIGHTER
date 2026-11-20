@@ -632,10 +632,15 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			j.container, j.engine = full, a.Engine
 			// A container whose --memory is above what was reserved for it is held to the
 			// reservation: past it, the container's own OOM killer acts, not Windows' paging.
-			if dm := dockerMemGB(j.Command); dm > j.NeedRAM+0.05 && j.NeedRAM > 0 {
+			// One with no --memory at all could otherwise grow until Windows pages (review 11/20).
+			if dm := dockerMemGB(j.Command); j.NeedRAM > 0 && (dm == 0 || dm > j.NeedRAM+0.05) {
 				lim := fmt.Sprintf("%dm", int(j.NeedRAM*1024))
 				d.docker(a.Engine, "update", "--memory", lim, "--memory-swap", lim, full)
-				logf("%s: container limited to %.1f GB (it asked --memory %.1f GB; that is what firefighter reserved for it)", j.Name, j.NeedRAM, dm)
+				asked := "no --memory"
+				if dm > 0 {
+					asked = fmt.Sprintf("--memory %.1f GB", dm)
+				}
+				logf("%s: container limited to %.1f GB (it asked %s; that is what firefighter reserved for it)", j.Name, j.NeedRAM, asked)
 			}
 		}
 	case "amend": // new declarations for a waiting job: same id, same client, same place in line
@@ -893,21 +898,24 @@ func clock(t time.Time) string { return t.Format("3:04 PM") }
 // ---- views --------------------------------------------------------------------------------------
 
 type View struct {
-	ID       string        `json:"id"`
-	Name     string        `json:"name,omitempty"`
-	Project  string        `json:"project,omitempty"`
-	State    string        `json:"state"` // waiting | granted | running | done
-	Band     int           `json:"band,omitempty"`
-	Position int           `json:"position,omitempty"` // in its line (GPU or CPU), 1 = next
-	ETA      string        `json:"eta,omitempty"`      // when it should start (waiting) or end (running)
-	Why      string        `json:"why,omitempty"`      // what it's waiting for, or why it's paused
-	Paused   bool          `json:"paused,omitempty"`
-	Checkpt  bool          `json:"checkpoint,omitempty"`
-	StopIn   float64       `json:"stop_in_s,omitempty"` // seconds until a checkpointing job is stopped hard
-	StartsIn float64       `json:"starts_in_min,omitempty"`
-	Tier     string        `json:"tier,omitempty"` // spot | normal | urgent
-	Budget   float64       `json:"budget_left"`    // project's machine-minutes left
-	Pred     float64       `json:"predicted_minutes,omitempty"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name,omitempty"`
+	Project  string  `json:"project,omitempty"`
+	State    string  `json:"state"` // waiting | granted | running | done
+	Band     int     `json:"band,omitempty"`
+	Position int     `json:"position,omitempty"` // in its line (GPU or CPU), 1 = next
+	ETA      string  `json:"eta,omitempty"`      // when it should start (waiting) or end (running)
+	Why      string  `json:"why,omitempty"`      // what it's waiting for, or why it's paused
+	Paused   bool    `json:"paused,omitempty"`
+	Checkpt  bool    `json:"checkpoint,omitempty"`
+	StopIn   float64 `json:"stop_in_s,omitempty"` // seconds until a checkpointing job is stopped hard
+	StartsIn float64 `json:"starts_in_min,omitempty"`
+	Tier     string  `json:"tier,omitempty"` // spot | normal | urgent
+	Budget   float64 `json:"budget_left"`    // project's machine-minutes left
+	Pred     float64 `json:"predicted_minutes,omitempty"`
+	// Declared: the job's declarations now (after any amend or re-bid). A client that has to
+	// register its job again (the guard restarted) sends these, not the ones it started with.
+	Declared *Declared     `json:"declared,omitempty"`
 	Receipt  *Receipt      `json:"receipt,omitempty"`
 	Quote    *policy.Quote `json:"quote,omitempty"`
 	Market   string        `json:"market,omitempty"`     // the quote in one line
@@ -922,7 +930,8 @@ func (d *Daemon) view(j *job) View {
 	now := time.Now()
 	a := d.peek(j.Project, now)
 	v := View{ID: j.ID, Name: j.Name, Project: j.Project, State: j.State, Band: j.Band, Tier: tierOf(j.Ticket),
-		Budget: round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(j.Project))))), Pred: round1(j.PredMinutes),
+		Declared: &Declared{RAMGB: j.RAMGB, VRAMGB: j.VRAMGB, Minutes: j.Minutes, Bid: j.Bid, Spot: j.Spot},
+		Budget:   round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(j.Project))))), Pred: round1(j.PredMinutes),
 		Receipt: j.receipt, Paused: !j.pausedAt.IsZero(), Checkpt: !j.checkpoint.IsZero(), Why: j.reason,
 		StopIn: func() float64 {
 			if j.checkpoint.IsZero() {
@@ -949,6 +958,12 @@ func (d *Daemon) view(j *job) View {
 			v.ETA = clock(now.Add(time.Duration(v.StartsIn * float64(time.Minute))))
 		}
 		v.Quote, v.Market = &q, q.Line()
+		if v.StartsIn < 0 {
+			// The schedule's start times don't hold while something outside it blocks the job:
+			// no market line with a start in it, and the advice says what it waits for (review 11/20).
+			q.Do = "keep working meanwhile; it starts when this clears: " + v.Why
+			v.Market = ""
+		}
 	case "running":
 		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
 		v.ETA = clock(now.Add(time.Duration(left * float64(time.Minute))))
@@ -1160,6 +1175,15 @@ func (d *Daemon) busyOutside() []string {
 		}
 	}
 	return out
+}
+
+// Declared is what a job declared, as the guard holds it now.
+type Declared struct {
+	RAMGB   float64 `json:"ram_gb"`
+	VRAMGB  float64 `json:"vram_gb"`
+	Minutes float64 `json:"minutes"`
+	Bid     int     `json:"bid"`
+	Spot    bool    `json:"spot,omitempty"`
 }
 
 // Status is the whole picture, for `firefighter status`, MCP and STATUS.md.

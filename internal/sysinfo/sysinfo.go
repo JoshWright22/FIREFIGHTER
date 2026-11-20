@@ -586,6 +586,45 @@ type Container struct {
 	ID    string  `json:"id"` // short id: a prefix of the full one
 	CPU   float64 `json:"cpu_pct"`
 	MemGB float64 `json:"mem_gb"`
+	// Created: when the container was made (FillCreated), for telling a job's from the human's.
+	Created time.Time `json:"-"`
+}
+
+// FillCreated sets each container's creation time from `docker inspect` (left zero on error).
+func FillCreated(cs []Container) {
+	args := []string{"inspect", "--format", "{{.Id}} {{.Created}}"}
+	for _, c := range cs {
+		args = append(args, c.ID)
+	}
+	out, _ := run(8*time.Second, "docker", args...)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, f[1])
+		if err != nil {
+			continue
+		}
+		for i := range cs {
+			if cs[i].ID != "" && strings.HasPrefix(f[0], cs[i].ID) {
+				cs[i].Created = t
+			}
+		}
+	}
+}
+
+// StartTime is when a process started (zero if unknown).
+func StartTime(pid int) time.Time {
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return time.Time{}
+	}
+	ms, err := p.CreateTime()
+	if err != nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
 }
 
 func Containers() []Container {

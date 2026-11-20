@@ -106,11 +106,13 @@ Zero config gives you the researched defaults below. You can swap each part by n
 - **Stop reasons carry numbers.** "RAM: 2.7 GB free, 1.3 GB under the 4.0 GB floor kept for the human
   (...); the WSL/Docker VM holds 12.2 GB, 10.2 GB of it file cache". A requeued job's wait line says
   what it was stopped for and when it tries again.
-- **Containers.** A container a job starts (directly or from its own script) is the job's: its
+- **Containers.** A container a job starts (directly or from its own script) is the job's (named
+  by its `--name`, or else the only container created after the job's `docker run` started; one
+  already running, like the human's database, is never guessed): its
   memory adds to the job's in receipts and in what is learned, its VRAM (seen through the WSL VM) is
   the card's use beyond the usual floor, and its limit is set to the job's need (its file cache
   counts toward it). `firefighter run --quick -- docker run --rm <image> ls` is the cheap path for a
-  look inside an image: a 2-minute lease, starts at once when RAM allows, and the VM's file cache is
+  look inside an image: a 2-minute lease (3 at most, never extended), starts at once when RAM allows, and the VM's file cache is
   dropped when it ends.
 - **Hysteresis.** Stepping up (toward game) is immediate. Stepping down needs the lower state in 2 of
   3 readings 10 s apart, and a fullscreen game stays the game while it is the app in front.
@@ -144,7 +146,8 @@ it didn't make as spaces; `storage.projects.<name>` caps one project). Agents ma
   human moves `storage.root`, earlier spaces are reported "elsewhere" and their files are left
   alone. `free` counts only what it really deleted (files in use are kept and reported). The
   storage root's drive gets the same free-space reserve as the drives jobs run on. The MCP tool
-  takes `cwd` like `firefighter_submit`, and `free`/`release` need `project` or `cwd`.
+  takes `cwd` like `firefighter_submit`, and `free`/`release` need `project` or `cwd`. Claiming, ranking,
+  freeing or releasing another project's space takes `--force` (MCP: `force`).
 - `firefighter storage` (MCP: `firefighter_storage`) shows the allotment and every space, with
   folders in the root nobody claimed. The guard measures the spaces every 2 minutes (at once after a
   claim or release). While a space holds more than its claim, or a folder in the root holds files

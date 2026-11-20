@@ -444,13 +444,14 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 	j := d.addRunning("t4sim iter1 stages", 0.1, now.Add(-time.Minute))
 	j.NeedRAM = 6
 	other := d.addRunning("unrelated", 1, now.Add(-time.Minute))
-	cs := []sysinfo.Container{{ID: "1a9a7107362a", Name: "keen_grothendieck", MemGB: 1.3}}
+	cs := []sysinfo.Container{{ID: "1a9a7107362a", Name: "keen_grothendieck", MemGB: 1.3, Created: now.Add(-50 * time.Second)}}
+	since := map[string]time.Time{j.ID: now.Add(-55 * time.Second)} // its docker run started just before
 	lines := map[string][]string{j.ID: {"docker run --rm --gpus all --cpus=4 --memory=16g --shm-size=8g img python stage.py"}}
-	d.adoptContainers(cs, nil) // just after a restart: the job's processes aren't measured yet
+	d.adoptContainers(cs, nil, nil) // just after a restart: the job's processes aren't measured yet
 	if j.container != "" {
 		t.Fatal("assigned with no CLI seen")
 	}
-	d.adoptContainers(cs, lines) // the next look finds the job's docker run
+	d.adoptContainers(cs, lines, since) // the next look finds the job's docker run
 	if j.container != "1a9a7107362a" || other.container != "" {
 		t.Fatalf("container not given to the job that started it: %q / %q\n%s", j.container, other.container, daemonLog(t))
 	}
@@ -464,8 +465,8 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 	}
 	// Two jobs with a live docker run and nothing naming the container: no guess.
 	k := d.addRunning("second", 0.1, now)
-	cs = append(cs, sysinfo.Container{ID: "bbbbbbbbbbbb", Name: "other_name", MemGB: 1})
-	d.adoptContainers(cs, map[string][]string{j.ID: {"docker run img"}, k.ID: {"docker run img2"}})
+	cs = append(cs, sysinfo.Container{ID: "bbbbbbbbbbbb", Name: "other_name", MemGB: 1, Created: now})
+	d.adoptContainers(cs, map[string][]string{j.ID: {"docker run img"}, k.ID: {"docker run img2"}}, map[string]time.Time{j.ID: now.Add(-time.Minute), k.ID: now.Add(-time.Second)})
 	if k.container != "" || j.container != "1a9a7107362a" {
 		t.Fatalf("ambiguous container was assigned: %q %q", j.container, k.container)
 	}
@@ -577,6 +578,26 @@ func TestBackoffLineSaysWhy(t *testing.T) {
 	line := d.blockedByHuman(j, now)
 	if !strings.Contains(line, "stopped 30s ago (RAM: 2.7 GB free") || !strings.Contains(line, "tries again in 1m30s") {
 		t.Fatalf("wait line %q", line)
+	}
+}
+
+// Review 11/20 (GPT): the human's container, already running when a job's docker run starts, must
+// never be guessed to be the job's (it would be capped, paused and killed with it).
+func TestHumansContainerIsNotGuessed(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addRunning("pulls an image", 1, now.Add(-time.Minute))
+	db := sysinfo.Container{ID: "dbdbdbdbdbdb", Name: "postgres", MemGB: 2, Created: now.Add(-48 * time.Hour)}
+	d.adoptContainers([]sysinfo.Container{db}, map[string][]string{j.ID: {"docker run img"}}, map[string]time.Time{j.ID: now.Add(-30 * time.Second)})
+	if j.container != "" {
+		t.Fatalf("the human's container was given to the job: %q", j.container)
+	}
+	// unknown creation time: no guess either
+	d.seenCtr = nil
+	db.Created = time.Time{}
+	d.adoptContainers([]sysinfo.Container{db}, map[string][]string{j.ID: {"docker run img"}}, map[string]time.Time{j.ID: now.Add(-30 * time.Second)})
+	if j.container != "" {
+		t.Fatal("a container of unknown age was given to the job")
 	}
 }
 
