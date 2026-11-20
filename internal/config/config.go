@@ -130,6 +130,14 @@ type Config struct {
 		Auto bool `toml:"auto"`
 	} `toml:"update"`
 
+	// Storage: disk space the human gives agents. Each project claims a space (a folder under Root)
+	// and manages it itself: `firefighter storage`.
+	Storage struct {
+		Root     string             `toml:"root"`     // folder holding the spaces (default: <user home>/agent-storage)
+		GB       float64            `toml:"gb"`       // total given to agents; 0 = none
+		Projects map[string]float64 `toml:"projects"` // most one project may claim
+	} `toml:"storage"`
+
 	Harvester struct { // band 4: something that only runs when nothing else wants the GPU (Salad, BOINC, ...)
 		Start       string  `toml:"start"`
 		Stop        string  `toml:"stop"`
@@ -190,6 +198,7 @@ func Defaults() Config {
 	c.Ladder.MinRuntimeMinutes = 10
 	c.Ladder.OverrunFactor = 1.25
 	c.Ladder.MaxLeaseMinutes = 24 * 60
+	c.Storage.Projects = map[string]float64{}
 	c.Harvester.IdleSeconds = 180
 	c.Update.Auto = true
 	c.Network.MaxJobs = 1
@@ -334,6 +343,9 @@ func (c Config) Validate() error {
 	if c.Reserve.RAMMarginPct < 0 || c.Reserve.RAMMarginPct > 50 {
 		return fmt.Errorf("reserve.ram_margin_pct must be 0-50")
 	}
+	if c.Storage.GB < 0 {
+		return fmt.Errorf("storage.gb can't be negative (0 gives agents no storage)")
+	}
 	if c.Reserve.DiskFreeGB < 0 {
 		return fmt.Errorf("reserve.disk_free_gb can't be negative (0 turns the disk reserve off)")
 	}
@@ -447,6 +459,18 @@ func keys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// StorageRoot is the folder holding agents' spaces.
+func (c Config) StorageRoot() string {
+	if c.Storage.Root != "" {
+		return c.Storage.Root
+	}
+	h, err := os.UserHomeDir()
+	if err != nil || !IsDefaultHome() { // a test's or sandbox's firefighter keeps its spaces in its own home
+		return filepath.Join(Home(), "agent-storage")
+	}
+	return filepath.Join(h, "agent-storage")
 }
 
 // ReserveFor returns the reserve for a user state name.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,6 +19,7 @@ import (
 	"github.com/JoshWright22/firefighter/internal/client"
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/daemon"
+	"github.com/JoshWright22/firefighter/internal/storage"
 )
 
 type rpc struct {
@@ -57,6 +59,8 @@ func annotated(ts []tool) []listed {
 		case "firefighter_submit":
 			out[i].Description += " Runs the command as you, outside any agent sandbox, with your network and files: only submit what you'd run in your own shell."
 			out[i].Annotations = map[string]any{"title": "Run a command through the queue", "destructiveHint": true, "openWorldHint": true, "readOnlyHint": false}
+		case "firefighter_storage":
+			out[i].Annotations = map[string]any{"title": "Manage your storage space", "destructiveHint": true, "openWorldHint": false, "readOnlyHint": false}
 		case "firefighter_status", "firefighter_wait":
 			out[i].Annotations = map[string]any{"readOnlyHint": true, "openWorldHint": false}
 		}
@@ -100,6 +104,12 @@ var baseTools = []tool{
 		"id": str("Job id"), "action": str("extend | urgent | normal | amend | cancel"), "minutes": num("For extend (more lease) or amend (new estimate)"),
 		"ram_gb": num("For amend"), "vram_gb": num("For amend"),
 	}, "id", "action")},
+	{"firefighter_storage", "Disk space the human allots agents. show: the allotment and every space. claim: set your project's space to gb (new, bigger or smaller) and get its folder; keep the project's big files (data, checkpoints, models, caches) there and delete what you no longer need. label: rank a file or folder in your space (path) as keep (needed), useful (costly to remake) or scratch (temporary), with for = what uses it and until when; rank everything you save. items: your space's contents, least important first. free: delete the least important items until gb is freed (scratch first; upto=unranked or useful goes further; keep is never deleted; dry_run to preview). release: give it back (delete=true removes its files). While a space holds more than its claim, its project's new jobs wait.", obj(map[string]any{
+		"action": str("show | claim | label | items | free | release"), "gb": num("For claim: size of the space; for free: GB to free"), "why": str("For claim: what it holds"),
+		"project": str("Project (default: your folder or repo name)"), "delete": boo("For release: delete the space's files"),
+		"path": str("For label: file or folder in your space (relative to it, or absolute)"), "rank": str("For label: keep | useful | scratch | none"),
+		"for": str("For label: what uses it, and until when"), "upto": str("For free: scratch (default) | unranked | useful"), "dry_run": boo("For free: only list what would go"),
+	}, "action")},
 	{"firefighter_plan", "Announce heavy work later so others plan around it (reserves nothing). done=true removes your project's plans.", obj(map[string]any{
 		"what": str("What"), "at": str("HH:MM or now"), "minutes": num("Minutes"), "gpu_pct": num("GPU %"), "vram_gb": num("VRAM GB"), "project": str("Project"), "done": boo("Remove"),
 	})},
@@ -258,6 +268,9 @@ func call(name string, a map[string]any) (string, any, error) {
 	if name == "firefighter_config" {
 		t, err := configCall(a)
 		return t, nil, err
+	}
+	if name == "firefighter_storage" {
+		return storageCall(a)
 	}
 	c, err := client.Connect()
 	if err != nil {
@@ -508,4 +521,89 @@ func readLine(in *bufio.Reader, max int) ([]byte, error) {
 		}
 		return buf, err
 	}
+}
+
+// storageCall runs firefighter_storage: it works on the files directly, without the guard.
+func storageCall(a map[string]any) (string, any, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", nil, err
+	}
+	pool, home := storage.FromConfig(cfg), config.Home()
+	project := s(a, "project")
+	if project == "" {
+		project = callerProject()
+	}
+	switch s(a, "action") {
+	case "show", "":
+		r, err := pool.Look(home)
+		if err != nil {
+			return "", nil, err
+		}
+		if r.GB <= 0 {
+			return "no storage allotted to agents (only the human sets it: storage.gb) | do: keep big files out of the human's folders, or ask the human for an allotment", r, nil
+		}
+		lines := []string{fmt.Sprintf("agent storage: %.1f GB allotted at %s; %.1f GB claimed, %.1f GB unclaimed, %.1f GB in use; drive %.1f GB free (%.0f GB kept for the human)",
+			r.GB, r.Root, r.GrantedGB, math.Max(0, r.GB-r.GrantedGB), r.UsedGB, r.DriveFree, r.FloorGB)}
+		for _, sp := range r.Spaces {
+			l := fmt.Sprintf("%s: %.1f of %.1f GB, %d files, %s", sp.Project, sp.UsedGB, sp.GB, sp.Files, sp.Path)
+			if sp.GB == 0 {
+				l += " | UNCLAIMED: claim it or delete it"
+			} else if sp.Over {
+				l += " | OVER its claim: its new jobs wait; delete files or claim more"
+			}
+			lines = append(lines, l)
+		}
+		return strings.Join(lines, "\n"), r, nil
+	case "claim":
+		dir, err := pool.Claim(home, project, f(a, "gb"), s(a, "why"))
+		if err != nil {
+			return "", nil, err
+		}
+		return fmt.Sprintf("%s: %.1f GB space at %s | do: keep the project's big files there, delete what you no longer need, release it when done", project, f(a, "gb"), dir),
+			map[string]any{"project": project, "path": dir, "gb": f(a, "gb")}, nil
+	case "release":
+		freed, err := pool.Release(home, project, b(a, "delete"))
+		if err != nil {
+			return "", nil, err
+		}
+		return fmt.Sprintf("%s: space released (%.1f GB of files deleted)", project, freed), nil, nil
+	case "label":
+		rel, err := pool.SetLabel(home, project, s(a, "path"), s(a, "rank"), s(a, "for"))
+		if err != nil {
+			return "", nil, err
+		}
+		return fmt.Sprintf("%s: %s is %s (%s)", project, rel, s(a, "rank"), s(a, "for")), nil, nil
+	case "items":
+		its, err := pool.Items(home, project)
+		if err != nil {
+			return "", nil, err
+		}
+		lines := []string{fmt.Sprintf("%s: %d item(s), least important first", project, len(its))}
+		for _, it := range its {
+			l := fmt.Sprintf("%s %s %.2f GB, %d files, changed %s", it.Rank, it.Path, it.GB, it.Files, it.Modified.Format("2006-01-02"))
+			if it.For != "" {
+				l += ": " + it.For
+			} else if it.Rank == storage.Unranked {
+				l += " | do: label it"
+			}
+			lines = append(lines, l)
+		}
+		return strings.Join(lines, "\n"), its, nil
+	case "free":
+		chosen, freed, err := pool.Free(home, project, f(a, "gb"), s(a, "upto"), b(a, "dry_run"))
+		if err != nil {
+			return "", nil, err
+		}
+		verb := "deleted"
+		if b(a, "dry_run") {
+			verb = "would delete"
+		}
+		names := []string{}
+		for _, it := range chosen {
+			names = append(names, fmt.Sprintf("%s (%s, %.2f GB)", it.Path, it.Rank, it.GB))
+		}
+		return fmt.Sprintf("%s: %s %.2f GB: %s", project, verb, freed, strings.Join(names, ", ")), chosen, nil
+	}
+	return "", nil, fmt.Errorf("action must be show, claim, label, items, free or release")
 }

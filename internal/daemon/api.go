@@ -22,6 +22,7 @@ import (
 
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/policy"
+	"github.com/JoshWright22/firefighter/internal/storage"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
 	"github.com/JoshWright22/firefighter/internal/usage"
 )
@@ -1125,6 +1126,18 @@ func (d *Daemon) notes(now time.Time) []string {
 			out = append(out, fmt.Sprintf("disk %s has %.1f GB free, under the %.0f GB kept for the human: no job starts on it, and jobs writing to it are suspended", dr, dk.FreeGB, d.diskFloor(dk)))
 		}
 	}
+	if r := d.storeRep; r != nil {
+		for _, sp := range r.Spaces {
+			if sp.Over && sp.GB == 0 {
+				out = append(out, fmt.Sprintf("storage: %s holds %.1f GB in %s without a claim: its new jobs wait until it's claimed or deleted", sp.Project, sp.UsedGB, sp.Path))
+			} else if sp.Over {
+				out = append(out, fmt.Sprintf("storage: %s's space holds %.1f GB, over its %.1f GB claim: its new jobs wait until it deletes files or claims more", sp.Project, sp.UsedGB, sp.GB))
+			}
+		}
+		if r.GrantedGB > r.GB+0.05 {
+			out = append(out, fmt.Sprintf("storage: %.1f GB is claimed but the allotment is now %.1f GB: the spaces must shrink", r.GrantedGB, r.GB))
+		}
+	}
 	sort.Strings(out)
 	return out
 }
@@ -1162,6 +1175,7 @@ type Status struct {
 	Disks     []sysinfo.Disk          `json:"disks,omitempty"`    // drives jobs and the system use
 	Forecast  *Forecast               `json:"forecast,omitempty"` // what the human and each command are expected to use
 	Market    map[string]policy.Quote `json:"market"`             // posted prices and odds for a typical 30-minute job
+	Storage   *storage.Report         `json:"storage,omitempty"`  // agents' storage spaces (measured every 2 minutes)
 }
 
 func (d *Daemon) status() Status {
@@ -1189,6 +1203,7 @@ func (d *Daemon) status() Status {
 	}
 	sort.Slice(s.Disks, func(a, b int) bool { return s.Disks[a].Path < s.Disks[b].Path })
 	s.Reserve["disk_free_gb"] = d.cfg.Reserve.DiskFreeGB
+	s.Storage = d.storeRep
 	s.Notes, s.Version = d.notes(now), d.Version
 	if d.updateNote != "" {
 		s.Notes = append(s.Notes, d.updateNote)

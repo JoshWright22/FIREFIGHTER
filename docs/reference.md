@@ -55,7 +55,7 @@ docker all just work), passes its output and exit code through, and ends with a 
 
 **MCP tools** (one-line text replies plus `structuredContent`): `firefighter_submit`,
 `firefighter_wait`, `firefighter_status` (which also gives quotes), `firefighter_job` (extend,
-urgent/normal, cancel) and `firefighter_plan`. `firefighter_config` is listed only when you allow
+urgent/normal, amend, cancel), `firefighter_plan` and `firefighter_storage` (show, claim, label, items, free, release). `firefighter_config` is listed only when you allow
 agents to change the policy.
 
 ## CLI reference
@@ -71,6 +71,7 @@ agents to change the policy.
 | `forecast [--json]` | What has been learned: the human's use and reserve per state, and what each known command is expected to need on its next run (RAM, VRAM, CPUs, GPU load, disk, network, minutes) |
 | `adopt <pid> [--gpu] [--name] [--minutes]` | Govern a process that's already running |
 | `plan "<what>" --when ... --minutes N [--gpu %] [--vram GB] [--ram GB]` · `plan --done [--project p]` | Announce or remove planned work |
+| `storage [claim --gb N [--why text] \| path \| label <path> --rank keep\|useful\|scratch\|none --for text \| items \| free --gb N [--upto scratch\|unranked\|useful] [--dry-run] \| release [--delete]] [--project P]` | The disk space the human allots agents (`storage.gb`, `storage.root`, `storage.projects.<name>`): claim, grow, shrink or release your project's space; rank what's in it and what it's for; free the least important first (keep is never deleted) |
 | `config [show \| set <key> <value> \| unset <key> \| presets \| path]` | Every key is in `config show` |
 | `protocol` | The pause/checkpoint helper |
 | `setup` · `uninstall` · `daemon [--stop]` · `mcp` · `version` | Install, remove, run or stop the guard, MCP server |

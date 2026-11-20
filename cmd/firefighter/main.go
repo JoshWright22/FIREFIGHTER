@@ -57,6 +57,7 @@ Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your networ
   firefighter cancel <id>        cancel a waiting or running job
   firefighter adopt <pid> [--gpu] [--name NAME] [--minutes N]   govern a process already running
   firefighter plan "<what>" --when "<when>" --minutes N [--gpu PCT] [--vram GB] [--ram GB] [--done]
+  firefighter storage [claim --gb N | path | release [--delete]]  disk space the human allots agents
   firefighter config [show | set <key> <value> | unset <key> | presets | path]
   firefighter protocol           the pause/checkpoint helper for long GPU loops
   firefighter statusline [--json]  one line for a status bar (Claude Code, VS Code, tmux, T3 Code)
@@ -109,6 +110,8 @@ func main() {
 		err = forecast(args)
 	case "harvest":
 		err = harvestCmd(args)
+	case "storage":
+		err = storageCmd(args)
 	case "update":
 		err = updateCmd(args)
 	case "protocol":

@@ -33,6 +33,7 @@ This PC's CPU, GPU and RAM are shared by several AI agents and a human who alway
 - Tell the human the start time it shows. Don't run heavy work outside it or change its config: outside work is found, billed 1.5x and preempted first.
 - Every ` + "`docker run`" + `, even a 10-second look inside an image, goes through it too: ` + "`firefighter run --quick -- docker run --rm <image> ls /x`" + ` (starts at once when RAM allows; the file cache it read is given back after). A big image read outside it fills RAM for minutes.
 - A waiting job's ` + "`--ram`/`--vram`/`--minutes`" + ` off? ` + "`firefighter amend <id> --vram GB`" + ` keeps its place; don't cancel and resubmit.
+- Big files (datasets, checkpoints, models, caches) go in your project's storage space, not the human's folders: ` + "`firefighter storage claim --gb N --why \"<what>\"`" + ` prints its folder. Rank everything you save: ` + "`firefighter storage label <path> --rank keep|useful|scratch --for \"<what uses it, until when>\"`" + `. Stay under your claim: ` + "`firefighter storage free --gb N`" + ` deletes the least important first (scratch, then with --upto unranked/useful; never keep); ` + "`firefighter storage items`" + ` lists yours, ` + "`firefighter storage release`" + ` when done.
 - Heavy work later: ` + "`firefighter plan \"<what>\" --when HH:MM --minutes N --gpu 90`" + `. Long GPU loops: ` + "`firefighter protocol`" + `.
 ` + end + "\n"
 

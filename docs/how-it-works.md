@@ -115,6 +115,34 @@ Zero config gives you the researched defaults below. You can swap each part by n
 - **Hysteresis.** Stepping up (toward game) is immediate. Stepping down needs the lower state in 2 of
   3 readings 10 s apart, and a fullscreen game stays the game while it is the app in front.
 
+### Storage the human allots agents
+
+The human gives agents disk space: `firefighter config set storage.gb 100` (folder `storage.root`,
+default `~/agent-storage`, which must be new or empty: firefighter marks it and never treats a folder
+it didn't make as spaces; `storage.projects.<name>` caps one project). Agents manage it themselves:
+
+- `firefighter storage claim --gb 20 --why "imagenet subset"` claims, grows or shrinks the calling
+  project's space and prints its folder (`<root>/<project>`). Claims never add up to more than the
+  allotment, a space can't shrink below what it holds, and the claimed but unused room of every
+  space must fit on the drive beyond the free space kept for the human (`reserve.disk_free_gb`).
+- Agents put the project's big files there and may delete anything inside their own space.
+  `firefighter storage release [--delete]` gives it back (`--delete` removes its files; without it a
+  space that still holds files is kept).
+- **What each thing is for, and how much it matters.** `firefighter storage label <path> --rank
+  keep|useful|scratch --for "<what uses it, until when>"` labels a file or folder in the space:
+  `keep` is needed (results, the only copy, what a running job reads), `useful` is costly to remake
+  (a download, a built cache), `scratch` is temporary. A deeper label wins over its folder's (a
+  `keep` checkpoint inside a `scratch` folder stays). `firefighter storage items` lists the space
+  least important first (scratch, unranked, useful, keep; oldest first within a rank), with what
+  each is for. `firefighter storage free --gb N [--upto unranked|useful] [--dry-run]` deletes in that
+  order until N GB is free, scratch only by default; `keep` is never deleted. `firefighter storage`
+  shows each space's GB by rank, and the guard's "over its claim" line names the `free` command.
+- `firefighter storage` (MCP: `firefighter_storage`) shows the allotment and every space, with
+  folders in the root nobody claimed. The guard measures the spaces every 2 minutes (at once after a
+  claim or release). While a space holds more than its claim, or a folder in the root holds files
+  without a claim, that project's new jobs wait (`--quick` ones still run, for cleanup) and status
+  says why.
+
 ### Band 4: the harvester, and only while it pays
 
 `[harvester] start`/`stop` are shell commands. FIREFIGHTER runs `start` after the GPU has been

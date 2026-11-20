@@ -22,6 +22,7 @@ import (
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/harvest"
 	"github.com/JoshWright22/firefighter/internal/policy"
+	"github.com/JoshWright22/firefighter/internal/storage"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
 	"github.com/JoshWright22/firefighter/internal/usage"
 )
@@ -142,8 +143,11 @@ type Daemon struct {
 	sysDrives     map[string]bool         // the drives temp files and firefighter's own state live on
 	diskLow       map[string]time.Time    // since when each drive has been under the reserve
 	diskBusy      atomic.Bool
-	humanAt       time.Time    // last sample of the human's use (every 5 s)
-	ramRise       usage.Growth // the human's RAM over the last 5 minutes: how far it rises
+	storeBusy     atomic.Bool
+	storeAt       time.Time
+	storeRep      *storage.Report // agents' storage spaces, measured every 2 minutes
+	humanAt       time.Time       // last sample of the human's use (every 5 s)
+	ramRise       usage.Growth    // the human's RAM over the last 5 minutes: how far it rises
 	vramRise      usage.Growth
 	stopping      atomic.Bool        // shutdown requested (once)
 	unknownAt     map[bool]time.Time // last grant of a never-seen command, per kind (GPU/CPU)
@@ -464,6 +468,7 @@ func (d *Daemon) Run() {
 		d.refreshDocker(now)
 		d.refreshVM(now, vmWanted)
 		d.refreshDisks(now, folders)
+		d.refreshStorage(now, cfg)
 
 		d.mu.Lock()
 		func() {
@@ -2347,6 +2352,54 @@ func (d *Daemon) refreshDisks(now time.Time, folders []string) {
 	}()
 }
 
+// refreshStorage measures the agents' storage spaces in the background.
+func (d *Daemon) refreshStorage(now time.Time, cfg config.Config) {
+	if cfg.Storage.GB <= 0 {
+		d.mu.Lock()
+		d.storeRep = nil
+		d.mu.Unlock()
+		return
+	}
+	// Every 2 minutes, and at once after a claim or release changed storage.json.
+	changed := false
+	if fi, err := os.Stat(filepath.Join(config.Home(), "storage.json")); err == nil && fi.ModTime().After(d.storeAt) {
+		changed = true
+	}
+	if d.storeBusy.Load() || (now.Sub(d.storeAt) < 2*time.Minute && !changed) {
+		return
+	}
+	d.storeBusy.Store(true)
+	d.storeAt = now
+	go func() {
+		defer d.storeBusy.Store(false)
+		r, err := storage.FromConfig(cfg).Look(config.Home())
+		if err != nil {
+			return
+		}
+		d.mu.Lock()
+		d.storeRep = &r
+		d.mu.Unlock()
+	}()
+}
+
+// storageWhy keeps a project's new jobs (not --quick ones, which may be its cleanup) waiting while
+// its storage space holds more than it claimed ("" otherwise).
+func (d *Daemon) storageWhy(j *job) string {
+	if d.storeRep == nil || j.State != "waiting" || j.Quick {
+		return ""
+	}
+	for _, s := range d.storeRep.Spaces {
+		if s.Over && strings.EqualFold(s.Project, j.Project) {
+			if s.GB == 0 {
+				return fmt.Sprintf("storage: %s holds %.1f GB in %s without a claim; `firefighter storage claim --gb N` or delete it", s.Project, s.UsedGB, s.Path)
+			}
+			return fmt.Sprintf("storage: %s's space holds %.1f GB, over its %.1f GB claim (%.1f GB of it ranked scratch); `firefighter storage free --gb %.1f` deletes its least important items, or `firefighter storage claim --gb %.0f`",
+				s.Project, s.UsedGB, s.GB, s.RankGB[storage.Scratch], math.Ceil((s.UsedGB-s.GB)*10+0.5)/10, math.Ceil(s.UsedGB+1))
+		}
+	}
+	return ""
+}
+
 // reclaimable is the RAM the local Linux VM would give back if asked (0 when unknown or stale).
 func (d *Daemon) reclaimable(now time.Time) float64 {
 	if !d.cfg.Reserve.ReclaimVMCache || !d.vm.Guest || now.Sub(d.vmAt) > 30*time.Second {
@@ -2701,8 +2754,12 @@ func (d *Daemon) drivesOf(j *job) []string {
 	return out
 }
 
-// diskWhy says which drive under the human's disk reserve keeps a job from starting ("" if none).
+// diskWhy says which drive under the human's disk reserve, or which storage space over its claim,
+// keeps a job from starting ("" if none).
 func (d *Daemon) diskWhy(j *job) string {
+	if w := d.storageWhy(j); w != "" {
+		return w
+	}
 	if d.cfg.Reserve.DiskFreeGB <= 0 {
 		return ""
 	}

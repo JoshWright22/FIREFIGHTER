@@ -156,12 +156,13 @@ firefighter quote --gpu --minutes 30 --vram 8                     # the market, 
 firefighter status                                                # the human, the queue, budgets
 firefighter extend <id> 15                                        # running long? say so
 firefighter plan "eval sweep" --when tonight --minutes 120 --gpu 90 --vram 12
+firefighter storage claim --gb 20 --why "datasets"               # a disk space of your own (the human allots it)
 firefighter config set preset gamer                               # balanced, gamer, throughput, fair
 firefighter protocol                                              # pause/checkpoint helper for GPU loops
 ```
 
 MCP tools: `firefighter_submit`, `firefighter_wait`, `firefighter_status`, `firefighter_job`,
-`firefighter_plan`. Every command and flag: [docs/reference.md](docs/reference.md#cli-reference).
+`firefighter_plan`, `firefighter_storage`. Every command and flag: [docs/reference.md](docs/reference.md#cli-reference).
 
 ## Docs
 

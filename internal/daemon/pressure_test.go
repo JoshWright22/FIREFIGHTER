@@ -10,6 +10,7 @@ import (
 
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/policy"
+	"github.com/JoshWright22/firefighter/internal/storage"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
 )
 
@@ -576,5 +577,34 @@ func TestBackoffLineSaysWhy(t *testing.T) {
 	line := d.blockedByHuman(j, now)
 	if !strings.Contains(line, "stopped 30s ago (RAM: 2.7 GB free") || !strings.Contains(line, "tries again in 1m30s") {
 		t.Fatalf("wait line %q", line)
+	}
+}
+
+// 11/20: agents manage the storage the human allots them. A project whose space holds more than
+// it claimed starts no new jobs (except --quick ones, which may be its cleanup) until it deletes
+// files or claims more.
+func TestStorageOverClaimHoldsNewJobs(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	d.snap.RAMAvailGB = 20
+	j := d.addWaiting("train", 1, 30, time.Minute)
+	j.Project = "alpha"
+	d.storeRep = &storage.Report{GB: 50, Spaces: []storage.Space{{Project: "alpha", GB: 10, UsedGB: 12.4, Over: true, Path: `C:\s\alpha`}}}
+	if b := d.blockerOf(j); !strings.Contains(b, "alpha's space holds 12.4 GB, over its 10.0 GB claim") || !strings.Contains(b, "storage claim --gb 14") {
+		t.Fatalf("blocker %q", b)
+	}
+	if got := d.startsIn(j, 1, now); got != -1 {
+		t.Fatalf("start estimate %v, want unknown", got)
+	}
+	if n := d.notes(now); !strings.Contains(strings.Join(n, "|"), "over its 10.0 GB claim") {
+		t.Fatalf("notes %v", n)
+	}
+	j.Quick = true
+	if w := d.storageWhy(j); w != "" {
+		t.Fatalf("a --quick job (cleanup) is held: %q", w)
+	}
+	j.Quick, j.Project = false, "beta"
+	if w := d.storageWhy(j); w != "" {
+		t.Fatalf("another project is held: %q", w)
 	}
 }
