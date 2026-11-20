@@ -445,6 +445,10 @@ func (d *Daemon) Run() {
 		cfg := d.cfg
 		vmWanted := d.vmWanted
 		folders := []string{os.TempDir(), config.Home()}
+		if cfg.Storage.GB > 0 { // agents' storage spaces: jobs write there, so its drive's reserve counts for every job
+			folders = append(folders, cfg.StorageRoot())
+		}
+		sysFolders := len(folders)
 		for _, j := range d.jobs {
 			if j.State != "done" && j.Cwd != "" {
 				folders = append(folders, j.Cwd)
@@ -467,7 +471,7 @@ func (d *Daemon) Run() {
 		rogues := d.findRogues(now, cfg, snap, governed)
 		d.refreshDocker(now)
 		d.refreshVM(now, vmWanted)
-		d.refreshDisks(now, folders)
+		d.refreshDisks(now, folders, sysFolders)
 		d.refreshStorage(now, cfg)
 
 		d.mu.Lock()
@@ -2326,7 +2330,7 @@ func (d *Daemon) refreshVM(now time.Time, wanted int) {
 
 // refreshDisks reads the free space of every drive in use (temp files, firefighter's state, each
 // open job's folder) in the background every 5 s.
-func (d *Daemon) refreshDisks(now time.Time, folders []string) {
+func (d *Daemon) refreshDisks(now time.Time, folders []string, sysFolders int) {
 	if d.diskBusy.Load() || now.Sub(d.diskAt) < 5*time.Second {
 		return
 	}
@@ -2341,8 +2345,8 @@ func (d *Daemon) refreshDisks(now time.Time, folders []string) {
 			}
 			if dk, ok := sysinfo.DiskOf(f); ok {
 				disks[dk.Path], driveOf[f] = dk, dk.Path
-				if i < 2 {
-					sys[dk.Path] = true // the first two are the temp folder and firefighter's home
+				if i < sysFolders {
+					sys[dk.Path] = true // the temp folder, firefighter's home, the agents' storage root
 				}
 			}
 		}
@@ -2389,7 +2393,7 @@ func (d *Daemon) storageWhy(j *job) string {
 		return ""
 	}
 	for _, s := range d.storeRep.Spaces {
-		if s.Over && strings.EqualFold(s.Project, j.Project) {
+		if s.Over && (strings.EqualFold(s.Project, j.Project) || strings.EqualFold(s.Project, storage.Name(j.Project))) {
 			if s.GB == 0 {
 				return fmt.Sprintf("storage: %s holds %.1f GB in %s without a claim; `firefighter storage claim --gb N` or delete it", s.Project, s.UsedGB, s.Path)
 			}

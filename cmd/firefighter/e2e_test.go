@@ -1197,6 +1197,12 @@ func TestStorageSpaces(t *testing.T) {
 	if !exists(filepath.Join(dir, "results.json")) || exists(filepath.Join(dir, "big.bin")) {
 		t.Fatal("free must delete scratch and never keep")
 	}
+	if out, code := e.ff("storage", "release", "alpha", "--delete"); code == 0 || !strings.Contains(out, "ranked keep") {
+		t.Fatalf("release --delete over a keep file must refuse: %d\n%s", code, out)
+	}
+	if out, code := e.ff("storage", "label", "results.json", "--rank", "none", "--project", "alpha"); code != 0 {
+		t.Fatalf("unrank: %s", out)
+	}
 	if out, code := e.ff("storage", "release", "alpha", "--delete"); code != 0 || !strings.Contains(out, "space released") {
 		t.Fatalf("release --delete: %d\n%s", code, out)
 	}

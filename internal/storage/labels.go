@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -47,7 +48,8 @@ type Item struct {
 	For      string    `json:"for,omitempty"`
 	GB       float64   `json:"gb"`
 	Files    int       `json:"files"`
-	Modified time.Time `json:"modified"` // newest file in it
+	Modified time.Time `json:"modified"`       // newest file in it
+	Left     int       `json:"left,omitempty"` // free: files it could not delete (in use)
 	files    []string
 }
 
@@ -99,8 +101,8 @@ func (p Pool) SetLabel(home, project, path, rank, purpose string) (string, error
 	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
-		return "", fmt.Errorf("%s: no such file or folder in %s", rel, dir)
+	if rel, err = resolve(dir, rel); err != nil {
+		return "", err
 	}
 	if g.Labels == nil {
 		g.Labels = map[string]Label{}
@@ -126,10 +128,50 @@ func (p Pool) Items(home, project string) ([]Item, error) {
 	return items(filepath.Join(p.Root, project), f.Grants[project].Labels), nil
 }
 
+// foldCase: Windows and macOS file names ignore case, so labels match whatever case the files have.
+var foldCase = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+
+func foldKey(p string) string {
+	if foldCase {
+		return strings.ToLower(p)
+	}
+	return p
+}
+
+// resolve turns a path inside the space into the exact names on disk, one part at a time, so a
+// label typed in another case (or "data." for "data" on Windows) can't miss the files it names.
+func resolve(dir, rel string) (string, error) {
+	cur, out := dir, []string{}
+	for _, part := range strings.Split(rel, "/") {
+		es, err := os.ReadDir(cur)
+		if err != nil {
+			return "", fmt.Errorf("%s: no such file or folder in %s", rel, dir)
+		}
+		name := ""
+		for _, e := range es {
+			if e.Name() == part {
+				name = part
+				break
+			}
+			if foldCase && strings.EqualFold(e.Name(), part) {
+				name = e.Name()
+			}
+		}
+		if name == "" {
+			return "", fmt.Errorf("%s: no such file or folder in %s (names must match the files exactly)", rel, dir)
+		}
+		out = append(out, name)
+		cur = filepath.Join(cur, name)
+	}
+	return strings.Join(out, "/"), nil
+}
+
 func items(dir string, labels map[string]Label) []Item {
 	byPath := map[string]*Item{}
+	byKey := map[string]string{} // foldKey(label path) -> label path
 	for path, l := range labels {
 		byPath[path] = &Item{Path: path, Rank: l.Rank, For: l.For}
+		byKey[foldKey(path)] = path
 	}
 	var bytes = map[string]int64{}
 	_ = filepath.WalkDir(dir, func(full string, e fs.DirEntry, err error) error {
@@ -143,8 +185,8 @@ func items(dir string, labels map[string]Label) []Item {
 		rel = filepath.ToSlash(rel)
 		owner := ""
 		for p := rel; p != "." && p != ""; p = parent(p) { // the deepest label covering it
-			if _, ok := labels[p]; ok {
-				owner = p
+			if l, ok := byKey[foldKey(p)]; ok {
+				owner = l
 				break
 			}
 		}
@@ -236,16 +278,26 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 		if it.Files == 0 {
 			continue // emptied already (what's left under it has deeper labels of its own)
 		}
-		chosen = append(chosen, it)
-		freed += it.GB
 		if dryRun {
+			chosen = append(chosen, it)
+			freed += it.GB
 			continue
 		}
+		var gone int64
 		for _, file := range it.files {
-			if inside(dir, file) {
-				os.Remove(file)
+			fi, err := os.Stat(file)
+			if err != nil || !inside(dir, file) {
+				continue
+			}
+			if os.Remove(file) == nil {
+				gone += fi.Size()
+			} else {
+				it.Left++ // in use (a running job holds it) or not ours to delete
 			}
 		}
+		it.GB = math.Round(float64(gone)/(1<<30)*1000) / 1000
+		chosen = append(chosen, it)
+		freed += float64(gone) / (1 << 30)
 		pruneEmpty(dir, filepath.Join(dir, filepath.FromSlash(it.Path)))
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(it.Path))); err != nil {
 			delete(g.Labels, it.Path)

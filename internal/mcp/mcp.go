@@ -106,8 +106,9 @@ var baseTools = []tool{
 	}, "id", "action")},
 	{"firefighter_storage", "Disk space the human allots agents. show: the allotment and every space. claim: set your project's space to gb (new, bigger or smaller) and get its folder; keep the project's big files (data, checkpoints, models, caches) there and delete what you no longer need. label: rank a file or folder in your space (path) as keep (needed), useful (costly to remake) or scratch (temporary), with for = what uses it and until when; rank everything you save. items: your space's contents, least important first. free: delete the least important items until gb is freed (scratch first; upto=unranked or useful goes further; keep is never deleted; dry_run to preview). release: give it back (delete=true removes its files). While a space holds more than its claim, its project's new jobs wait.", obj(map[string]any{
 		"action": str("show | claim | label | items | free | release"), "gb": num("For claim: size of the space; for free: GB to free"), "why": str("For claim: what it holds"),
-		"project": str("Project (default: your folder or repo name)"), "delete": boo("For release: delete the space's files"),
-		"path": str("For label: file or folder in your space (relative to it, or absolute)"), "rank": str("For label: keep | useful | scratch | none"),
+		"project": str("Project (default: the repo or folder of cwd)"), "cwd": str("Your absolute working directory (sets the default project)"),
+		"delete": boo("For release: delete the space's files"),
+		"path":   str("For label: file or folder in your space (relative to it, or absolute)"), "rank": str("For label: keep | useful | scratch | none"),
 		"for": str("For label: what uses it, and until when"), "upto": str("For free: scratch (default) | unranked | useful"), "dry_run": boo("For free: only list what would go"),
 	}, "action")},
 	{"firefighter_plan", "Announce heavy work later so others plan around it (reserves nothing). done=true removes your project's plans.", obj(map[string]any{
@@ -492,6 +493,11 @@ func jobID(id string) bool {
 // callerProject is the project of the directory the agent runs this MCP server in.
 func callerProject() string {
 	wd, _ := os.Getwd()
+	return projectIn(wd)
+}
+
+// projectIn is the project a folder belongs to: its git repo's name, else the folder's name.
+func projectIn(wd string) string {
 	for d := wd; ; d = filepath.Dir(d) {
 		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
 			return filepath.Base(d)
@@ -530,10 +536,21 @@ func storageCall(a map[string]any) (string, any, error) {
 		return "", nil, err
 	}
 	pool, home := storage.FromConfig(cfg), config.Home()
+	// The project comes from project, else the caller's cwd (as firefighter_submit's does). The MCP
+	// server's own folder is only a guess (a host may start it outside the repo), so it never picks
+	// what free or release deletes.
 	project := s(a, "project")
+	if project == "" && s(a, "cwd") != "" {
+		project = projectIn(s(a, "cwd"))
+	}
 	if project == "" {
+		switch s(a, "action") {
+		case "free", "release":
+			return "", nil, fmt.Errorf("%s deletes files: pass project (or cwd, your working folder)", s(a, "action"))
+		}
 		project = callerProject()
 	}
+	project = storage.Name(project)
 	switch s(a, "action") {
 	case "show", "":
 		r, err := pool.Look(home)
@@ -601,7 +618,11 @@ func storageCall(a map[string]any) (string, any, error) {
 		}
 		names := []string{}
 		for _, it := range chosen {
-			names = append(names, fmt.Sprintf("%s (%s, %.2f GB)", it.Path, it.Rank, it.GB))
+			n := fmt.Sprintf("%s (%s, %.2f GB)", it.Path, it.Rank, it.GB)
+			if it.Left > 0 {
+				n += fmt.Sprintf(" [%d file(s) in use, kept]", it.Left)
+			}
+			names = append(names, n)
 		}
 		return fmt.Sprintf("%s: %s %.2f GB: %s", project, verb, freed, strings.Join(names, ", ")), chosen, nil
 	}

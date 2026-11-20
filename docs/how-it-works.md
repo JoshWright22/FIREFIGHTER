@@ -137,6 +137,14 @@ it didn't make as spaces; `storage.projects.<name>` caps one project). Agents ma
   each is for. `firefighter storage free --gb N [--upto unranked|useful] [--dry-run]` deletes in that
   order until N GB is free, scratch only by default; `keep` is never deleted. `firefighter storage`
   shows each space's GB by rank, and the guard's "over its claim" line names the `free` command.
+- **Names, roots, safety.** A space is named after its project with anything but letters, digits,
+  `.`, `_` and `-` turned into `-` ("My Project" -> `My-Project`), never ending in `.` and never a
+  Windows device name; jobs are matched to spaces by the same name, ignoring case. `storage.root`
+  must be absolute. `release --delete` refuses while something in the space is ranked keep. If the
+  human moves `storage.root`, earlier spaces are reported "elsewhere" and their files are left
+  alone. `free` counts only what it really deleted (files in use are kept and reported). The
+  storage root's drive gets the same free-space reserve as the drives jobs run on. The MCP tool
+  takes `cwd` like `firefighter_submit`, and `free`/`release` need `project` or `cwd`.
 - `firefighter storage` (MCP: `firefighter_storage`) shows the allotment and every space, with
   folders in the root nobody claimed. The guard measures the spaces every 2 minutes (at once after a
   claim or release). While a space holds more than its claim, or a folder in the root holds files

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,9 @@ type Grant struct {
 	GB  float64   `json:"gb"`
 	Why string    `json:"why,omitempty"`
 	At  time.Time `json:"at"`
+	// Root: the storage.root it was claimed under. When the human moves storage.root, the files stay
+	// where they were: the space reports them as elsewhere instead of counting them.
+	Root string `json:"root,omitempty"`
 	// Labels: what agents said each file or folder in the space is for and how much it matters,
 	// by its path inside the space ("/" separators).
 	Labels map[string]Label `json:"labels,omitempty"`
@@ -57,6 +61,8 @@ type Space struct {
 	Files   int     `json:"files"`
 	Why     string  `json:"why,omitempty"`
 	Over    bool    `json:"over,omitempty"` // holds more than it was granted
+	// Elsewhere: the old root's folder, when the space was claimed under a storage.root since moved.
+	Elsewhere string `json:"elsewhere,omitempty"`
 	// RankGB: GB by rank (keep, useful, unranked, scratch), so anyone can see what may go first.
 	RankGB map[string]float64 `json:"rank_gb,omitempty"`
 }
@@ -72,7 +78,37 @@ type Report struct {
 	Spaces    []Space `json:"spaces"`
 }
 
-var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+var nameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,62}[A-Za-z0-9_-])?$`)
+
+var reserved = regexp.MustCompile(`(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)`)
+
+// Name turns a project name (a folder or repo name, maybe with spaces) into the name of its space:
+// letters, digits, '.', '_' and '-', no trailing dot, never a Windows device name. Jobs and spaces
+// are matched through it, so "My Project" and its space "My-Project" are one project.
+func Name(project string) string {
+	b := []rune{}
+	for _, r := range strings.TrimSpace(project) {
+		if r < 128 && (r == '.' || r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			b = append(b, r)
+		} else {
+			b = append(b, '-')
+		}
+	}
+	n := strings.Trim(string(b), ".-")
+	if len(n) > 64 {
+		n = strings.TrimRight(n[:64], ".")
+	}
+	if n == "" {
+		return ""
+	}
+	if reserved.MatchString(n) {
+		n = "_" + n
+	}
+	if !nameRe.MatchString(n) {
+		n = "p" + n
+	}
+	return n
+}
 
 // ErrNoAllotment: the human hasn't given agents any storage.
 var ErrNoAllotment = errors.New("no storage allotted to agents: the human sets one with `firefighter config set storage.gb <GB>` (folder: storage.root)")
@@ -81,11 +117,11 @@ func path(home string) string { return filepath.Join(home, "storage.json") }
 
 // Dir is a project's space.
 func (p Pool) Dir(project string) (string, error) {
-	if !nameRe.MatchString(project) || project == "." || project == ".." {
-		return "", fmt.Errorf("project %q: use letters, digits, '.', '_' or '-' (up to 64)", project)
+	if !nameRe.MatchString(project) || reserved.MatchString(project) {
+		return "", fmt.Errorf("project %q: use letters, digits, '.', '_' or '-' (up to 64, not ending in '.', not a device name)", project)
 	}
-	if p.Root == "" {
-		return "", errors.New("storage.root is empty")
+	if p.Root == "" || !filepath.IsAbs(p.Root) {
+		return "", fmt.Errorf("storage.root %q must be an absolute folder", p.Root)
 	}
 	return filepath.Join(p.Root, project), nil
 }
@@ -99,14 +135,24 @@ func lock(home string) (func(), error) {
 	for start := time.Now(); ; {
 		f, err := os.OpenFile(l, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
+			me := strconv.Itoa(os.Getpid())
+			f.WriteString(me)
 			f.Close()
-			return func() { os.Remove(l) }, nil
+			return func() {
+				if b, _ := os.ReadFile(l); string(b) == me { // never another process's lock
+					os.Remove(l)
+				}
+			}, nil
 		}
-		if fi, e := os.Stat(l); e == nil && time.Since(fi.ModTime()) > 30*time.Second {
-			os.Remove(l) // left by a process that died holding it
-			continue
+		if fi, e := os.Stat(l); e == nil && time.Since(fi.ModTime()) > time.Second {
+			b, _ := os.ReadFile(l)
+			pid, perr := strconv.Atoi(strings.TrimSpace(string(b)))
+			if (perr == nil && !sysinfo.Alive(pid)) || time.Since(fi.ModTime()) > 10*time.Minute {
+				os.Remove(l) // left by a process that died holding it
+				continue
+			}
 		}
-		if time.Since(start) > 10*time.Second {
+		if time.Since(start) > 30*time.Second {
 			return nil, fmt.Errorf("%s is held by another firefighter: try again", l)
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -204,6 +250,16 @@ func canonical(f file, project string) string {
 	return project
 }
 
+// capOf is the human's most for a project, whatever the spelling of its config key.
+func (p Pool) capOf(project string) (float64, bool) {
+	for name, c := range p.Caps {
+		if strings.EqualFold(name, project) || strings.EqualFold(Name(name), project) {
+			return c, true
+		}
+	}
+	return 0, false
+}
+
 // Claim sets a project's space to gb (a new claim, or a bigger or smaller one) and returns its folder.
 func (p Pool) Claim(home, project string, gb float64, why string) (string, error) {
 	if p.GB <= 0 {
@@ -230,7 +286,7 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 	}
 	project = canonical(f, project)
 	dir = filepath.Join(p.Root, project)
-	if c, ok := p.Caps[project]; ok && gb > c {
+	if c, ok := p.capOf(project); ok && gb > c {
 		return "", fmt.Errorf("%s may hold at most %.1f GB (storage.projects.%s, set by the human)", project, c, project)
 	}
 	others, list := 0.0, []string{}
@@ -253,8 +309,9 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 	if gb < used {
 		return "", fmt.Errorf("%s's space already holds %.1f GB: delete files in %s first, then shrink it", project, used, dir)
 	}
-	// The drive must hold every space at its full size beyond the free space kept for the human.
-	if p.FloorGB != nil {
+	// The drive must hold every space at its full size beyond the free space kept for the human. A
+	// claim that shrinks (or stays) is always allowed: it is what a full drive needs.
+	if prev, ok := f.Grants[project]; (!ok || gb > prev.GB) && p.FloorGB != nil {
 		if free, floor, ok := p.FloorGB(firstExisting(dir)); ok {
 			unused := gb - used
 			for name, g := range f.Grants {
@@ -277,6 +334,7 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 		g.At = time.Now()
 	}
 	g.GB = round1(gb)
+	g.Root = p.Root
 	if why != "" {
 		g.Why = why
 	}
@@ -302,9 +360,21 @@ func (p Pool) Release(home, project string, deleteFiles bool) (freedGB float64, 
 	}
 	project = canonical(f, project)
 	dir = filepath.Join(p.Root, project)
+	g, granted := f.Grants[project]
+	if granted && g.Root != "" && !samePath(g.Root, p.Root) {
+		delete(f.Grants, project) // its files are in the old root, which firefighter no longer manages
+		return 0, save(home, f)
+	}
 	used, files, _ := Measure(dir)
-	if _, ok := f.Grants[project]; !ok && files == 0 {
+	if !granted && files == 0 {
 		return 0, fmt.Errorf("%s has no space", project)
+	}
+	if files > 0 && deleteFiles {
+		for _, it := range items(dir, g.Labels) {
+			if it.Rank == Keep && it.Files > 0 {
+				return 0, fmt.Errorf("%s holds %s, ranked keep (%s): move it out, or rank it none first, then release --delete", project, it.Path, it.For)
+			}
+		}
 	}
 	if files > 0 {
 		if !p.marked() {
@@ -322,6 +392,10 @@ func (p Pool) Release(home, project string, deleteFiles bool) (freedGB float64, 
 	}
 	delete(f.Grants, project)
 	return used, save(home, f)
+}
+
+func samePath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 // removeSpace deletes one space's folder, only when it sits directly inside the root.
@@ -360,6 +434,13 @@ func (p Pool) Look(home string) (Report, error) {
 		r.UsedGB += used
 	}
 	for name, g := range grants {
+		if g.Root != "" && !samePath(g.Root, p.Root) {
+			// claimed under a storage.root the human has since moved: its files weren't moved
+			r.Spaces = append(r.Spaces, Space{Project: name, Path: filepath.Join(p.Root, name), GB: g.GB, Why: g.Why,
+				Elsewhere: filepath.Join(g.Root, name)})
+			r.GrantedGB += g.GB
+			continue
+		}
 		seen[strings.ToLower(name)] = true
 		add(name, g, true)
 	}

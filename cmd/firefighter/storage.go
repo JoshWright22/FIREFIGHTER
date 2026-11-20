@@ -65,6 +65,7 @@ func storageCmd(args []string) error {
 	if *project == "" {
 		*project = callerProject()
 	}
+	*project = storage.Name(*project) // "My Project" -> "My-Project": the same name its jobs are matched by
 	switch sub {
 	case "show", "status", "ls":
 		r, err := pool.Look(home)
@@ -145,6 +146,10 @@ func storageCmd(args []string) error {
 			verb = "would delete"
 		}
 		for _, it := range chosen {
+			if it.Left > 0 {
+				fmt.Printf("  %d file(s) of %s are in use and were kept", it.Left, it.Path)
+				fmt.Println()
+			}
 			fmt.Printf("  %s %s (%s, %.2f GB)\n", verb, it.Path, it.Rank, it.GB)
 		}
 		fmt.Printf("%s: %s %.2f GB of the %.1f GB asked", *project, verb, freed, *gb)

@@ -177,3 +177,71 @@ func TestProjectNamesIgnoreCase(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Review round 1 (Fable): names Windows treats as one folder, or as a device, and case tricks.
+func TestNamesAndCaps(t *testing.T) {
+	for in, want := range map[string]string{"My Project": "My-Project", "alpha.": "alpha", "CON": "p_CON", "nul.txt": "p_nul.txt", "ok_1": "ok_1", "  ": ""} {
+		if got := Name(in); got != want {
+			t.Errorf("Name(%q) = %q, want %q", in, got, want)
+		}
+	}
+	p, home := pool(t, 10, 500)
+	for _, bad := range []string{"alpha.", "CON", "lpt1"} {
+		if _, err := p.Claim(home, bad, 1, ""); err == nil {
+			t.Fatalf("claim %q accepted", bad)
+		}
+	}
+	p.Caps = map[string]float64{"beta": 1}
+	if _, err := p.Claim(home, "Beta", 3, ""); err == nil {
+		t.Fatal("the human's cap was bypassed by another case")
+	}
+	p.Root = "relative"
+	if _, err := p.Claim(home, "alpha", 1, ""); err == nil {
+		t.Fatal("a relative root accepted")
+	}
+}
+
+func TestShrinkWhileDriveLowAndKeepBlocksDelete(t *testing.T) {
+	p, home := pool(t, 100, 500)
+	dir, err := p.Claim(home, "alpha", 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "results", "r.json"), 10)
+	p.FloorGB = func(string) (float64, float64, bool) { return 8, 10, true } // under the human's floor
+	if _, err := p.Claim(home, "alpha", 10, ""); err != nil {
+		t.Fatalf("shrinking must work on a full drive: %v", err)
+	}
+	if _, err := p.Claim(home, "alpha", 20, ""); err == nil {
+		t.Fatal("growing on a full drive accepted")
+	}
+	if _, err := p.SetLabel(home, "alpha", "RESULTS", "keep", "final numbers"); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := Grants(home); g["alpha"].Labels["results"].Rank != Keep {
+		t.Fatalf("label stored in the typed case, not the file's: %+v", g["alpha"].Labels)
+	}
+	if _, err := p.Release(home, "alpha", true); err == nil || !strings.Contains(err.Error(), "ranked keep") {
+		t.Fatalf("release --delete over a keep item: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "results", "r.json")); err != nil {
+		t.Fatal("keep file deleted")
+	}
+}
+
+func TestMovedRoot(t *testing.T) {
+	p, home := pool(t, 10, 500)
+	dir, _ := p.Claim(home, "alpha", 2, "")
+	write(t, filepath.Join(dir, "x.bin"), 10)
+	p.Root = filepath.Join(t.TempDir(), "newroot")
+	r, err := p.Look(home)
+	if err != nil || len(r.Spaces) != 1 || r.Spaces[0].Elsewhere != dir || r.Spaces[0].Over {
+		t.Fatalf("moved root: %+v %v", r.Spaces, err)
+	}
+	if _, err := p.Release(home, "alpha", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "x.bin")); err != nil {
+		t.Fatal("a release under the new root deleted files in the old one")
+	}
+}

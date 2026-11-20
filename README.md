@@ -51,20 +51,6 @@ The installer checks the release checksum, puts one ~8 MB binary on your PATH an
 
 ## How it works
 
-```mermaid
-flowchart TD
-    A["Agent session<br/>Claude Code, Codex, Gemini CLI, ..."] -->|"firefighter run<br/>or MCP firefighter_submit"| Q["Queue<br/>least-used project first"]
-    Q --> F{"Fits beside the<br/>human's reserve?"}
-    F -->|"not yet"| Q
-    F -->|yes| R["Runs in your environment,<br/>pinned to one GPU and the CPUs<br/>outside your reserve"]
-    R --> H{"You sit down<br/>or start a game?"}
-    H -->|no| D["Receipt + do: line"]
-    H -->|yes| P["Cooperative pause,<br/>then suspend"]
-    P -->|"you leave"| R
-    P -->|"you need its memory"| C["Checkpoint and exit<br/>(60 s grace)"]
-    C -->|"requeued, same id"| Q
-```
-
 1. An agent sends heavy work through `firefighter run` (or the `firefighter_submit` MCP tool) with a
    time estimate. It waits in a queue where the project that has used the least goes first.
 2. A job starts only when its CPU, RAM and VRAM need (learned from past runs) fits next to the
@@ -135,6 +121,17 @@ The full mechanics (the decision table, the preemption ladder, the market math) 
 - **Agents that skip the queue are caught.** Heavy work started outside FIREFIGHTER is adopted,
   billed 1.5x and preempted first.
 - **Network too.** Downloads and installs take turns and wait while you're on a call or gaming.
+- **Disk space you hand out.** Give agents a folder and a size (`storage.gb`). Each project claims
+  a space in it, ranks what it saves (keep, useful, scratch) and says what each thing is for, and
+  frees the least important first. Nothing ranked keep is deleted by `storage free`, and a project
+  over its claim starts no new jobs until it cleans up.
+- **Honest waiting.** A waiting job's line says what it waits for, with the numbers, and its start
+  time is "unknown" when nothing can forecast it. `firefighter amend` fixes a waiting job's
+  declarations without losing its place.
+- **Containers count.** A Docker container a job starts is the job's: its memory is in the receipt,
+  its limit is the job's need, and `run --quick` covers a short look inside an image.
+- **Optional idle-GPU harvester.** Salad, BOINC or similar can run when nothing else wants the GPU,
+  and only while it earns more than its electricity costs (`firefighter harvest`).
 - **Any machine.** Any number of NVIDIA, AMD or Intel GPUs, any CPU count, Windows, macOS and
   Linux. Each PC runs on its own; nothing goes over the network.
 - **Set and forget.** Starts at logon and teaches every agent it finds the protocol.
@@ -155,8 +152,13 @@ firefighter run --detach --gpu --minutes 90 -- python sweep.py    # prints an id
 firefighter quote --gpu --minutes 30 --vram 8                     # the market, no side effects
 firefighter status                                                # the human, the queue, budgets
 firefighter extend <id> 15                                        # running long? say so
+firefighter amend <id> --vram 8                                   # a waiting job's numbers were off: keeps its place
+firefighter run --quick -- docker run --rm img ls /data           # a short look inside an image
 firefighter plan "eval sweep" --when tonight --minutes 120 --gpu 90 --vram 12
-firefighter storage claim --gb 20 --why "datasets"               # a disk space of your own (the human allots it)
+firefighter storage claim --gb 20 --why "datasets"                # a disk space of your own (the human allots it)
+firefighter storage label data/raw --rank useful --for "training set, 2 h to download"
+firefighter storage free --gb 5                                   # delete scratch first; keep never goes
+firefighter harvest                                               # the idle-GPU harvester's books
 firefighter config set preset gamer                               # balanced, gamer, throughput, fair
 firefighter protocol                                              # pause/checkpoint helper for GPU loops
 ```

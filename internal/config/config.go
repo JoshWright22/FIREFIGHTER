@@ -346,6 +346,9 @@ func (c Config) Validate() error {
 	if c.Storage.GB < 0 {
 		return fmt.Errorf("storage.gb can't be negative (0 gives agents no storage)")
 	}
+	if c.Storage.Root != "" && !filepath.IsAbs(c.Storage.Root) {
+		return fmt.Errorf("storage.root %q must be an absolute folder (a relative one would differ for every agent)", c.Storage.Root)
+	}
 	if c.Reserve.DiskFreeGB < 0 {
 		return fmt.Errorf("reserve.disk_free_gb can't be negative (0 turns the disk reserve off)")
 	}

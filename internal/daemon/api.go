@@ -267,6 +267,9 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if t.Name == "" {
 		t.Name = t.Project
 	}
+	if t.Quick && (t.Minutes <= 0 || t.Minutes > 3) {
+		t.Minutes = 3 // a quick look is short by definition (it skips the storage hold); the CLI also caps it
+	}
 	if caller > 1 {
 		t.ClientPID = caller
 	}
@@ -653,6 +656,9 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			changed = append(changed, fmt.Sprintf("vram %.1f -> %.1f GB", j.VRAMGB, a.VRAMGB))
 			j.VRAMGB = a.VRAMGB
 		}
+		if a.Minutes > 3 && j.Quick {
+			a.Minutes = 3 // a quick look stays one
+		}
 		if a.Minutes > 0 {
 			changed = append(changed, fmt.Sprintf("minutes %.0f -> %.0f", j.Minutes, a.Minutes))
 			j.Minutes = a.Minutes
@@ -688,6 +694,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	case "extend":
 		if a.Minutes <= 0 || a.Minutes > 24*60 {
 			fail(w, 400, "extend by 1 to 1440 minutes")
+			return
+		}
+		if j.Quick {
+			fail(w, http.StatusConflict, "a --quick job can't be extended (it is a look of 3 minutes at most); run the rest as a normal job")
 			return
 		}
 		if j.backfilled {
