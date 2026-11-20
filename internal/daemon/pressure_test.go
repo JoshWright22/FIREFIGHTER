@@ -680,3 +680,21 @@ func TestDockerRunOptions(t *testing.T) {
 		}
 	}
 }
+
+// Review round 2 (GPT): with two cards, an empty card short of VRAM must not win over a card with
+// one light job and room for the new one.
+func TestCardWithRoomBeatsEmptyFullCard(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	d.snap.GPUs = []sysinfo.GPU{
+		{Index: 0, Name: "a", Vendor: "nvidia", VRAMGB: 16, UsedGB: 13}, // nothing of ours, 3 GB free (someone else's use)
+		{Index: 1, Name: "b", Vendor: "nvidia", VRAMGB: 16, UsedGB: 3},  // one light job of ours, 13 GB free
+	}
+	r := d.addRunning("light", 1, now.Add(-time.Minute))
+	r.device, r.vramGB, r.NeedVRAM = 1, 2, 2
+	j := d.addWaiting("needs 6", 1, 30, time.Minute)
+	j.VRAMGB, j.NeedVRAM = 6, 6
+	if card, _ := d.cardFor(j.Ticket); card != 1 {
+		t.Fatalf("picked card %d, want 1 (the one with room)", card)
+	}
+}

@@ -62,6 +62,15 @@ func (d *Daemon) autoUpdate() {
 			d.setUpdateNote("updating to " + rel.Tag + " failed: " + err.Error())
 			continue
 		}
+		// The download and checks above can take minutes, and jobs may have been granted meanwhile
+		// (review 11/20). Restart only once it is quiet again, holding new grants from that moment.
+		for !d.holdForUpdate() {
+			select {
+			case <-d.stop:
+				return
+			case <-time.After(poll):
+			}
+		}
 		logf("update: restarting as %s", rel.Tag)
 		d.restart.Store(true)
 		d.Shutdown()
@@ -85,6 +94,20 @@ func (d *Daemon) quietForUpdate() bool {
 			return false
 		}
 	}
+	return true
+}
+
+// holdForUpdate: if no job is running or granted, stop granting (atomically with the check, under
+// the lock admission takes) and say so.
+func (d *Daemon) holdForUpdate() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, j := range d.jobs {
+		if j.State == "running" || j.State == "granted" {
+			return false
+		}
+	}
+	d.updating.Store(true)
 	return true
 }
 

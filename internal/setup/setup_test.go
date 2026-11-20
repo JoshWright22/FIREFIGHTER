@@ -147,3 +147,21 @@ func TestT3CodeHomesAreTaught(t *testing.T) {
 		}
 	}
 }
+
+// Review round 2 (GPT): a firefighter-looking header inside a multiline string must not cut the
+// human's settings; the edit is refused and the file left as it was.
+func TestCodexTOMLLeavesMultilineStringsAlone(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	p := filepath.Join(dir, "config.toml")
+	orig := "developer_instructions = \"\"\"\nkeep this\n[mcp_servers.firefighter]\nand this\n[end]\nand this too\n\"\"\"\n"
+	_ = os.WriteFile(p, []byte(orig), 0o644)
+	err := codexTOML("/bin/ff", true)
+	b, _ := os.ReadFile(p)
+	if err == nil && !strings.Contains(string(b), "and this too") {
+		t.Fatalf("the multiline string was cut:\n%s", b)
+	}
+	if err != nil && string(b) != orig {
+		t.Fatalf("refused but still changed the file:\n%s", b)
+	}
+}

@@ -459,6 +459,7 @@ func (d *Daemon) get(w http.ResponseWriter, r *http.Request) {
 	wait, _ := strconv.ParseFloat(r.URL.Query().Get("wait"), 64)
 	from := r.URL.Query().Get("state")
 	deadline := time.Now().Add(time.Duration(math.Min(wait, 60) * float64(time.Second)))
+	var was *Declared
 	for {
 		d.mu.Lock()
 		j, ok := d.jobs[id]
@@ -475,7 +476,13 @@ func (d *Daemon) get(w http.ResponseWriter, r *http.Request) {
 		v := d.view(j)
 		ch := d.notify
 		d.mu.Unlock()
-		if from == "" || v.State != from || !time.Now().Before(deadline) {
+		// An amend or re-bid also ends the wait: the client must hold the new declarations at once,
+		// or a guard restart in the next seconds would re-register the old ones (review 11/20).
+		amended := was != nil && v.Declared != nil && *v.Declared != *was
+		if was == nil {
+			was = v.Declared
+		}
+		if from == "" || v.State != from || amended || !time.Now().Before(deadline) {
 			reply(w, v)
 			return
 		}

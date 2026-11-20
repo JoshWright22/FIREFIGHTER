@@ -198,6 +198,7 @@ type Daemon struct {
 	Version    string
 	Exe        string      // the program's own path, as started (an update replaces the file there)
 	restart    atomic.Bool // stopping to come back as a newer version
+	updating   atomic.Bool // about to restart as a newer version: no new grants
 	updateNote string      // a newer release is waiting, or the last update failed
 	Token      string
 	Port       int
@@ -1810,7 +1811,7 @@ func (d *Daemon) capFor(i int, t *policy.Ticket) float64 {
 func (d *Daemon) cardFor(t *policy.Ticket) (int, float64) {
 	want, need := t.WantVendor, t.NeedVRAM
 	v := d.vendorFor(want)
-	best, bestLeft, bestFits, bestOpen := -1, 0.0, false, false
+	best, bestLeft, bestFits, bestOpen, bestRoom := -1, 0.0, false, false, false
 	for i, g := range d.snap.GPUs {
 		if v != "" && g.Vendor != v {
 			continue
@@ -1822,6 +1823,10 @@ func (d *Daemon) cardFor(t *policy.Ticket) (int, float64) {
 			}
 		}
 		fits, open := d.capFor(i, t) >= need, d.cardOpen(i)
+		// Room now: VRAM free beyond the human's reserve for this need. An empty card that is short
+		// of VRAM must not win over a card with one light job and room (review 11/20: the job then
+		// waited on the empty card while the other could take it).
+		room := left-d.res.VRAMGB >= need
 		switch {
 		case best < 0, fits && !bestFits: // a card that can hold it first: it waits for that one
 		case fits != bestFits:
@@ -1829,12 +1834,15 @@ func (d *Daemon) cardFor(t *policy.Ticket) (int, float64) {
 		case open && !bestOpen: // then one that takes a job now
 		case open != bestOpen:
 			continue
+		case room && !bestRoom: // then one with the VRAM for it now
+		case room != bestRoom:
+			continue
 		case fits && d.lighter(i, best, left, bestLeft): // among cards that fit: the least loaded
 		case !fits && d.capFor(i, t) > d.capFor(best, t): // none fits: the biggest
 		default:
 			continue
 		}
-		best, bestLeft, bestFits, bestOpen = i, left, fits, open
+		best, bestLeft, bestFits, bestOpen, bestRoom = i, left, fits, open, room
 	}
 	return best, bestLeft
 }
@@ -1957,6 +1965,9 @@ func (d *Daemon) cardLeft(t *policy.Ticket) float64 {
 }
 
 func (d *Daemon) admit(now time.Time) {
+	if d.updating.Load() {
+		return // restarting as a newer version in a moment: nothing starts on this guard
+	}
 	c := d.cfg
 	ram, vram := d.headroom(now)
 

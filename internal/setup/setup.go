@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 )
@@ -368,7 +369,38 @@ func tomlServers(path, exe string, add bool) error {
 	if _, has := servers["firefighter"]; has != add {
 		return fmt.Errorf("%s: couldn't edit the firefighter entry cleanly, left untouched", path)
 	}
+	// Everything else must be exactly as it was: a line that only looks like a table header (inside
+	// a multiline string, say) must not have cut the human's settings (review 11/20).
+	var before map[string]any
+	if _, err := toml.Decode(string(b), &before); err == nil {
+		if !reflect.DeepEqual(withoutFirefighter(before), withoutFirefighter(check)) {
+			return fmt.Errorf("%s: editing the firefighter entry would change other settings, left untouched", path)
+		}
+	}
 	return writeFile(path, []byte(s))
+}
+
+// withoutFirefighter is a decoded config.toml minus mcp_servers.firefighter (and an mcp_servers
+// table left empty by that), for comparing the rest.
+func withoutFirefighter(m map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range m {
+		out[k] = v
+	}
+	if servers, ok := out["mcp_servers"].(map[string]any); ok {
+		rest := map[string]any{}
+		for k, v := range servers {
+			if k != "firefighter" {
+				rest[k] = v
+			}
+		}
+		if len(rest) == 0 {
+			delete(out, "mcp_servers")
+		} else {
+			out["mcp_servers"] = rest
+		}
+	}
+	return out
 }
 
 // ---- start at logon -----------------------------------------------------------------------------
