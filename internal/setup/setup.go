@@ -31,6 +31,8 @@ This PC's CPU, GPU and RAM are shared by several AI agents and a human who alway
 - ` + "`--minutes`" + ` is a lease: give your high-end guess. Past 1.25x it is billed 2x and preempted first unless you run ` + "`firefighter extend <id> <min>`" + `.
 - Every reply ends with ` + "`do: ...`" + `. Follow it. Add ` + "`--urgent`" + ` only when the human is waiting on the result (2x price); ` + "`--spot`" + ` for work that can wait (1/3 price, paused first).
 - Tell the human the start time it shows. Don't run heavy work outside it or change its config: outside work is found, billed 1.5x and preempted first.
+- Every ` + "`docker run`" + `, even a 10-second look inside an image, goes through it too: ` + "`firefighter run --quick -- docker run --rm <image> ls /x`" + ` (starts at once when RAM allows; the file cache it read is given back after). A big image read outside it fills RAM for minutes.
+- A waiting job's ` + "`--ram`/`--vram`/`--minutes`" + ` off? ` + "`firefighter amend <id> --vram GB`" + ` keeps its place; don't cancel and resubmit.
 - Heavy work later: ` + "`firefighter plan \"<what>\" --when HH:MM --minutes N --gpu 90`" + `. Long GPU loops: ` + "`firefighter protocol`" + `.
 ` + end + "\n"
 

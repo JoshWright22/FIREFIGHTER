@@ -798,6 +798,17 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	if d.backoff == nil {
 		d.backoff = map[string]backoff{}
 	}
+	if j.Quick && (j.container != "" || strings.Contains(strings.ToLower(j.Command), "docker")) && d.cfg.Reserve.ReclaimVMCache {
+		// A quick look into an image (docker run --rm img ls) reads it into the WSL VM's file cache,
+		// GBs no one needs afterwards (11/20: three such reads outside firefighter each held GBs).
+		logf("%s: quick container job done; dropping the WSL/Docker VM's file cache", j.Name)
+		name := d.vm.Name
+		go func() {
+			if err := sysinfo.ReclaimVM(name); err != nil {
+				logf("RAM: the VM's cache could not be dropped: %v", err)
+			}
+		}()
+	}
 	if outcome == "evicted" {
 		d.backoff[id] = backoff{n: d.backoff[id].n + 1, at: now, why: j.reason}
 	} else {

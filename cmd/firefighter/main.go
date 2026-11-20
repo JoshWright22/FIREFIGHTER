@@ -141,11 +141,11 @@ func main() {
 // ---- run --------------------------------------------------------------------------------------------
 
 type runFlags struct {
-	gpu, spot, detach, quiet, urgent, net bool
-	minutes, vram, ram                    float64
-	bid                                   int
-	name, project, evict, vendor          string
-	id, log                               string
+	gpu, spot, detach, quiet, urgent, net, quick bool
+	minutes, vram, ram                           float64
+	bid                                          int
+	name, project, evict, vendor                 string
+	id, log                                      string
 }
 
 func parseRun(args []string) (*runFlags, []string, error) {
@@ -160,6 +160,7 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	fs.Float64Var(&r.ram, "ram", 0, "peak RAM GB")
 	fs.IntVar(&r.bid, "bid", 5, "1-10; prefer --urgent (10) or the default (5)")
 	fs.BoolVar(&r.urgent, "urgent", false, "the human is waiting on the result: starts sooner, costs 2x")
+	fs.BoolVar(&r.quick, "quick", false, "a short look (under ~3 min), e.g. `docker run --rm img ls`: starts at once when RAM allows; the WSL/Docker VM's file cache it read is given back after")
 	fs.BoolVar(&r.net, "net", false, "network-heavy (downloads, uploads); known installers and downloads are detected")
 	fs.StringVar(&r.vendor, "gpu-vendor", "", "GPUs the job can use: nvidia, amd, intel or any (default: NVIDIA if present)")
 	fs.StringVar(&r.name, "name", "", "job name")
@@ -175,6 +176,12 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	}
 	if r.urgent {
 		r.bid = 10
+	}
+	if r.quick && r.minutes == 0 {
+		r.minutes = 2
+	}
+	if r.quick && r.minutes > 3 {
+		return nil, nil, errors.New("--quick is for looks under 3 minutes; give real work a --minutes lease instead")
 	}
 	switch strings.ToLower(r.vendor) {
 	case "", "nvidia", "amd", "intel", "any":
@@ -307,6 +314,9 @@ func detachArgs(r *runFlags, argv []string) []string {
 	if r.net {
 		out = append(out, "--net")
 	}
+	if r.quick {
+		out = append(out, "--quick")
+	}
 	if r.vram > 0 {
 		out = append(out, "--vram", fmt.Sprint(r.vram))
 	}
@@ -357,7 +367,7 @@ func run(args []string) (int, error) {
 	}
 	argv, container := dockerize(argv, r.id)
 	t := policy.Ticket{ID: r.id, Project: r.project, Name: r.name, Cwd: cwd, Command: strings.Join(argv, " "), CmdHash: hashCmd(argv),
-		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, ClientPID: os.Getpid(), WantVendor: r.vendor, Net: r.net || netCommand(argv), NetAuto: !r.net && netCommand(argv)}
+		GPU: r.gpu, VRAMGB: r.vram, RAMGB: r.ram, Minutes: r.minutes, Bid: r.bid, Evict: r.evict, Spot: r.spot, Quick: r.quick, ClientPID: os.Getpid(), WantVendor: r.vendor, Net: r.net || netCommand(argv), NetAuto: !r.net && netCommand(argv)}
 	for attempt := 1; ; attempt++ {
 		code, requeue, err := turn(c, t, argv, container, r.quiet)
 		if err != nil || !requeue {

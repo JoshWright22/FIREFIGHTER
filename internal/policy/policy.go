@@ -44,7 +44,8 @@ type Ticket struct {
 	// WantVendor: which GPUs the job can use: nvidia | amd | intel | any. Empty: NVIDIA cards when
 	// the machine has any (most GPU code is CUDA), else any.
 	WantVendor string `json:"want_vendor,omitempty"`
-	Net        bool   `json:"net,omitempty"`      // network-heavy (downloads, uploads, installs)
+	Net        bool   `json:"net,omitempty"`
+	Quick      bool   `json:"quick,omitempty"`    // a short look (docker run --rm image ls): the VM's file cache is dropped after      // network-heavy (downloads, uploads, installs)
 	NetAuto    bool   `json:"net_auto,omitempty"` // Net was detected from the command, not declared
 
 	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: declared, or learned from the command's past runs (usage.PeakNeed)

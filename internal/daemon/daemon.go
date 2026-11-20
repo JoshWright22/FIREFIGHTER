@@ -735,7 +735,9 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		if j.container != "" {
 			for _, o := range d.others {
 				if o.ID != "" && strings.HasPrefix(j.container, o.ID) {
-					j.ramGB, j.cpuNow = o.MemGB, o.CPU/100
+					// The container's memory lives in the WSL/Docker VM, outside the job's process
+					// tree: it adds to what the job's own processes hold (a driver script, the CLI).
+					j.ramGB, j.cpuNow = m.ramGB+o.MemGB, o.CPU/100
 				}
 			}
 		}
