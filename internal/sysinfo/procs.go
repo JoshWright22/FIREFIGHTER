@@ -267,6 +267,16 @@ func DescendantOf(pid, ancestor int) bool {
 }
 
 // Cwd of a process, "" if unknown.
+// Cmdline is a process's command line ("" if gone or unreadable).
+func Cmdline(pid int) string {
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return ""
+	}
+	c, _ := p.Cmdline()
+	return c
+}
+
 func Cwd(pid int) string {
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {

@@ -1045,7 +1045,7 @@ type Status struct {
 func (d *Daemon) status() Status {
 	now := time.Now()
 	vt, vu := d.snap.VRAMTotal()
-	s := Status{Time: now, User: d.user, Plans: d.st.Plans, Foreign: d.foreign, Docker: d.others, GPUs: d.snap.GPUs,
+	s := Status{Time: now, User: d.user, Plans: d.st.Plans, Foreign: d.foreign, Docker: d.outsideContainers(), GPUs: d.snap.GPUs,
 		ConfigErr: d.cfgErr, Budgets: map[string]float64{},
 		Reserve: map[string]float64{"cpus": d.res.CPUs, "ram_pct": d.res.RAMPct, "vram_gb": d.res.VRAMGB},
 		Machine: map[string]float64{"cpus": float64(d.snap.CPUs), "cpu_busy": round1(d.snap.CPUBusy), "user_cpus": round1(d.busyUser),
@@ -1368,4 +1368,21 @@ func memSize(v string) float64 {
 		return 0
 	}
 	return n * mult
+}
+
+// outsideContainers are the containers no job owns: the human's (or an agent's run outside firefighter).
+func (d *Daemon) outsideContainers() []sysinfo.Container {
+	var out []sysinfo.Container
+	for _, c := range d.others {
+		mine := false
+		for _, j := range d.jobs {
+			if j.container != "" && j.State != "done" && strings.HasPrefix(j.container, c.ID) {
+				mine = true
+			}
+		}
+		if !mine {
+			out = append(out, c)
+		}
+	}
+	return out
 }

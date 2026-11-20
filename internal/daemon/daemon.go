@@ -159,6 +159,7 @@ type Daemon struct {
 	dockerQ       chan []string      // docker CLI calls, run in order (a late pause must not follow its unpause)
 	graphics      map[string]float64 // non-job 3D-engine users -> % (games, video)
 	others        []sysinfo.Container
+	seenCtr       map[string]bool // containers already looked at for an owner job
 	notify        chan struct{}
 	rng           *rand.Rand
 	harvest       struct {
@@ -471,13 +472,132 @@ func (d *Daemon) refreshDocker(now time.Time) {
 	}
 	d.docking.Store(true)
 	d.dockerAt = now
+	// The docker/podman CLIs inside running jobs, read here (not under the lock): a container a
+	// job's own script starts (run_matrix.py -> docker run) is that job's, not the human's.
+	clis := map[string][]string{} // job id -> the pids of its docker/podman CLIs
+	d.mu.Lock()                   // called from the loop outside the lock
+	for _, j := range d.running() {
+		if j.adopted {
+			continue
+		}
+		for p := range j.pids {
+			n := strings.TrimSuffix(strings.ToLower(sysinfo.Name(p)), ".exe")
+			if n == "docker" || n == "podman" {
+				clis[j.ID] = append(clis[j.ID], strconv.Itoa(p))
+			}
+		}
+	}
+	d.mu.Unlock()
 	go func() {
 		cs := sysinfo.Containers()
+		lines := map[string][]string{}
+		for id, pids := range clis {
+			for _, ps := range pids {
+				p, _ := strconv.Atoi(ps)
+				if cl := sysinfo.Cmdline(p); isDockerRun(cl) {
+					lines[id] = append(lines[id], cl)
+				}
+			}
+		}
 		d.mu.Lock()
 		d.others = cs
+		d.adoptContainers(cs, lines)
 		d.mu.Unlock()
 		d.docking.Store(false)
 	}()
+}
+
+// isDockerRun says whether a command line is `docker run` / `podman run` (or create).
+func isDockerRun(cl string) bool {
+	f := strings.Fields(strings.ToLower(cl))
+	for i, a := range f {
+		b := strings.Trim(strings.TrimSuffix(filepath.Base(strings.Trim(a, `"`)), ".exe"), `"`)
+		if (b == "docker" || b == "podman") && i+1 < len(f) {
+			for _, x := range f[i+1:] {
+				if x == "run" || x == "create" {
+					return true
+				}
+				if !strings.HasPrefix(x, "-") {
+					return false
+				}
+			}
+		}
+	}
+	return false
+}
+
+// adoptContainers gives each newly seen container to the running job whose own `docker run` CLI
+// started it: the job's RAM then includes the container's (so the RAM ladder sees what the job
+// really takes, inside the WSL VM), its pause and kill reach the container, and a container whose
+// --memory is above the job's reservation is held to it (half again over the job's need, never
+// under what it uses now). 2026-11-20: a job's script started `docker run --memory=16g`, the
+// container counted as the human's load, and free RAM sat at 0.4 GB for five minutes with "the jobs'
+// RAM is not what is missing".
+func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]string) {
+	if d.seenCtr == nil {
+		d.seenCtr = map[string]bool{}
+	}
+	live := map[string]bool{}
+	for _, c := range cs {
+		live[c.ID] = true
+		if d.seenCtr[c.ID] {
+			continue
+		}
+		owned := false
+		for _, j := range d.jobs {
+			if j.container != "" && strings.HasPrefix(j.container, c.ID) {
+				owned = true
+			}
+		}
+		if owned {
+			d.seenCtr[c.ID] = true
+			continue
+		}
+		// The owner: the one job with a live `docker run`, or the one whose CLI names the container.
+		var owner *job
+		var cl string
+		n := 0
+		for id, ls := range lines {
+			j := d.jobs[id]
+			if j == nil || j.State != "running" || len(ls) == 0 {
+				continue
+			}
+			for _, l := range ls {
+				if strings.Contains(l, "--name "+c.Name) || strings.Contains(l, "--name="+c.Name) {
+					owner, cl, n = j, l, 1
+					break
+				}
+			}
+			if n == 1 && owner == j {
+				break
+			}
+			owner, cl = j, ls[0]
+			n++
+		}
+		d.seenCtr[c.ID] = true
+		if n != 1 || owner == nil {
+			continue
+		}
+		owner.container, owner.engine = c.ID, "docker"
+		if strings.Contains(strings.ToLower(cl), "podman") {
+			owner.engine = "podman"
+		}
+		logf("%s: container %s (%s) was started by this job; it counts as the job's", owner.Name, c.Name, c.ID)
+		if dm := dockerMemGB(cl); owner.NeedRAM > 0 {
+			lim := math.Max(owner.NeedRAM*1.5, c.MemGB*1.2+0.5)
+			if dm == 0 || dm > lim+0.05 {
+				s := fmt.Sprintf("%dm", int(lim*1024))
+				d.docker(owner.engine, "update", "--memory", s, "--memory-swap", s, c.ID)
+				logf("%s: container %s limited to %.1f GB (job needs %.1f GB; the container asked %s)", owner.Name, c.Name, lim, owner.NeedRAM,
+					map[bool]string{true: "no limit", false: fmt.Sprintf("%.1f GB", dm)}[dm == 0])
+			}
+		}
+	}
+	for id := range d.seenCtr {
+		if !live[id] {
+			delete(d.seenCtr, id)
+		}
+	}
 }
 
 func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []rogue, now time.Time, dt time.Duration) {

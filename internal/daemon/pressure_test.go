@@ -433,3 +433,38 @@ func TestCriticalRAMReclaimsTheVMEvenAfterAMiss(t *testing.T) {
 		t.Fatal("the VM was never asked")
 	}
 }
+
+// 2026-11-20: a job's script (run_matrix.py) ran `docker run --memory=16g`; the container counted
+// as the human's load and the ladder couldn't act on it. A container a job's own docker CLI starts
+// is the job's, and it is held to the job's reservation.
+func TestJobStartedContainerIsTheJobs(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addRunning("t4sim iter1 stages", 0.1, now.Add(-time.Minute))
+	j.NeedRAM = 6
+	other := d.addRunning("unrelated", 1, now.Add(-time.Minute))
+	cs := []sysinfo.Container{{ID: "1a9a7107362a", Name: "keen_grothendieck", MemGB: 1.3}}
+	lines := map[string][]string{j.ID: {"docker run --rm --gpus all --cpus=4 --memory=16g --shm-size=8g img python stage.py"}}
+	d.adoptContainers(cs, lines)
+	if j.container != "1a9a7107362a" || other.container != "" {
+		t.Fatalf("container not given to the job that started it: %q / %q\n%s", j.container, other.container, daemonLog(t))
+	}
+	select {
+	case args := <-d.dockerQ:
+		if got := strings.Join(args, " "); got != "docker update --memory 9216m --memory-swap 9216m 1a9a7107362a" {
+			t.Fatalf("docker call %q", got)
+		}
+	default:
+		t.Fatal("the container was not held to the job's reservation")
+	}
+	// Two jobs with a live docker run and nothing naming the container: no guess.
+	k := d.addRunning("second", 0.1, now)
+	cs = append(cs, sysinfo.Container{ID: "bbbbbbbbbbbb", Name: "other_name", MemGB: 1})
+	d.adoptContainers(cs, map[string][]string{j.ID: {"docker run img"}, k.ID: {"docker run img2"}})
+	if k.container != "" || j.container != "1a9a7107362a" {
+		t.Fatalf("ambiguous container was assigned: %q %q", j.container, k.container)
+	}
+	if !isDockerRun(`"C:\Program Files\Docker\docker.exe" run --rm x`) || isDockerRun("docker ps") {
+		t.Fatal("isDockerRun")
+	}
+}
