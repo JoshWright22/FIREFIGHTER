@@ -202,10 +202,14 @@ func itemsFS(fsys fs.FS, labels map[string]Label) []Item {
 			return nil
 		}
 		owner := ""
-		for p := rel; p != "." && p != ""; p = parent(p) { // the deepest label covering it
+		for p := rel; p != "." && p != ""; p = parent(p) { // the deepest label covering it...
 			if l, ok := byKey[foldKey(p)]; ok {
-				owner = l
-				break
+				if owner == "" {
+					owner = l
+				}
+				if labels[l].Rank == Keep { // ...but a keep above it always wins: nothing under a
+					owner = l // kept folder is freed, whatever older labels say (review 11/20)
+				}
 			}
 		}
 		if owner == "" {
@@ -297,6 +301,11 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 		return nil, 0, err
 	}
 	defer top.Close()
+	if fi, err := top.Lstat(project); err != nil || !fi.IsDir() || fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		// A link or junction (even to another space in the root) would apply this project's
+		// labels to someone else's files (review 11/20).
+		return nil, 0, fmt.Errorf("%s's space isn't a plain folder in %s: nothing deleted", project, p.Root)
+	}
 	rt, err := top.OpenRoot(project)
 	if err != nil {
 		return nil, 0, err

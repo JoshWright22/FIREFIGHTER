@@ -52,9 +52,9 @@ func doctor(args []string) (int, error) {
 	}
 
 	// The guard.
-	c, err := client.Connect()
+	c, err := client.Connect0() // look only: never start, stop or replace the guard while diagnosing it
 	if err != nil {
-		fix("guard", "not running: "+err.Error(), "firefighter daemon (or log out and in: setup starts it at logon)")
+		fix("guard", "not running ("+err.Error()+")", "any firefighter command starts it (setup also starts it at logon)")
 	} else if st, err := c.Status(); err != nil {
 		fix("guard", "not answering: "+err.Error(), "firefighter daemon --stop, then any firefighter command starts it again")
 	} else {
@@ -67,7 +67,7 @@ func doctor(args []string) (int, error) {
 			fix("config", "the guard can't use the settings: "+st.ConfigErr, "fix "+config.Path())
 		}
 		if len(st.GPUs) == 0 {
-			note("GPU", "none found (GPU jobs can't run here)")
+			note("GPU", "no discrete graphics card found (GPU jobs are admitted against shared memory, if the machine has any)")
 		} else {
 			for _, g := range st.GPUs {
 				ok("GPU", fmt.Sprintf("%s %s, %.1f/%.1f GB VRAM free", g.Vendor, g.Name, g.VRAMGB-g.UsedGB, g.VRAMGB))

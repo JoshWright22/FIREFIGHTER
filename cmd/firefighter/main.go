@@ -351,7 +351,7 @@ func run(args []string) (int, error) {
 	if r.id == "" {
 		r.id = daemon.NewID()
 	}
-	if daemon.DockerDetached(strings.Join(argv, " ")) {
+	if daemon.DockerDetachedArgs(argv) || daemon.DockerDetached(shellInner(argv)) {
 		// The CLI would return at once and the container would run on unseen: never governed,
 		// never stopped for the human (review 11/20).
 		return 2, errors.New("docker run -d returns at once while the container keeps running outside firefighter's sight: drop -d (to not wait yourself, use firefighter run --detach)")
@@ -492,7 +492,12 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 		_, _ = c.Act(t.ID, "done", daemon.Act{Exit: 127, Project: t.Project})
 		return 127, false, err
 	}
-	release, _ := sysinfo.Contain(cmd.Process.Pid)
+	release, cerr := sysinfo.Contain(cmd.Process.Pid)
+	if cerr != nil && !quiet {
+		// It still runs (failing here would break environments that can't nest job objects), but
+		// what it starts may outlive it: say so rather than promise the whole tree (review 11/20).
+		ui.Note("couldn't put %s in a job object (%v): processes it starts may outlive it", t.Name, cerr)
+	}
 	sysinfo.Started(cmd.Process.Pid) // Windows: it started suspended, so nothing it spawns escapes the job object
 	var spare func(int) bool         // set once the job ended normally: build servers it started live on
 	defer func() { release(spare) }()
@@ -621,6 +626,24 @@ loop:
 		return code, rec.Requeue, nil
 	}
 	return code, v.Receipt != nil && v.Receipt.Requeue, nil
+}
+
+// shellInner is the command string a shell wrapper runs (sh -c "...", cmd /c "...", powershell
+// -Command "..."), or "" when argv isn't one: every MCP submit is wrapped like that.
+func shellInner(argv []string) string {
+	if len(argv) < 3 {
+		return ""
+	}
+	switch strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe") {
+	case "sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh":
+		for i, a := range argv[1 : len(argv)-1] {
+			switch strings.ToLower(a) {
+			case "-c", "/c", "/k", "-command", "-lc":
+				return strings.Join(argv[i+2:], " ")
+			}
+		}
+	}
+	return ""
 }
 
 // dockerize labels `docker run` / `podman run` so the guard can find, pause, pin and kill the container.

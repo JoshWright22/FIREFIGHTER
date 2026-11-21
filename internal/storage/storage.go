@@ -499,8 +499,11 @@ func text(s string, max int) string {
 		b.WriteRune(r)
 		n++
 	}
-	return strings.TrimSpace(b.String())
+	// Never "| do:": that is firefighter's own reply grammar, which agents are told to follow.
+	return doRe.ReplaceAllString(strings.ReplaceAll(strings.TrimSpace(b.String()), "|", "/"), "do -")
 }
+
+var doRe = regexp.MustCompile(`(?i)\bdo\s*:`)
 
 // FromConfig is the allotment firefighter.toml sets.
 func FromConfig(c config.Config) Pool {

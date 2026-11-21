@@ -265,7 +265,7 @@ func New(version string) *Daemon {
 	d.harvestQ = make(chan string, 16)
 	go func() {
 		for c := range d.harvestQ {
-			shell(c)
+			shellWait(c, 90*time.Second) // to completion (90 s at most): a start can't finish after the stop behind it, and a hung one can't hold the stop for long
 		}
 	}()
 	// The harvester's state isn't known after a restart: stop it; it restarts after the idle wait.
@@ -376,7 +376,11 @@ func (d *Daemon) release() {
 		_ = os.Remove(PauseFile(j.ID))
 	}
 	if d.harvest.on {
-		shell(d.cfg.Harvester.Stop)
+		stop := d.harvest.stop // the command the running harvester was started with
+		if stop == "" {
+			stop = d.cfg.Harvester.Stop
+		}
+		shellWait(stop, 30*time.Second)
 	}
 }
 
@@ -554,7 +558,10 @@ func (d *Daemon) refreshDocker(now time.Time) {
 
 // namedIn says whether a docker CLI line names its container exactly name (--name x / --name=x).
 func namedIn(cl, name string) bool {
-	f := strings.Fields(cl)
+	f, ok := DockerRunOptions(cl) // the container's own options only: a --name after the image is the program's
+	if !ok {
+		return false
+	}
 	for i, a := range f {
 		a = strings.Trim(a, `"'`)
 		if (a == "--name" && i+1 < len(f) && strings.Trim(f[i+1], `"'`) == name) || a == "--name="+name {
@@ -649,16 +656,20 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		if n == 0 {
 			continue // no job's docker CLI seen yet (just after a restart, its processes aren't measured): look again
 		}
-		d.seenCtr[c.ID] = true
 		if n != 1 || owner == nil {
+			d.seenCtr[c.ID] = true
 			continue // two jobs could have started it: no guess
 		}
 		// The container must have been created after the job's docker run started (Review 11/20: the
 		// human's database, already running, was otherwise guessed to be the job's and capped, paused
 		// or killed with it). Without an exact --name match it must also be the only such container.
 		start := since[owner.ID]
-		if !c.Created.IsZero() && !start.IsZero() && c.Created.Before(start.Add(-2*time.Second)) {
-			continue
+		if c.Created.IsZero() || start.IsZero() {
+			continue // not known yet (docker inspect or the process start time missed): look again next scan
+		}
+		d.seenCtr[c.ID] = true
+		if c.Created.Before(start.Add(-2 * time.Second)) {
+			continue // older than the job's docker run: never the job's
 		}
 		if !byName {
 			if start.IsZero() || c.Created.IsZero() {
@@ -2313,6 +2324,24 @@ func shellOK(cmd string, limit time.Duration) bool {
 	case <-time.After(limit):
 		_ = c.Process.Kill()
 		return false
+	}
+}
+
+// shellWait runs cmd and waits for it to finish (at most limit).
+func shellWait(cmd string, limit time.Duration) {
+	if cmd == "" {
+		return
+	}
+	argv := []string{"sh", "-c", cmd}
+	if runtime.GOOS == "windows" {
+		argv = []string{"cmd", "/c", cmd}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	c := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	sysinfo.PrepareBackground(c)
+	if err := c.Run(); err != nil && ctx.Err() != nil {
+		logf("shell %q: still running after %s; moved on", cmd, limit)
 	}
 }
 

@@ -59,5 +59,6 @@ cooperative agents, not a sandbox.
 - Not a sandbox: an agent with your shell can do anything you can. FIREFIGHTER makes the polite
   path the cheap one and catches the careless one; it doesn't contain a hostile one.
 - Windows: a job's whole process tree is in a job object, so nothing it starts outlives it by
-  accident. Shared build servers on the `guard.keep_alive` list (MSBuild nodes, VBCSCompiler, ...)
+  accident. If Windows refuses the job object (rare: some sandboxes), the job still runs and the
+  receipt says what it starts may outlive it. Shared build servers on the `guard.keep_alive` list (MSBuild nodes, VBCSCompiler, ...)
   are spared when the job ends normally; if its client is killed, they go with it.

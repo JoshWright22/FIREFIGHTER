@@ -110,16 +110,30 @@ jobs:
         with:
           name: binaries
           path: dist
-      - name: each bundle carries goreleaser's binary, byte for byte (npm code packed it)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: src           # build.mjs and its inputs (icon, LICENSE); it imports only node: modules
+      # npm code packed the bundles in a job without a write token. Before signing anything, this job
+      # stages the same folders itself (plain Node, no dependencies) and requires every bundle to hold
+      # exactly those files, byte for byte: the binary, but also manifest.json (what the MCP host
+      # launches), the icon and the license, and nothing else (review 11/20).
+      - name: each bundle is exactly what build.mjs stages from goreleaser's binaries
         run: |
           set -eu
+          # artifacts.json paths are relative to the repo build.mjs runs from: the binaries go under it
+          cp -r dist src/dist
+          node src/integrations/mcpb/build.mjs stage "${GITHUB_REF_NAME#v}" "$PWD/src/dist"
           for b in firefighter_*.mcpb; do
-            os_arch=${b#firefighter_}; os_arch=${os_arch%.mcpb}; os=${os_arch%_*}; arch=${os_arch#*_}
-            exe=firefighter; [ "$os" = windows ] && exe=firefighter.exe
-            src=$(ls dist/*_"${os}"_"${arch}"*/* | head -n1)
-            want=$(sha256sum "$src" | cut -d' ' -f1)
-            got=$(unzip -p "$b" "server/$exe" | sha256sum | cut -d' ' -f1)
-            [ "$want" = "$got" ] || { echo "$b: binary differs from $src"; exit 1; }
+            d="src/dist/mcpb/${b%.mcpb}"
+            [ -d "$d" ] || { echo "$b: no staged folder $d"; exit 1; }
+            zipped=$(unzip -Z1 "$b" | grep -v '/$' | sort)
+            staged=$(cd "$d" && find . -type f | sed 's|^\./||' | sort)
+            [ "$zipped" = "$staged" ] || { echo "$b: files differ from the staged bundle"; echo "zipped: $zipped"; echo "staged: $staged"; exit 1; }
+            for f in $staged; do
+              want=$(sha256sum "$d/$f" | cut -d' ' -f1)
+              got=$(unzip -p "$b" "$f" | sha256sum | cut -d' ' -f1)
+              [ "$want" = "$got" ] || { echo "$b: $f differs from the staged copy"; exit 1; }
+            done
             echo "$b ok"
           done
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2

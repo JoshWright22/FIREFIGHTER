@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,8 +31,8 @@ func ProjectOf(dir string) string {
 
 // worktreeMain is the main checkout of a linked worktree's .git file ("" if it isn't one).
 func worktreeMain(gitFile string) string {
-	b, err := os.ReadFile(gitFile)
-	if err != nil || len(b) > 4096 {
+	b := readSmall(gitFile)
+	if b == nil {
 		return ""
 	}
 	line := strings.TrimSpace(strings.SplitN(string(b), "\n", 2)[0])
@@ -48,9 +49,47 @@ func worktreeMain(gitFile string) string {
 	if i <= 0 {
 		return "" // a submodule (.git/modules/...) or something else: the folder's own name
 	}
+	// git's own back-pointer: <main>/.git/worktrees/<name>/gitdir names this .git file. A stray or
+	// made-up .git file doesn't, and then the folder's own name counts (review 11/20).
+	back := readSmall(filepath.Join(filepath.FromSlash(p), "gitdir"))
+	if back == nil {
+		return ""
+	}
+	bp := strings.TrimSpace(string(back))
+	if !filepath.IsAbs(bp) {
+		bp = filepath.Join(filepath.FromSlash(p), bp)
+	}
+	if !sameFile(bp, gitFile) {
+		return ""
+	}
 	main := filepath.FromSlash(p[:i])
 	if b := filepath.Base(main); b == "." || b == ".." || b == string(filepath.Separator) || filepath.Dir(main) == main {
 		return ""
 	}
 	return main
+}
+
+// readSmall reads a small regular file (nil for anything else: a FIFO or device would block, and a
+// big file isn't git metadata).
+func readSmall(path string) []byte {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > 4096 {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 4096))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func sameFile(a, b string) bool {
+	fa, err1 := os.Stat(a)
+	fb, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(fa, fb)
 }

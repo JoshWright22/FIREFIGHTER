@@ -81,7 +81,12 @@ func dockerRunAt(f []string) int {
 // `--memory=64m` after the image belongs to the program inside. ok is false when the command runs
 // no container.
 func DockerRunOptions(command string) (opts []string, ok bool) {
-	f := strings.Fields(command)
+	return DockerRunArgs(strings.Fields(command))
+}
+
+// DockerRunArgs is DockerRunOptions on an argv that is still split as the OS will pass it (an
+// option value with spaces stays one argument; review 11/20).
+func DockerRunArgs(f []string) (opts []string, ok bool) {
 	at := dockerRunAt(f)
 	if at < 0 {
 		return nil, false
@@ -96,7 +101,12 @@ func DockerRunOptions(command string) (opts []string, ok bool) {
 // DockerDetached says whether a command's docker run starts its container detached (-d): the CLI
 // would return at once while the work runs on, out of firefighter's sight.
 func DockerDetached(command string) bool {
-	opts, ok := DockerRunOptions(command)
+	return DockerDetachedArgs(strings.Fields(command))
+}
+
+// DockerDetachedArgs is DockerDetached on an argv as the OS passes it.
+func DockerDetachedArgs(argv []string) bool {
+	opts, ok := DockerRunArgs(argv)
 	if !ok {
 		return false
 	}

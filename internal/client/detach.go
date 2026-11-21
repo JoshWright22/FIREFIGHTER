@@ -31,7 +31,7 @@ func DetachedID(id string, runArgs []string, cwd string) (string, string, error)
 	if err := os.MkdirAll(filepath.Dir(log), 0o700); err != nil {
 		return "", "", err
 	}
-	f, err := os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) // append: a retried request id must never wipe the running job's log
 	if err != nil {
 		return "", "", err
 	}

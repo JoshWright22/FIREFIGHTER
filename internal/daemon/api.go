@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -661,6 +662,11 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 				fail(w, http.StatusForbidden, "container "+a.Container+" isn't labeled firefighter.job="+j.ID)
 				return
 			}
+			if j.container != "" && !strings.HasPrefix(full, j.container) && !strings.HasPrefix(j.container, full) {
+				// Write-once: a job's container is never swapped for another one (review 11/20).
+				fail(w, http.StatusConflict, "job "+id+" already has its container")
+				return
+			}
 			if j.State == "done" || !j.killedAt.IsZero() {
 				d.docker(a.Engine, "kill", full) // stopped while we looked: its container goes too
 				fail(w, http.StatusConflict, "job "+id+" was stopped")
@@ -668,7 +674,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			}
 			// Later pause/kill calls use the full id: a name or prefix could point at another
 			// container once this one is gone.
-			j.container, j.engine = full, a.Engine
+			j.container, j.engine, j.ctrSeen = full, a.Engine, ""
 			// A container whose --memory is above what was reserved for it is held to the
 			// reservation: past it, the container's own OOM killer acts, not Windows' paging.
 			// One with no --memory at all could otherwise grow until Windows pages (review 11/20).
@@ -1484,7 +1490,16 @@ func cleanText(s string, max int) string {
 		b.WriteRune(r)
 		n++
 	}
-	return strings.TrimSpace(b.String())
+	return Defang(strings.TrimSpace(b.String()))
+}
+
+var doRe = regexp.MustCompile(`(?i)\bdo\s*:`)
+
+// Defang keeps agent-written text (names, plans, notes) from posing as firefighter's own reply
+// grammar when it is shown to other agents: replies end with "| do: <next step>", and the server
+// tells agents to follow it. A "|" becomes "/" and "do:" becomes "do -" (review 11/20, OWASP LLM01).
+func Defang(s string) string {
+	return doRe.ReplaceAllString(strings.ReplaceAll(s, "|", "/"), "do -")
 }
 
 // callerPID finds the local process on the other end of a request's TCP connection (0 if unknown).

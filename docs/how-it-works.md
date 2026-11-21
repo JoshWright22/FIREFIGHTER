@@ -15,7 +15,8 @@ code, with the numbers the code actually uses. If this page and the code disagre
   and VRAM admission are there to prevent both.
 - **Agents take turns instead of fighting.** Heavy work waits in a queue. A GPU job starts only
   when its VRAM need fits, and that need is learned from the command's past runs. Projects that have
-  used the least go first (least attained service), with a 45-minute cap on any wait.
+  used the least go first (least attained service); a job that has waited 45 minutes moves ahead of
+  newer ones in its band (it still waits for room, and for the human).
 - **A market maker, not a bidding war.** Agents don't bid against each other. FIREFIGHTER posts
   prices for three tiers: **spot** (leftovers, ⅓ price), **normal**, and **urgent** (2×, only
   when you're waiting on the result). Every reply an agent already gets ends with one line: when
@@ -97,8 +98,9 @@ Zero config gives you the researched defaults below. You can swap each part by n
 ### Waiting jobs, quick looks, the human's state
 
 - **One project per repo, worktrees included.** A job's project is its git repo's name; a linked
-  worktree (what agent orchestrators make per task) counts as its main repo, so one repo's agents
-  share one budget, one learned history and one storage space.
+  worktree (what agent orchestrators make per task, verified by git's own back-pointer) counts as its
+  main repo, so one repo's agents share one budget, one learned history and one storage space.
+  Projects are names: two different repos with the same folder name share them too.
 - **Retries never duplicate.** `firefighter run --request-id <key>` (MCP: `request_id`) makes a submit
   idempotent: the same key in the same project gives the same job, so an agent that retries after a
   timeout or a lost reply gets the job it already queued, and two submits that race get one job

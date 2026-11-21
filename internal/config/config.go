@@ -353,6 +353,12 @@ func finite(v reflect.Value, path string) error {
 				return err
 			}
 		}
+	case reflect.Slice, reflect.Array: // time-of-use price periods and the like
+		for i := 0; i < v.Len(); i++ {
+			if err := finite(v.Index(i), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
 	case reflect.Map:
 		for _, k := range v.MapKeys() {
 			if err := finite(v.MapIndex(k), path+"."+fmt.Sprint(k.Interface())); err != nil {
@@ -387,6 +393,15 @@ func (c Config) Validate() error {
 	if c.GPU.DefaultRAMGB < 0 {
 		return fmt.Errorf("gpu.default_ram_gb can't be negative")
 	}
+	if c.GPU.DefaultVRAMGB < 0 {
+		return fmt.Errorf("gpu.default_vram_gb can't be negative (it would make every VRAM check pass)")
+	}
+	if c.GPU.VRAMMargin < 1 || c.GPU.VRAMMargin > 4 {
+		return fmt.Errorf("gpu.vram_margin must be 1-4 (it multiplies a command's learned peak VRAM)")
+	}
+	if c.GPU.PackBelowUtil < 0 || c.GPU.PackBelowUtil > 100 {
+		return fmt.Errorf("gpu.pack_below_util must be 0-100")
+	}
 	if c.Reserve.MaxCPUPct < 0 || c.Reserve.MaxCPUPct > 100 {
 		return fmt.Errorf("reserve.max_cpu_pct must be 0-100")
 	}
@@ -414,6 +429,8 @@ func Set(key, value string) error {
 		if _, err := toml.Decode(string(b), &raw); err != nil {
 			return err
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err // unreadable is not empty: writing now would drop every other setting
 	}
 	parts := strings.Split(key, ".")
 	node := raw
@@ -444,8 +461,10 @@ func Set(key, value string) error {
 func Unset(key string) error {
 	raw := map[string]any{}
 	b, err := os.ReadFile(Path())
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
+	} else if err != nil {
+		return err
 	}
 	if _, err := toml.Decode(string(b), &raw); err != nil {
 		return err
