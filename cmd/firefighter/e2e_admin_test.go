@@ -19,7 +19,7 @@ import (
 func TestForecastShowsWhatWasLearned(t *testing.T) {
 	e := newEnv(t, nil)
 	e.extra = []string{"FF_HOG_MB=300"}
-	if out, code := e.job("sleep:2500:"+filepath.Join(e.home, "s.txt"), "--minutes", "1", "--name", "hog job"); code != 0 {
+	if out, code := e.job("sleep:4000:"+filepath.Join(e.home, "s.txt"), "--minutes", "1", "--name", "hog job"); code != 0 { // long enough to be measured after filling its RAM
 		t.Fatalf("job failed:\n%s", out)
 	}
 	out, _ := e.ff("forecast")

@@ -54,6 +54,16 @@ func helper(spec string) int {
 		// barely shows any RAM (the RAM-pressure test failed on macOS runners only).
 		rng := mrand.New(mrand.NewSource(1))
 		rng.Read(hog)
+		// And keep touching it, as a real job does: macOS swaps or compresses memory a process
+		// hasn't used lately (the CI runner showed 0.2 GB resident of 600 MB).
+		go func() {
+			for {
+				for i := 0; i < len(hog); i += 4096 {
+					hog[i]++
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}()
 	}
 	f := strings.Split(spec, ":")
 	switch f[0] {
