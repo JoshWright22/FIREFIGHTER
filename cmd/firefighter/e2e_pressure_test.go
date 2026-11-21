@@ -114,6 +114,13 @@ func TestVMCacheIsReclaimedNotJobs(t *testing.T) {
 		return strings.Contains(out, "WSL/Docker VM: holds 19.0 GB")
 	})
 	e.setFake(map[string]any{"ram_avail_gb": total * 0.015, "vm_host_gb": 19.0, "vm_cache_gb": 18.0}) // under the 3% kill line
+	// The guard must have read the low RAM before the waiter is submitted: submitting admits at once
+	// against the guard's last reading (a slow ARM runner granted it on the stale one).
+	eventually(t, "the guard sees the low RAM", 15*time.Second, func() bool {
+		m, _ := e.status()["machine"].(map[string]any)
+		avail, ok := m["ram_avail_gb"].(float64)
+		return ok && avail <= total*0.02
+	})
 	waiter := e.detach("exit:0", "--minutes", "1", "--name", "waiter")
 	if w := e.mustWaitState(waiter); !strings.Contains(w, "RAM") && !strings.Contains(w, "file cache") {
 		t.Fatalf("the waiting job doesn't say it waits for RAM:\n%s", w)
