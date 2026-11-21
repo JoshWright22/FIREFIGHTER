@@ -17,11 +17,15 @@ import (
 // waitsForAway: a GPU job that needs more than its card frees beside the human's reserve would
 // only be stopped again; it gets the card at its emptiest while the human is away.
 func (d *Daemon) waitsForAway(t *policy.Ticket) bool {
+	card, _ := d.cardFor(t)
+	return d.waitsForAwayOn(t, card, d.needOn(t, card))
+}
+
+func (d *Daemon) waitsForAwayOn(t *policy.Ticket, card int, need float64) bool {
 	if d.nobodyAtKeyboard() || time.Since(t.Created).Minutes() >= d.cfg.Order.MaxWaitMinutes {
 		return false // no one to wait for, or it waited its 45 minutes
 	}
-	card, _ := d.cardFor(t)
-	return card >= 0 && d.needOn(t, card) < t.NeedVRAM-0.05
+	return card >= 0 && need < t.NeedVRAM-0.05
 }
 
 // nobodyAtKeyboard: the human is away, or input can't be read at all (a headless box, a desktop

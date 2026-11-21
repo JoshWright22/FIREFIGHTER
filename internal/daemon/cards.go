@@ -211,12 +211,27 @@ func (d *Daemon) utilOf(i int) float64 {
 // load on an otherwise empty card counts as one), and a busy card packs a second job only while
 // its smoothed utilization leaves room.
 func (d *Daemon) cardOpen(i int) bool {
+	return d.cardBlock(i) == blockNone
+}
+
+func (d *Daemon) cardBlock(i int) BlockKind {
 	c := d.cfg
 	n := d.cardJobs(i)
-	if n == 0 && d.utilOf(i) >= c.Reserve.ForeignGPUPct {
+	util := d.utilOf(i)
+	outside := n == 0 && util >= c.Reserve.ForeignGPUPct
+	if outside {
 		n = 1
 	}
-	return n < c.GPU.MaxJobs && !(n > 0 && d.utilOf(i) >= c.GPU.PackBelowUtil)
+	kind := blockNone
+	if n >= c.GPU.MaxJobs {
+		kind = blockGPUSlot
+	} else if n > 0 && util >= c.GPU.PackBelowUtil {
+		kind = blockGPUPacking
+	}
+	if outside && kind != blockNone {
+		return blockOutsideGPU
+	}
+	return kind
 }
 
 // cardSize is the VRAM of the card a job runs on (fallback: the machine's), for billing.
@@ -250,10 +265,4 @@ func (d *Daemon) needOn(t *policy.Ticket, card int) float64 {
 func (d *Daemon) cardLeft(t *policy.Ticket) float64 {
 	_, left := d.cardFor(t)
 	return left - d.res.VRAMGB
-}
-
-// jobNeed is a job's VRAM need on the card it would get (see needOn).
-func (d *Daemon) jobNeed(j *job) float64 {
-	card, _ := d.cardFor(j.Ticket)
-	return d.needOn(j.Ticket, card)
 }

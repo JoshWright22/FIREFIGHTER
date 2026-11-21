@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -12,19 +11,9 @@ import (
 // the next download may start (after the last one ends, and after the daemon starts).
 const netMeasure = 30 * time.Second
 
-// netHumanOnly: the only thing holding network jobs back is the human's measured share of the link
-// (its size is learned from peaks, so it may be too small until a download has run once).
-func (d *Daemon) netHumanOnly() bool {
-	return strings.HasPrefix(d.netWhy(), "network: the human is using")
-}
-
-// netFree says whether a network job may start now: a network turn is free, no game holds the
-// machine, and the human isn't already using much of the link.
-func (d *Daemon) netFree() bool { return d.netWhy() == "" }
-
-// netWhy says what holds a network job back ("" when nothing does). Between two downloads it waits
-// netMeasure (30 s), so the human's own traffic is measured again (it can't be told apart while one runs).
-func (d *Daemon) netWhy() string {
+// networkHold returns the reason and whether only the human's measured share holds the job back.
+// Overdue jobs may bypass that estimate: the link's size is learned and may be too small at first.
+func (d *Daemon) networkHold() (why string, humanOnly bool) {
 	c := d.cfg.Network
 	n := 0
 	for _, j := range d.jobs {
@@ -34,13 +23,13 @@ func (d *Daemon) netWhy() string {
 	}
 	switch {
 	case c.MaxJobs > 0 && n >= c.MaxJobs:
-		return "network turn: another download has it"
+		return "network turn: another download has it", false
 	case d.user == "game" && c.PauseInGame:
-		return "network: the human is gaming (latency)"
+		return "network: the human is gaming (latency)", false
 	case n == 0 && time.Since(d.netQuietFrom) < netMeasure:
-		return "network: measuring the human's own traffic first (30 s)"
+		return "network: measuring the human's own traffic first (30 s)", false
 	case d.netCap > 1 && d.netHuman > d.netCap*c.HumanBusyPct/100:
-		return fmt.Sprintf("network: the human is using %.0f of ~%.0f Mbps", d.netHuman, d.netCap)
+		return fmt.Sprintf("network: the human is using %.0f of ~%.0f Mbps", d.netHuman, d.netCap), true
 	}
-	return ""
+	return "", false
 }

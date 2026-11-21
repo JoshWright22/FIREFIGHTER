@@ -121,9 +121,11 @@ Zero config gives you the researched defaults below. You can swap each part by n
   changes a waiting job's declarations in place: same id, same waiting `firefighter run`, same place
   in line. When a job's own declaration misses by a little, its wait line says what would start it
   ("would start now with --vram 8.8 (declared 9.0): firefighter amend <id> --vram 8.8").
-- **Start estimates follow the blocker.** The schedule's time is shown when the job waits for a turn
-  or for what firefighter's running jobs hold; a back-off shows when it ends; anything else (RAM or
-  VRAM held by other programs, outside GPU work, the human's game, disk, network) shows "unknown".
+- **Start estimates follow the admission gate.** The schedule's time is shown when the job waits for
+  a turn or for resources firefighter's running or granted jobs hold. First-run spacing and back-off
+  set a minimum wait. Backfill holds follow the job at the head of the line. Unpredictable holds
+  (such as RAM or VRAM held by other programs, outside GPU work, the human's game, disk, storage,
+  or network) show "unknown".
 - **Stop reasons carry numbers.** "RAM: 2.7 GB free, 1.3 GB under the 4.0 GB floor kept for the human
   (...); the WSL/Docker VM holds 12.2 GB, 10.2 GB of it file cache". A requeued job's wait line says
   what it was stopped for and when it tries again.
