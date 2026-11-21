@@ -400,6 +400,9 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 	e.ff("config", "set", "ladder.pressure_seconds", "1")
 	e.ff("config", "set", "ladder.kill_below_ram_pct", "0.01")
 	e.ff("config", "set", "reserve.ram_shrink_seconds", "2") // settle quickly after the shortage
+	// A fixed reserve: learning would read the scripted drop in free RAM as the human's own use,
+	// grow the reserve, and leave a shortfall the job can't cover (flaky on macOS runners).
+	e.ff("config", "set", "reserve.learn", "false")
 	log := filepath.Join(e.home, "evict.txt")
 	done := make(chan string, 1)
 	go func() {
@@ -412,9 +415,9 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 		return len(r) == 1
 	})
 	time.Sleep(1500 * time.Millisecond) // its RAM has been measured
-	// 0.3 GB under the floor kept for the human: the away reserve (5%), but never under
+	// 0.3 GB under the floor kept for the human: the present reserve (8%), but never under
 	// reserve.min_free_gb (4 GB, at most 15% of RAM). A shortfall the job's 0.6 GB can cover.
-	floor := math.Max(total*0.05, math.Min(4, total*0.15))
+	floor := math.Max(total*0.08, math.Min(4, total*0.15)) // the present reserve (8%) is the larger one
 	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "ram_avail_gb": floor - 0.3})
 	if runtime.GOOS == "windows" {
 		eventually(t, "suspended and its RAM freed", 20*time.Second, func() bool { return strings.Contains(e.log(), "suspending it freed") })
