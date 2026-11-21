@@ -90,6 +90,7 @@ another project's space, also pass `force=true`.
 | `storage items [--json] [--project P]` | List a project's contents, least important first. |
 | `storage free --gb N [--upto scratch\|unranked\|useful] [--dry-run] [--project P] [--force]` | Free the least important items first, never `keep`. Defaults to `scratch`; `--dry-run` previews the selection. |
 | `storage release [--delete] [--project P] [--force]` | Give back a claim. `--delete` also removes its files. |
+| `doctor` | Check the install, PATH, the guard (running, same version), settings, each agent's rule block, GPUs, disks, Docker and agent storage. Prints the fix for each problem; exits 1 if there is any. |
 | `config [show \| set <key> <value> \| unset <key> \| presets \| path]` | Every key is in `config show` |
 | `protocol` | The pause/checkpoint helper |
 | `statusline [--json]` · `events` | One line for a status bar, or an NDJSON stream of status changes. Neither starts the guard. |
