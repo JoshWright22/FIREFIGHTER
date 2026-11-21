@@ -81,7 +81,7 @@ another project's space, also pass `force=true`.
 | `update [--check]` | On a release build, install a newer release and restart the guard. `--check` reports without installing. Release builds also check and update automatically unless `update.auto` is `false`. |
 | `forecast [--json]` | What has been learned: the human's use and reserve per state, and what each known command is expected to need on its next run (RAM, VRAM, CPUs, GPU load, disk, network, minutes) |
 | `adopt <pid> [--gpu] [--name NAME] [--minutes N] [--force]` | Govern a process that's already running. `--force` allows adoption outside the caller's agent session. |
-| `plan "<what>" --minutes N [--when now\|HH:MM] [--gpu PCT] [--vram GB] [--ram GB] [--project P]` | Announce work without reserving resources. The forecast only interprets `now` (the default) and `HH:MM`. |
+| `plan "<what>" --minutes N [--when now\|HH:MM] [--gpu PCT] [--vram GB] [--ram GB] [--project P]` | Announce work without reserving resources. The forecast reads `now` (the default), `HH:MM` and 12-hour times like `9pm`; other words are shown but not forecast. |
 | `plan [<id>] --done [--project P]` | Remove one plan by ID or all plans for the project. |
 | `harvest [earned <usd> [--through <date-or-time>] [--note TEXT] \| reset]` | Show power costs and earnings (`show` and `status` are aliases). `earned` adds income since the last report; `--through` accepts `YYYY-MM-DD` or `"YYYY-MM-DD HH:MM"` and defaults to now. `reset` clears the profit-guard trip. |
 | `storage [show\|status\|ls] [--json]` | Show the allotment and all project spaces. |

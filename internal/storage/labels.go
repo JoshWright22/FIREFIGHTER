@@ -179,6 +179,13 @@ func resolve(dir, rel string) (string, error) {
 }
 
 func items(dir string, labels map[string]Label) []Item {
+	return itemsFS(os.DirFS(dir), labels)
+}
+
+// itemsFS is items over a file system (a space opened as an os.Root: listing and deleting then go
+// through the same handle, so a space folder swapped in between can't redirect either; review
+// 11/20). Item.files are paths inside it, "/" separated.
+func itemsFS(fsys fs.FS, labels map[string]Label) []Item {
 	byPath := map[string]*Item{}
 	byKey := map[string]string{} // foldKey(label path) -> label path
 	for path, l := range labels {
@@ -190,15 +197,10 @@ func items(dir string, labels map[string]Label) []Item {
 		}
 	}
 	var bytes = map[string]int64{}
-	_ = filepath.WalkDir(dir, func(full string, e fs.DirEntry, err error) error {
+	_ = fs.WalkDir(fsys, ".", func(rel string, e fs.DirEntry, err error) error {
 		if err != nil || !e.Type().IsRegular() {
 			return nil
 		}
-		rel, err := filepath.Rel(dir, full)
-		if err != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
 		owner := ""
 		for p := rel; p != "." && p != ""; p = parent(p) { // the deepest label covering it
 			if l, ok := byKey[foldKey(p)]; ok {
@@ -220,7 +222,7 @@ func items(dir string, labels map[string]Label) []Item {
 			}
 		}
 		it.Files++
-		it.files = append(it.files, full)
+		it.files = append(it.files, rel)
 		return nil
 	})
 	out := make([]Item, 0, len(byPath))
@@ -228,7 +230,7 @@ func items(dir string, labels map[string]Label) []Item {
 		if it.Files == 0 && it.Rank == Unranked {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(path))); err != nil {
+		if _, err := fs.Stat(fsys, path); err != nil {
 			continue // a label on something already deleted
 		}
 		it.GB = math.Round(float64(bytes[path])/(1<<30)*1000) / 1000
@@ -286,10 +288,16 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 	if !p.marked() {
 		return nil, 0, fmt.Errorf("%s isn't a storage root firefighter made: nothing deleted", p.Root)
 	}
-	dir := filepath.Join(p.Root, project)
 	// Every delete goes through an os.Root on the space: a path that resolves outside it (a folder
 	// swapped for a junction or link after the walk) is refused by the OS-level lookup itself.
-	rt, err := os.OpenRoot(dir)
+	// The space is opened from the storage root's handle: a space folder that is a link or junction
+	// out of the root is refused by the open itself.
+	top, err := os.OpenRoot(p.Root)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer top.Close()
+	rt, err := top.OpenRoot(project)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -300,7 +308,7 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 			protected[foldKey(path)] = true
 		}
 	}
-	for _, it := range items(dir, g.Labels) {
+	for _, it := range itemsFS(rt.FS(), g.Labels) {
 		if freed >= gb || rankOrder(it.Rank) > rankOrder(upto) {
 			break
 		}
@@ -312,13 +320,13 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 			freed += it.GB
 			continue
 		}
-		gone, left := removeFiles(rt, dir, it.files)
+		gone, left := removeFiles(rt, it.files)
 		it.Left += left
 		it.GB = math.Round(float64(gone)/(1<<30)*1000) / 1000
 		chosen = append(chosen, it)
 		freed += float64(gone) / (1 << 30)
-		pruneEmpty(rt, dir, it.Path, protected)
-		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(it.Path))); err != nil {
+		pruneEmpty(rt, it.Path, protected)
+		if _, err := rt.Lstat(filepath.FromSlash(it.Path)); err != nil {
 			delete(g.Labels, it.Path)
 		}
 	}
@@ -329,16 +337,12 @@ func (p Pool) Free(home, project string, gb float64, upto string, dryRun bool) (
 	return chosen, freed, err
 }
 
-// removeFiles deletes plain files (full paths under dir) through rt, the space's os.Root: a path
-// that now resolves outside the space is refused by the lookup itself. It returns the bytes really
-// removed and how many files it could not remove.
-func removeFiles(rt *os.Root, dir string, files []string) (gone int64, left int) {
-	for _, file := range files {
-		rel, err := filepath.Rel(dir, file)
-		if err != nil {
-			left++
-			continue
-		}
+// removeFiles deletes plain files (paths inside the space, "/" separated) through rt, the space's
+// os.Root: a path that now resolves outside the space is refused by the lookup itself. It returns
+// the bytes really removed and how many files it could not remove.
+func removeFiles(rt *os.Root, files []string) (gone int64, left int) {
+	for _, rel := range files {
+		rel = filepath.FromSlash(rel)
 		fi, err := rt.Lstat(rel)
 		if err != nil {
 			left++
@@ -356,15 +360,13 @@ func removeFiles(rt *os.Root, dir string, files []string) (gone int64, left int)
 	return gone, left
 }
 
-// pruneEmpty removes the now-empty folders under one item (inside the space, through rt), deepest
-// first, never the space itself and never a folder labeled with a rank that is not being freed.
-func pruneEmpty(rt *os.Root, dir, item string, protected map[string]bool) {
+// pruneEmpty removes the now-empty folders under one item (through rt, the space's handle),
+// deepest first, never the space itself and never a folder at or under a label that is not being freed.
+func pruneEmpty(rt *os.Root, item string, protected map[string]bool) {
 	var dirs []string
-	_ = filepath.WalkDir(filepath.Join(dir, filepath.FromSlash(item)), func(p string, e fs.DirEntry, err error) error {
-		if err == nil && e.IsDir() {
-			if rel, err := filepath.Rel(dir, p); err == nil && rel != "." {
-				dirs = append(dirs, filepath.ToSlash(rel))
-			}
+	_ = fs.WalkDir(rt.FS(), item, func(p string, e fs.DirEntry, err error) error {
+		if err == nil && e.IsDir() && p != "." {
+			dirs = append(dirs, p)
 		}
 		return nil
 	})

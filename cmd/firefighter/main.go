@@ -461,9 +461,18 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 		// A requeued attempt reuses the name: clear the previous attempt's stopped container.
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		rm := exec.CommandContext(ctx, argv[0], "rm", "-f", container)
-		sysinfo.PrepareBackground(rm)
-		_ = rm.Run()
+		// Only a stopped one that carries this job's label, and no -f: a name alone proves nothing,
+		// and a running container is never removed from here (review 11/20).
+		ps := exec.CommandContext(ctx, argv[0], "ps", "-aq", "--filter", "label=firefighter.job="+t.ID,
+			"--filter", "name=^/?"+container+"$", "--filter", "status=exited", "--filter", "status=created")
+		sysinfo.PrepareBackground(ps)
+		if out, err := ps.Output(); err == nil {
+			if ids := strings.Fields(string(out)); len(ids) > 0 {
+				rm := exec.CommandContext(ctx, argv[0], append([]string{"rm"}, ids...)...)
+				sysinfo.PrepareBackground(rm)
+				_ = rm.Run()
+			}
+		}
 	}
 	argv = dockerGPU(argv, v.Device, v.Vendor) // a docker --gpus job goes to the card it was admitted on
 	cmd := exec.Command(argv[0], argv[1:]...)

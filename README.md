@@ -123,7 +123,7 @@ The full mechanics (the decision table, the preemption ladder, the market math) 
   pays twice the normal rate. Quotes show prices and the project's budget.
 - **It keeps itself current.** A released guard installs newer releases by itself, checked against
   the release's checksums (and signed build provenance when available and the GitHub CLI is signed
-  in), when no job is running or about to start. Set `update.auto = false` to turn this off.
+  in). It downloads in the background and restarts as the new version only when no job is running. Set `update.auto = false` to turn this off.
 - **It learns from its runs.** Measured runs tell it what a command needs (RAM, VRAM,
   CPUs, GPU load, disk, network), and your own use teaches it how much to keep free for you.
   `firefighter forecast` shows what it expects.

@@ -176,6 +176,7 @@ type Daemon struct {
 	seenCtr       map[string]bool // containers already looked at for an owner job
 	notify        chan struct{}
 	rng           *rand.Rand
+	harvestQ      chan string // harvester start/stop commands, run in order
 	harvest       struct {
 		on        bool
 		stop      string // the stop command of the harvester that was started (config can change while it runs)
@@ -259,8 +260,16 @@ func New(version string) *Daemon {
 			docker(args[0], args[1:]...)
 		}
 	}()
+	// Harvester start and stop run one at a time, in the order asked: a slow start can't finish
+	// after the stop that followed it and leave the harvester running (review 11/20).
+	d.harvestQ = make(chan string, 16)
+	go func() {
+		for c := range d.harvestQ {
+			shell(c)
+		}
+	}()
 	// The harvester's state isn't known after a restart: stop it; it restarts after the idle wait.
-	go shell(d.cfg.Harvester.Stop)
+	d.harvestDo(d.cfg.Harvester.Stop)
 	return d
 }
 
@@ -2155,7 +2164,7 @@ func (d *Daemon) harvester(now time.Time) {
 			d.harvest.on = false
 			logf("harvester: stop (no longer configured)")
 			if d.harvest.stop != "" {
-				go shell(d.harvest.stop)
+				d.harvestDo(d.harvest.stop)
 			}
 		}
 		return
@@ -2181,7 +2190,7 @@ func (d *Daemon) harvester(now time.Time) {
 			if stop == "" {
 				stop = h.Stop
 			}
-			go shell(stop)
+			d.harvestDo(stop)
 		}
 		d.harvestSelfStarted(now)
 		return
@@ -2200,10 +2209,22 @@ func (d *Daemon) harvester(now time.Time) {
 		} else {
 			logf("harvester: start (GPU idle %.0fs)", h.IdleSeconds)
 		}
-		go shell(h.Start)
+		d.harvestDo(h.Start)
 		return
 	}
 	d.harvestSelfStarted(now)
+}
+
+// harvestDo queues a harvester start or stop command (run in order, one at a time).
+func (d *Daemon) harvestDo(cmd string) {
+	if cmd == "" {
+		return
+	}
+	select {
+	case d.harvestQ <- cmd:
+	default:
+		go shell(cmd) // 16 queued already (a stuck command): don't block the loop
+	}
 }
 
 // harvestSelfStarted stops a harvester that started itself while firefighter has it off (its own
@@ -2218,7 +2239,7 @@ func (d *Daemon) harvestSelfStarted(now time.Time) {
 		defer d.harvest.probing.Store(false)
 		if shellOK(h.Running, 30*time.Second) {
 			logf("harvester: it started on its own while off; stopping it")
-			shell(h.Stop)
+			d.harvestDo(h.Stop) // in order with the loop's starts and stops
 		}
 	}()
 }

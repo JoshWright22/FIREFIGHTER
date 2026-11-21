@@ -723,3 +723,31 @@ func TestCardWithRoomBeatsEmptyFullCard(t *testing.T) {
 		t.Fatalf("picked card %d, want 1 (the one with room)", card)
 	}
 }
+
+// Review round 3 (GPT): harvester start/stop commands run one at a time in the order queued, so a
+// slow start can't land after the stop that followed it.
+func TestHarvesterCommandsRunInOrder(t *testing.T) {
+	d := testDaemon(t)
+	d.harvestQ = make(chan string, 16)
+	go func() {
+		for c := range d.harvestQ {
+			shell(c)
+		}
+	}()
+	f := filepath.Join(t.TempDir(), "order.txt")
+	for _, w := range []string{"start", "stop", "start", "stop"} {
+		d.harvestDo("echo " + w + ">>" + f)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, _ := os.ReadFile(f); strings.Count(string(b), "\n") >= 4 {
+			got := strings.Fields(string(b))
+			if strings.Join(got, ",") != "start,stop,start,stop" {
+				t.Fatalf("order %v", got)
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("commands didn't run")
+}

@@ -137,8 +137,8 @@ func TestRemoveFilesRefusesASwappedJunction(t *testing.T) {
 	base := t.TempDir()
 	space, outside := filepath.Join(base, "space"), filepath.Join(base, "outside")
 	write(t, filepath.Join(space, "tmp", "a.bin"), 10)
-	write(t, filepath.Join(outside, "a.bin"), 10)           // the human's file with the same name
-	files := []string{filepath.Join(space, "tmp", "a.bin")} // what the walk saw
+	write(t, filepath.Join(outside, "a.bin"), 10) // the human's file with the same name
+	files := []string{"tmp/a.bin"}                // what the walk saw
 	if err := os.RemoveAll(filepath.Join(space, "tmp")); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestRemoveFilesRefusesASwappedJunction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	gone, left := removeFiles(rt, space, files)
+	gone, left := removeFiles(rt, files)
 	if _, err := os.Stat(filepath.Join(outside, "a.bin")); err != nil {
 		t.Fatal("a file outside the space was deleted through a swapped-in link")
 	}
@@ -224,5 +224,33 @@ func TestKeepCoversWhatIsUnderIt(t *testing.T) {
 	}
 	if _, err := p.Release(home, "alpha", false); err == nil {
 		t.Fatal("released a space whose keep folder still exists")
+	}
+}
+
+// Review round 3 (GPT): a space folder that is itself a link or junction out of the storage root
+// is refused before anything is listed or deleted.
+func TestFreeRefusesASpaceThatLeavesTheRoot(t *testing.T) {
+	p, home := pool(t, 10, 500)
+	dir, _ := p.Claim(home, "alpha", 5, "")
+	outside := filepath.Join(t.TempDir(), "human")
+	write(t, filepath.Join(outside, "photo.jpg"), 10)
+	if _, err := p.SetLabel(home, "alpha", ".", Scratch, "x"); err == nil {
+		t.Fatal("the space itself can't be labeled")
+	}
+	os.Remove(dir)
+	var err error
+	if runtime.GOOS == "windows" {
+		err = exec.Command("cmd", "/c", "mklink", "/J", dir, outside).Run()
+	} else {
+		err = os.Symlink(outside, dir)
+	}
+	if err != nil {
+		t.Skipf("can't make a link here: %v", err)
+	}
+	if _, _, err := p.Free(home, "alpha", 100, Useful, false); err == nil {
+		t.Fatal("freed through a space that points outside the root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "photo.jpg")); err != nil {
+		t.Fatal("the human's file was deleted")
 	}
 }
