@@ -36,8 +36,8 @@ import (
 
 var version = "dev"
 
-const usage = `FIREFIGHTER: the coordinator and scheduler for unmanaged AI agents.
-Your AI agents won't set your GPU on fire. Or your CPU, your RAM, or your network.
+const usage = `FIREFIGHTER: Lets several AI coding agents share one computer without slowing it down or getting in your way.
+Agents queue their heavy jobs here; they take turns, and you always come first.
 
   firefighter run [--gpu] [--net] --minutes N [--vram GB] [--ram GB] [--urgent] [--name NAME] -- <command...>
                                  wait for a turn, run the command here, print a receipt
@@ -371,6 +371,11 @@ func run(args []string) (int, error) {
 // turn is one wait-run-receipt cycle. requeue is true when the guard evicted the job gracefully.
 func turn(c *client.Client, t *policy.Ticket, argv []string, container string, quiet bool) (int, bool, error) {
 	v, err := c.Create(daemon.Request{Ticket: *t})
+	if errors.Is(err, client.ErrTaken) { // the same --request-id raced in from another client: never a second copy
+		ui.Note("job %s is already queued by another client: waiting on it", t.ID)
+		code, werr := wait([]string{t.ID})
+		return code, false, werr
+	}
 	if err != nil {
 		return 1, false, err
 	}
@@ -469,6 +474,10 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 	cmd := exec.Command(argv[0], argv[1:]...)
 	tail := &tailBuffer{max: 64 << 10}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, teeIfPiped(os.Stdout, tail), teeIfPiped(os.Stderr, tail)
+	// The output may go through a pipe (teeIfPiped): without a delay, Wait would also wait for any
+	// process the job left holding it (a build server, `server &`), and the job would stay open past
+	// its lease (review 11/20). Its own exit is what ends the job.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(os.Environ(),
 		"FIREFIGHTER_JOB_ID="+t.ID,
 		"FIREFIGHTER_PAUSE_FILE="+daemon.PauseFile(t.ID),
@@ -578,7 +587,9 @@ loop:
 	code := 0
 	var ee *exec.ExitError
 	if errors.As(werr, &ee) {
-		code = ee.ExitCode()
+		code = exitCodeOf(ee)
+	} else if errors.Is(werr, exec.ErrWaitDelay) {
+		code = 0 // it exited ok; only something it left behind still held its output
 	} else if werr != nil {
 		code = 1
 	}

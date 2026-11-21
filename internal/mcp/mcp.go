@@ -6,6 +6,7 @@ package mcp
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -330,6 +331,8 @@ func call(name string, a map[string]any) (string, any, error) {
 			id = daemon.RequestID(projectIn(s(a, "cwd")), key)
 			if v, err := c.Get(id, "", 0); err == nil { // submitted before (a retried call): never a second copy
 				return "already submitted " + jobLine(v), v, nil
+			} else if !errors.Is(err, client.ErrNotFound) {
+				return "", nil, fmt.Errorf("couldn't check request %q: %v (nothing submitted; try again)", key, err)
 			}
 		}
 		id, _, err := client.DetachedID(id, args, s(a, "cwd"))

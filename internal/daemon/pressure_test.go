@@ -697,6 +697,7 @@ func TestDockerRunOptions(t *testing.T) {
 	}
 	for cmd, want := range map[string]bool{
 		"docker run -d img": true, "docker run -dit img": true, "docker run --detach img": true,
+		"docker --context remote run -d img": true, "docker container run -d img": true, "docker run --detach=true img": true,
 		"docker run --rm -it img": false, "docker run -e -d=1 img": false, "docker run img sh -c 'x -d'": false,
 		`"C:\Program Files\Docker\docker.exe" run -d img`: true, "docker ps -d": false,
 	} {

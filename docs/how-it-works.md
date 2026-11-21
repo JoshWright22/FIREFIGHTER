@@ -101,11 +101,16 @@ Zero config gives you the researched defaults below. You can swap each part by n
   share one budget, one learned history and one storage space.
 - **Retries never duplicate.** `firefighter run --request-id <key>` (MCP: `request_id`) makes a submit
   idempotent: the same key in the same project gives the same job, so an agent that retries after a
-  timeout or a lost reply gets the job it already queued (after Gczmy/sched's `--request-id`).
+  timeout or a lost reply gets the job it already queued, and two submits that race get one job
+  (the second waits on the first). This holds while the job's receipt is kept (48 hours). After
+  Gczmy/sched's `--request-id`.
 - **Failures say why.** A job that fails on its own gets a cause (out of VRAM, RAM or disk, a missing
   program, the network, the Docker engine, a crash), whether running it again as-is can help, and
-  the fix, from its exit code and the end of its output (after OpenPAI's job exit spec). Out of VRAM
-  or RAM, the command's learned need goes up for its next run.
+  the fix (after OpenPAI's job exit spec). It comes from the exit code (a Unix signal as 128+n, a
+  Windows crash as its NTSTATUS value) and the last 8 KB of the job's output, which firefighter
+  reads only when the output already goes to a pipe or file (agents, detached jobs; a terminal run
+  keeps its terminal). Out of VRAM, the command's learned need goes up only when the job's measured
+  peak was near what it was admitted with, and never past the card; out of RAM, its RAM need does.
 - **Amend, don't resubmit.** `firefighter amend <id> [--ram GB] [--vram GB] [--minutes N] [--urgent]`
   changes a waiting job's declarations in place: same id, same waiting `firefighter run`, same place
   in line. When a job's own declaration misses by a little, its wait line says what would start it
@@ -116,14 +121,18 @@ Zero config gives you the researched defaults below. You can swap each part by n
 - **Stop reasons carry numbers.** "RAM: 2.7 GB free, 1.3 GB under the 4.0 GB floor kept for the human
   (...); the WSL/Docker VM holds 12.2 GB, 10.2 GB of it file cache". A requeued job's wait line says
   what it was stopped for and when it tries again.
-- **Containers.** A container a job starts (directly or from its own script) is the job's (named
-  by its `--name`, or else the only container created after the job's `docker run` started; one
-  already running, like the human's database, is never guessed): its
-  memory adds to the job's in receipts and in what is learned, its VRAM (seen through the WSL VM) is
-  the card's use beyond the usual floor, and its limit is set to the job's need (its file cache
-  counts toward it). `firefighter run --quick -- docker run --rm <image> ls` is the cheap path for a
-  look inside an image: a 2-minute lease (3 at most, never extended), a short job that can start ahead of longer ones when RAM allows, and the VM's file cache is
-  dropped when it ends.
+- **Containers.** A container a job starts (directly or from its own script) counts toward the job's
+  memory in receipts and in what is learned, and its VRAM (seen through the WSL VM) is the card's use
+  beyond the usual floor. The guard only pauses, caps or stops a container it can prove is the
+  job's: one labeled `firefighter.job=<id>` (a job's script gets its id in `FIREFIGHTER_JOB_ID`;
+  `firefighter run -- docker run` adds the label itself), or one with the exact `--name` from the
+  job's own `docker run`, created after that command started. A container that only appeared while
+  the job's `docker run` was live is counted, never controlled (it could be the human's). A proven
+  container with a memory limit above the job's need, or none when the job declared `--ram`, is held
+  to the need (its file cache counts toward it). `firefighter run --quick -- docker run --rm <image> ls`
+  is the cheap path for a look inside an image: a 2-minute lease (3 at most, never extended), a short
+  job that can start ahead of longer ones when RAM allows, and the VM's file cache is dropped when it
+  ends.
 - **Hysteresis.** Stepping up (toward game) is immediate. Stepping down needs the lower state in 2 of
   3 readings 10 s apart, and a fullscreen game stays the game while it is the app in front.
 

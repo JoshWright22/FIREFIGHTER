@@ -9,6 +9,8 @@ func TestClassifyExit(t *testing.T) {
 	}{
 		{1, "RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB", "vram"},
 		{1, "torch.OutOfMemoryError: CUDA out of memory", "vram"},
+		{1, "RuntimeError: CUDA error: out of memory", "vram"},
+		{1, "zsh: killed\nOut of memory: Killed process 4242 (python)", "ram"},
 		{137, "", "ram"},
 		{1, "Traceback...\nMemoryError", "ram"},
 		{1, "OSError: [Errno 28] No space left on device", "disk"},

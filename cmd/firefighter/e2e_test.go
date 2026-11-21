@@ -64,6 +64,13 @@ func helper(spec string) int {
 		fmt.Println("helper-out")
 		n, _ := strconv.Atoi(f[1])
 		return n
+	case "leaveholder": // exit at once, leaving a child that keeps our stdout open for 30 s (a build server)
+		self, _ := os.Executable()
+		c := exec.Command(self)
+		c.Env = append(os.Environ(), "FF_HELPER=sleep:30000:"+filepath.Join(os.TempDir(), "ff-holder.txt"))
+		c.Stdout, c.Stderr = os.Stdout, os.Stderr
+		_ = c.Start()
+		return 0
 	case "cudaoom": // fail the way PyTorch does when the GPU runs out of memory
 		fmt.Fprintln(os.Stderr, "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB")
 		return 1
@@ -1272,5 +1279,19 @@ func TestRequestIDNeverQueuesTwice(t *testing.T) {
 	w, _ := st["waiting"].([]any)
 	if len(r)+len(w) != 1 {
 		t.Fatalf("want one job, got %d running %d waiting", len(r), len(w))
+	}
+}
+
+// Review round 4 (Fable): a job's leftover process holding the output pipe must not keep the job
+// open (the output is teed whenever it isn't a terminal: agents, detached jobs).
+func TestLeftoverProcessDoesNotHoldTheJob(t *testing.T) {
+	e := newEnv(t, nil)
+	start := time.Now()
+	out, code := e.job("leaveholder", "--minutes", "1", "--name", "builder")
+	if code != 0 || !strings.Contains(out, "curtain call, ok") {
+		t.Fatalf("receipt: %d\n%s", code, out)
+	}
+	if d := time.Since(start); d > 20*time.Second {
+		t.Fatalf("the job stayed open %v while its leftover held the output", d)
 	}
 }

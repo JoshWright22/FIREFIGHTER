@@ -55,7 +55,7 @@ func PrintBanner() {
 	for _, line := range strings.Split(Banner, "\n") {
 		fmt.Fprintln(os.Stderr, Paint(Hot, line))
 	}
-	fmt.Fprintln(os.Stderr, Paint(Ash, "  your AI agents won't set your GPU on fire. or your CPU, your RAM, or your network."))
+	fmt.Fprintln(os.Stderr, Paint(Ash, "  run several ai coding agents on one computer. they take turns, and you always come first."))
 }
 
 // Mark starts every firefighter line.

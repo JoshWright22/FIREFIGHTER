@@ -39,10 +39,18 @@ func worktreeMain(gitFile string) string {
 	if !ok {
 		return ""
 	}
-	p = filepath.ToSlash(strings.TrimSpace(p))
+	p = strings.TrimSpace(p)
+	if !filepath.IsAbs(p) { // git 2.48+ can write it relative to the .git file (worktree.useRelativePaths)
+		p = filepath.Join(filepath.Dir(gitFile), p)
+	}
+	p = filepath.ToSlash(filepath.Clean(p))
 	i := strings.LastIndex(p, "/.git/worktrees/")
 	if i <= 0 {
 		return "" // a submodule (.git/modules/...) or something else: the folder's own name
 	}
-	return filepath.FromSlash(p[:i])
+	main := filepath.FromSlash(p[:i])
+	if b := filepath.Base(main); b == "." || b == ".." || b == string(filepath.Separator) || filepath.Dir(main) == main {
+		return ""
+	}
+	return main
 }

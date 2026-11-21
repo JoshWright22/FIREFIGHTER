@@ -261,6 +261,12 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		clientAt = sysinfo.Created(t.ClientPID)
 	}
 	if old, ok := d.jobs[t.ID]; ok && old.State != "done" {
+		if !req.Running && old.ClientPID > 1 && t.ClientPID != old.ClientPID && sysinfo.Alive(old.ClientPID) {
+			// Another live client holds this id (two submits with one --request-id raced): answering
+			// with its job would let both clients run the command (review 11/20). Wait on it instead.
+			fail(w, http.StatusConflict, "job "+t.ID+" is already queued by another client: firefighter wait "+t.ID)
+			return
+		}
 		reply(w, d.view(old)) // re-registration after a daemon restart or a retry
 		return
 	}
@@ -913,8 +919,14 @@ func (d *Daemon) learnRun(h *History, j *job, now time.Time) {
 	add(&h.RAM, 0.05, ram, usage.RunHalfLifePeak)
 	if j.GPU {
 		vram := j.peakVRAM
-		if j.vramOOM { // it needed more than it reached, and at least what it was admitted with
-			vram = usage.OOMBump(math.Max(j.peakVRAM, j.NeedVRAM))
+		// Out of GPU memory: its need is above what it reached. Only from the measured peak, and only
+		// when that peak was near what it was admitted with (a log line alone, or an OOM the job
+		// recovered from, raises nothing), and never past the card (review 11/20).
+		if j.vramOOM && j.NeedVRAM > 0 && j.peakVRAM >= 0.8*j.NeedVRAM {
+			vram = usage.OOMBump(j.peakVRAM)
+			if t, _ := d.snap.VRAMTotal(); t > 0 {
+				vram = math.Min(vram, t)
+			}
 		}
 		add(&h.VRAM, 0.05, vram, usage.RunHalfLifePeak)
 	}

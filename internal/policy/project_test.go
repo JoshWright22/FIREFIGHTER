@@ -19,6 +19,13 @@ func TestProjectOfWorktree(t *testing.T) {
 	if got := ProjectOf(main); got != "myrepo" {
 		t.Fatalf("main checkout %q", got)
 	}
+	// a relative gitdir (git 2.48+ worktree.useRelativePaths), worktree inside the repo
+	rel := filepath.Join(main, ".claude", "worktrees", "x")
+	os.MkdirAll(rel, 0o700)
+	os.WriteFile(filepath.Join(rel, ".git"), []byte("gitdir: ../../../.git/worktrees/x\n"), 0o600)
+	if got := ProjectOf(rel); got != "myrepo" {
+		t.Fatalf("relative worktree %q, want myrepo", got)
+	}
 	sub := filepath.Join(main, "vendor", "lib")
 	os.MkdirAll(sub, 0o700)
 	os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../../.git/modules/lib\n"), 0o600)

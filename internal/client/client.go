@@ -140,6 +140,9 @@ func (c *Client) do(method, path string, body, out any) error {
 	if resp.StatusCode == 404 {
 		return ErrNotFound
 	}
+	if resp.StatusCode == 409 && path == "/v1/tickets" {
+		return fmt.Errorf("%w: %s", ErrTaken, bytes.TrimSpace(data))
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(data))
 	}
@@ -150,6 +153,9 @@ func (c *Client) do(method, path string, body, out any) error {
 }
 
 var ErrNotFound = fmt.Errorf("not found")
+
+// ErrTaken: the job id is already queued by another live client (a raced --request-id submit).
+var ErrTaken = fmt.Errorf("taken")
 
 func (c *Client) Create(req daemon.Request) (daemon.View, error) {
 	var v daemon.View

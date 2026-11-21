@@ -12,6 +12,11 @@ var dockerFlags = map[string]bool{"--detach": true, "--interactive": true, "--tt
 	"--init": true, "--read-only": true, "--publish-all": true, "--no-healthcheck": true, "--oom-kill-disable": true,
 	"--help": true, "--quiet": true, "--disable-content-trust": true, "--replace": true, "--sig-proxy": true}
 
+// dockerGlobalValued are docker/podman options before the verb that take a separate value.
+var dockerGlobalValued = map[string]bool{"--context": true, "-c": true, "--host": true, "-H": true, "--config": true,
+	"--log-level": true, "-l": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true,
+	"--connection": true, "--url": true, "--identity": true, "--root": true, "--runroot": true, "--storage-driver": true}
+
 // shortFlags are the one-letter options that take no value (-d -i -t -P -q), so a cluster like
 // -dit is all flags, and -dp 8080:80 ends in a valued one.
 const shortFlags = "ditPq"
@@ -56,6 +61,9 @@ func dockerRunAt(f []string) int {
 		}
 		j := i + 1
 		for j < len(f) && strings.HasPrefix(f[j], "-") { // global options before the verb
+			if dockerGlobalValued[f[j]] && !strings.Contains(f[j], "=") {
+				j++ // its value (docker --context x run ...)
+			}
 			j++
 		}
 		if j < len(f) && f[j] == "container" { // docker container run

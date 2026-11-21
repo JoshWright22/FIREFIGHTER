@@ -9,8 +9,11 @@ cooperative agents, not a sandbox.
   every agent. It runs as you, binds only 127.0.0.1, and
   keeps its folder private (0700/0600 on Unix).
 - It only acts on what a job's own client started (the caller is identified by its exact TCP
-  connection, not by what it claims; only that client can start the job), on containers labeled
-  for that job, and on processes adopted by you or, for its own session's work only, by an agent.
+  connection, not by what it claims; only that client can start the job), on containers proven to
+  be that job's (labeled `firefighter.job=<id>`, or named by the job's own `docker run --name` and
+  created after it started; a container that merely appeared meanwhile is only counted), and on
+  processes adopted by you or, for agent work only, by an agent (`--force` never reaches your other
+  programs).
   Ancestry and ownership checks ignore reused pids. "You" means a caller whose unbroken process
   chain reaches a terminal window (Windows Terminal, iTerm, GNOME Terminal, ...; or sshd) with no
   agent CLI, script runtime (node) or IDE in between (`guard.human_hosts`, `guard.agent_hosts`).
