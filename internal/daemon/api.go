@@ -264,14 +264,14 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	if o, ok := d.prevOpen[t.ID]; ok && (o.Client != caller || (o.ClientAt != 0 && o.ClientAt != clientAt)) && o.Client > 1 && sysinfo.Alive(o.Client) {
 		// The previous guard had this job running, and its client is still alive and will re-register:
 		// a retry that reaches the new guard first must not start a second copy (review round 5).
-		fail(w, http.StatusConflict, "job "+t.ID+" is already running under another client: firefighter wait "+t.ID)
+		fail(w, http.StatusLocked, "job "+t.ID+" is already running under another client: firefighter wait "+t.ID)
 		return
 	}
 	if old, ok := d.jobs[t.ID]; ok && old.State != "done" {
 		if !req.Running && old.ClientPID > 1 && t.ClientPID != old.ClientPID && sysinfo.Alive(old.ClientPID) {
 			// Another live client holds this id (two submits with one --request-id raced): answering
 			// with its job would let both clients run the command (review 11/20). Wait on it instead.
-			fail(w, http.StatusConflict, "job "+t.ID+" is already queued by another client: firefighter wait "+t.ID)
+			fail(w, http.StatusLocked, "job "+t.ID+" is already queued by another client: firefighter wait "+t.ID)
 			return
 		}
 		reply(w, d.view(old)) // re-registration after a daemon restart or a retry

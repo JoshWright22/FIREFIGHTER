@@ -1042,6 +1042,7 @@ func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 	e.ff("config", "set", "ladder.kill_below_ram_pct", "0.01")
 	e.ff("config", "set", "reserve.game_cool_seconds", "1")
 	e.ff("config", "set", "reserve.ram_shrink_seconds", "2")
+	e.ff("config", "set", "reserve.learn", "false") // a fixed reserve: learning reads the scripted drop as the human's and grows the shortfall past the job (flaky on macOS)
 	log := filepath.Join(e.home, "frozen.txt")
 	done := make(chan string, 1)
 	go func() {

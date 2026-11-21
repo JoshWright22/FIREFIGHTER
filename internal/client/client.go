@@ -140,7 +140,7 @@ func (c *Client) do(method, path string, body, out any) error {
 	if resp.StatusCode == 404 {
 		return ErrNotFound
 	}
-	if resp.StatusCode == 409 && path == "/v1/tickets" {
+	if resp.StatusCode == http.StatusLocked && path == "/v1/tickets" { // 423: held by another live client (not 409, a refusal)
 		return fmt.Errorf("%w: %s", ErrTaken, bytes.TrimSpace(data))
 	}
 	if resp.StatusCode >= 300 {
