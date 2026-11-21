@@ -1346,9 +1346,11 @@ func (d *Daemon) unplan(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// Naming a project is not ownership (review 11/20: any agent could remove another's plans by
-		// passing its project); only an ownerless plan (its owner forgotten in a restart) goes to
-		// whoever names it.
-		mine := human || (p.Owner > 0 && p.Owner == agent && p.OwnerAt == agentAt) || p.Owner == 0
+		// passing its project); only an ownerless plan (its owner forgotten in a restart, or exited)
+		// goes to whoever names it.
+		// A plan whose owner process has exited (a one-off script, a CI step) is ownerless too.
+		gone := p.Owner > 0 && (!sysinfo.Alive(p.Owner) || sysinfo.Created(p.Owner) != p.OwnerAt)
+		mine := human || (p.Owner > 0 && p.Owner == agent && p.OwnerAt == agentAt) || p.Owner == 0 || gone
 		if (p.ID == id || p.Project == id) && mine {
 			removed++
 			continue
