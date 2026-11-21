@@ -88,7 +88,7 @@ func TestStorageSpaces(t *testing.T) {
 	if out, _ := st("storage", "items", "--project", "alpha"); strings.Index(out, "scratch") > strings.Index(out, "keep") || !strings.Contains(out, "final numbers") {
 		t.Fatalf("items, least important first:\n%s", out)
 	}
-	if out, code := st("storage", "free", "--gb", "1", "--upto", "useful", "--project", "alpha"); code != 0 || !strings.Contains(out, "deleted big.bin (scratch") || strings.Contains(out, "results.json") {
+	if out, code := st("storage", "free", "--gb", "1", "--upto", "useful", "--project", "alpha"); code != 0 || !strings.Contains(out, `deleted "big.bin" (scratch`) || strings.Contains(out, "results.json") {
 		t.Fatalf("free: %d\n%s", code, out)
 	}
 	if !exists(filepath.Join(dir, "results.json")) || exists(filepath.Join(dir, "big.bin")) {
