@@ -62,9 +62,21 @@ func relPath(dir, path string) (string, error) {
 		}
 		path = r
 	}
-	r := filepath.ToSlash(filepath.Clean(path))
-	if r == "." || r == ".." || strings.HasPrefix(r, "../") || filepath.IsAbs(r) || strings.Contains(r, ":") {
+	// No colon at all (a drive or stream name), and no ".." part after cleaning. Checking the parts,
+	// not a prefix: on Windows Clean keeps a "./" before a part with a colon, and "./00:/../.." came
+	// out as "./.." (found by fuzzing).
+	if strings.Contains(path, ":") {
 		return "", fmt.Errorf("%s is not inside the space %s", path, dir)
+	}
+	r := filepath.ToSlash(filepath.Clean(path))
+	r = strings.TrimPrefix(r, "./")
+	if r == "." || r == "" || filepath.IsAbs(r) || strings.HasPrefix(r, "/") {
+		return "", fmt.Errorf("%s is not inside the space %s", path, dir)
+	}
+	for _, part := range strings.Split(r, "/") {
+		if part == ".." || part == "." || part == "" {
+			return "", fmt.Errorf("%s is not inside the space %s", path, dir)
+		}
 	}
 	return r, nil
 }

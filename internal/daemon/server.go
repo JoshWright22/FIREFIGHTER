@@ -150,6 +150,7 @@ func fail(w http.ResponseWriter, code int, msg string) { http.Error(w, msg, code
 // agent sends is shown to other agents and printed in the human's terminal, so it must not forge
 // lines (a fake "do:") or carry escape sequences.
 func cleanText(s string, max int) string {
+	s = Defang(s) // before cutting: "do:" -> "do -" is one longer, and the result must stay within max (found by fuzzing)
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
@@ -162,7 +163,7 @@ func cleanText(s string, max int) string {
 		b.WriteRune(r)
 		n++
 	}
-	return Defang(strings.TrimSpace(b.String()))
+	return Defang(strings.TrimSpace(b.String())) // again: removing control characters can join "do" and ":"
 }
 
 var doRe = regexp.MustCompile(`(?i)\bdo\s*:`)

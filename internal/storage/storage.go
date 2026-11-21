@@ -85,6 +85,20 @@ var reserved = regexp.MustCompile(`(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$
 // letters, digits, '.', '_' and '-', no trailing dot, never a Windows device name. Jobs and spaces
 // are matched through it, so "My Project" and its space "My-Project" are one project.
 func Name(project string) string {
+	// Cleaned until it no longer changes, so a space's name cleaned again is itself (a cut or a
+	// prefix in one pass could change it in the next; found by fuzzing).
+	n := name1(project)
+	for i := 0; i < 8; i++ {
+		m := name1(n)
+		if m == n {
+			break
+		}
+		n = m
+	}
+	return n
+}
+
+func name1(project string) string {
 	b := []rune{}
 	for _, r := range strings.TrimSpace(project) {
 		if r < 128 && (r == '.' || r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
@@ -93,15 +107,18 @@ func Name(project string) string {
 			b = append(b, '-')
 		}
 	}
-	n := strings.Trim(string(b), ".-")
-	if len(n) > 64 {
-		n = strings.TrimRight(n[:64], ".")
+	// Cut first, then trim, then prefix: cutting last could leave a trailing "-" or ".", so a name
+	// cleaned twice came out different (found by fuzzing). 61 leaves room for a "p_" prefix.
+	n := string(b)
+	if len(n) > 61 {
+		n = n[:61]
 	}
+	n = strings.Trim(n, ".-")
 	if n == "" {
 		return ""
 	}
 	if reserved.MatchString(n) {
-		n = "_" + n
+		n = "p_" + n
 	}
 	if !nameRe.MatchString(n) {
 		n = "p" + n
