@@ -400,6 +400,15 @@ func (d *Daemon) ramPressure(now time.Time, floor float64) {
 			held := func(j *job) bool { return j.ramGB >= minHoldRAM && d.ramCovers(j, need) }
 			if v := d.victim(held, true, false, need, func(j *job) float64 { return j.ramGB }); v != nil {
 				d.requestCheckpoint(v, now, why)
+			} else if now.Sub(d.ramStuckLog) > time.Minute {
+				// Say why nothing happens: stopping a job that holds less than the shortfall wouldn't
+				// end it (the human's other programs hold the rest).
+				d.ramStuckLog = now
+				most := 0.0
+				for _, j := range d.running() {
+					most = math.Max(most, j.ramGB)
+				}
+				logf("RAM: %.1f GB short of the floor, but no job's RAM would cover it (the most any job holds: %.1f GB); nothing stopped", need, most)
 			}
 		}
 	}

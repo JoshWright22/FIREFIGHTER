@@ -52,6 +52,7 @@ type Daemon struct {
 	busyHist      [3]float64           // the last readings of non-job CPU use: the reserve follows the least (a one-tick spike isn't demand)
 	busyN         int
 	ramCrit       time.Time  // since when RAM has been critically low
+	ramStuckLog   time.Time  // last "short of RAM, but no job's RAM would cover it" log line
 	ramLowLast    time.Time  // the last time RAM was under the reserve
 	ramBlocked    bool       // a waiting job lacks only RAM (admission found it so)
 	lastHold      time.Time  // jobs are suspended (and resumed) one at a time, a few seconds apart

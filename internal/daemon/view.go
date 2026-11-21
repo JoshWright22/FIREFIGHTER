@@ -73,7 +73,8 @@ type View struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name,omitempty"`
 	Project  string  `json:"project,omitempty"`
-	State    string  `json:"state"` // waiting | granted | running | done
+	State    string  `json:"state"`                // waiting | granted | running | done
+	RAMNow   float64 `json:"ram_now_gb,omitempty"` // running: the RAM it holds now, as measured
 	Band     int     `json:"band,omitempty"`
 	Position int     `json:"position,omitempty"` // in its line (GPU or CPU), 1 = next
 	ETA      string  `json:"eta,omitempty"`      // when it should start (waiting) or end (running)
@@ -140,6 +141,7 @@ func (d *Daemon) view(j *job) View {
 			}
 		}
 	case "running":
+		v.RAMNow = round1(j.ramGB)
 		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
 		v.ETA = clock(now.Add(time.Duration(left * float64(time.Minute))))
 	case "granted":

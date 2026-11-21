@@ -30,7 +30,7 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 	log := filepath.Join(e.home, "evict.txt")
 	done := make(chan string, 1)
 	go func() {
-		out, _ := e.job("pausable:8:"+log, "--minutes", "1", "--name", "evictee")
+		out, _ := e.job("pausable:20:"+log, "--minutes", "1", "--name", "evictee")
 		done <- out
 	}()
 	eventually(t, "job running", 15*time.Second, func() bool {
@@ -38,7 +38,17 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 		r, _ := st["running"].([]any)
 		return len(r) == 1
 	})
-	time.Sleep(1500 * time.Millisecond) // its RAM has been measured
+	// Its RAM has been measured (macOS reports a process's memory later than Linux and Windows; the
+	// test used to drop free RAM before the guard had seen the job's 600 MB).
+	eventually(t, "the job's RAM measured", 30*time.Second, func() bool {
+		r, _ := e.status()["running"].([]any)
+		if len(r) != 1 {
+			return false
+		}
+		m, _ := r[0].(map[string]any)
+		gb, _ := m["ram_now_gb"].(float64)
+		return gb >= 0.4
+	})
 	// 0.3 GB under the floor kept for the human: the present reserve (8%), but never under
 	// reserve.min_free_gb (4 GB, at most 15% of RAM). A shortfall the job's 0.6 GB can cover.
 	floor := math.Max(total*0.08, math.Min(4, total*0.15)) // the present reserve (8%) is the larger one
