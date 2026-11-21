@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	mrand "math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,9 +55,10 @@ var hog []byte // FF_HOG_MB: RAM the payload really holds, so memory rules have 
 func helper(spec string) int {
 	if mb, _ := strconv.Atoi(os.Getenv("FF_HOG_MB")); mb > 0 {
 		hog = make([]byte, mb<<20)
-		for i := 0; i < len(hog); i += 4096 {
-			hog[i] = 1
-		}
+		// Random bytes, not one per page: macOS compresses mostly-zero pages, and the job then
+		// barely shows any RAM (the RAM-pressure test failed on macOS runners only).
+		rng := mrand.New(mrand.NewSource(1))
+		rng.Read(hog)
 	}
 	f := strings.Split(spec, ":")
 	switch f[0] {
@@ -1280,6 +1282,7 @@ func TestRequestIDNeverQueuesTwice(t *testing.T) {
 	if len(r)+len(w) != 1 {
 		t.Fatalf("want one job, got %d running %d waiting", len(r), len(w))
 	}
+	e.ff("wait", id, "--timeout", "30") // let it finish: Windows can't delete a log a job still writes
 }
 
 // Review round 4 (Fable): a job's leftover process holding the output pipe must not keep the job
