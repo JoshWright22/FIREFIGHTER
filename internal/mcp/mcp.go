@@ -458,7 +458,7 @@ func statusText(st daemon.Status) string {
 		fmt.Fprintf(&b, "waiting #%d %s %q (%s) starts %s: %s\n", v.Position, v.ID, v.Name, v.Project, daemon.Approx(v.ETA), v.Why)
 	}
 	for _, p := range st.Plans {
-		fmt.Fprintf(&b, "plan %s: %s at %s, %.0fm\n", p.Project, p.What, p.When, p.Minutes)
+		fmt.Fprintf(&b, "plan %s: %q at %s, %.0fm\n", p.Project, p.What, p.When, p.Minutes) // quoted: another agent wrote it
 	}
 	if q, ok := st.Market["gpu"]; ok {
 		b.WriteString("market: " + q.Line())
@@ -624,9 +624,9 @@ func storageCall(a map[string]any) (string, any, error) {
 		}
 		lines := []string{fmt.Sprintf("%s: %d item(s), least important first", project, len(its))}
 		for _, it := range its {
-			l := fmt.Sprintf("%s %s %.2f GB, %d files, changed %s", it.Rank, it.Path, it.GB, it.Files, it.Modified.Format("2006-01-02"))
+			l := fmt.Sprintf("%s %q %.2f GB, %d files, changed %s", it.Rank, it.Path, it.GB, it.Files, it.Modified.Format("2006-01-02"))
 			if it.For != "" {
-				l += ": " + it.For
+				l += fmt.Sprintf(": for %q", it.For) // quoted: an agent wrote it
 			} else if it.Rank == storage.Unranked {
 				l += " | do: label it"
 			}

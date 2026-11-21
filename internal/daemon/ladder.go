@@ -25,7 +25,7 @@ func (d *Daemon) suspend(j *job) {
 		}
 	}
 	d.signalContainer(j, "pause")
-	_ = d.st.write() // now, not at the next periodic save: a crash in between would strand them
+	d.saveState() // now, not at the next periodic save: a crash in between would strand them
 }
 
 // resume thaws a job's processes.

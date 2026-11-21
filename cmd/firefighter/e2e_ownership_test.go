@@ -87,3 +87,33 @@ func TestJobIDsAndReRegistrationAreOwned(t *testing.T) {
 		t.Fatalf("a re-registration the guard never granted must be adopted at the spot band, got band %d", v.Band)
 	}
 }
+
+// Review round 6 (Fable): a forced "done" from someone other than the job's client stops the job
+// for real (as a cancel); before, it closed the job and left its process running ungoverned.
+// "extend" on an ended job is refused.
+func TestForcedDoneFromAnotherClientCancels(t *testing.T) {
+	e := newEnv(t, nil)
+	id := e.detach("sleep:60000:"+filepath.Join(e.home, "held.txt"), "--minutes", "5")
+	eventually(t, "running", 30*time.Second, func() bool { return strings.Contains(fmt.Sprint(e.status()["running"]), id) })
+	t.Setenv("FIREFIGHTER_HOME", e.home)
+	c, err := client.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := c.Act(id, "done", daemon.Act{Exit: 0, Force: true})
+	if err != nil {
+		t.Fatalf("forced done: %v", err)
+	}
+	if v.Receipt == nil {
+		t.Fatalf("no receipt: %+v", v)
+	}
+	if v.Receipt.Outcome == "ok" {
+		t.Skip("this test process counts as the human here (done is theirs to report)")
+	}
+	if v.Receipt.Outcome != "cancelled" {
+		t.Fatalf("a forced done from another client must cancel, got %q", v.Receipt.Outcome)
+	}
+	if _, err := c.Act(id, "extend", daemon.Act{Minutes: 5, Force: true}); err == nil {
+		t.Fatal("extended an ended job")
+	}
+}

@@ -387,6 +387,11 @@ func (c Config) Validate() error {
 	if !contains([]string{"karma", "daily", "none"}, c.Budget.Policy) {
 		return fmt.Errorf("budget.policy %q: use karma, daily or none", c.Budget.Policy)
 	}
+	if c.Order.MaxWaitMinutes < 5 {
+		// Overdue jobs skip the order and start even while the human is at the keyboard (human.go),
+		// so a tiny max_wait would let an agent setting turn every job into one that ignores them.
+		return fmt.Errorf("order.max_wait_minutes must be at least 5")
+	}
 	if c.GPU.MaxJobs < 1 {
 		return fmt.Errorf("gpu.max_jobs must be at least 1")
 	}

@@ -342,7 +342,7 @@ Twice a second the daemon:
 | Posted prices, not auctions, for LLM bidders | InfoBid (2025), Survival Games | Three tiers instead of a 1–10 bid. Quotes show aggregate data (start, cost, busy odds), never rival bids, and the advice never recommends outbidding. Taking a posted price is the dominant strategy. | `policy/market.go`, `daemon/market.go` |
 | Avoid herding into the same "free" hour | El Farol / congestion-game information design | Each job gets its own quiet-hour suggestion: a hash of its id picks among the near-quietest hours, skipping announced plans and hours with under 3 h of history. | `policy.QuietWindow` |
 | Mean residual life grows with age (heavy tails) | Harchol-Balter & Downey; SOAP / Gittins | Time left for a running job: before its prediction, the prediction minus its age; past it, half its age again. | `policy.Remaining` |
-| Hard bound on waiting | Starvation freedom | Anything waiting `max_wait_minutes` (45) goes next within its band. | `policy.Order` |
+| Hard bound on waiting | Starvation freedom | Anything waiting `max_wait_minutes` (45; at least 5) goes next within its band. | `policy.Order` |
 | User runtime estimates are biased | Tsafrir, Etsion & Feitelson | Prediction = declared × median of the last 5 actual/declared ratios for this command. Projects whose median is over 1.5 pay ×1.25. | `policy.Predict`, `policy.Surcharge` |
 | Leases | Themis, AgentLoom `gpu_extend` | Past 1.25 × the lease (paused time excluded) without `extend`, a job drops to spot and pays ×2. | `daemon.ladder` |
 | Idle memory tax | Waldspurger, ESX | VRAM held while GPU use is under 15% is charged ×3. | `daemon.applyMeasurements` |

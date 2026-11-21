@@ -125,7 +125,7 @@ func (d *Daemon) adoptRogues(rs []rogue, now time.Time) {
 		if dup {
 			continue
 		}
-		t := &policy.Ticket{ID: NewID(), Project: r.project, Name: fmt.Sprintf("unmanaged %s (started by %s)", r.proc.Name, r.agent),
+		t := &policy.Ticket{ID: NewID(), Project: r.project, Name: cleanText(fmt.Sprintf("unmanaged %s (started by %s)", r.proc.Name, r.agent), 120), // a program names itself: other agents read this
 			GPU: r.gpu, Minutes: 30, Bid: 5, Evict: "graceful", Band: policy.BandSpot, State: "running",
 			Created: now, Started: now, PID: r.proc.PID, ClientPID: r.proc.PID, PredMinutes: 30, NeedRAM: r.proc.RAMGB, NeedVRAM: r.vramGB}
 		j := newJob(t)

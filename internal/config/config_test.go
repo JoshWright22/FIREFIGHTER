@@ -51,6 +51,14 @@ func TestRejectsBadValues(t *testing.T) {
 	if err := Set("gpu.max_jobs", "0"); err == nil {
 		t.Fatal("max_jobs 0 accepted")
 	}
+	for _, v := range []string{"0", "1", "-5"} { // overdue jobs start while the human is at the keyboard
+		if err := Set("order.max_wait_minutes", v); err == nil {
+			t.Fatalf("max_wait_minutes %s accepted", v)
+		}
+	}
+	if err := Set("order.max_wait_minutes", "30"); err != nil {
+		t.Fatalf("a normal max_wait refused: %v", err)
+	}
 	if _, err := os.Stat(Path()); err == nil {
 		b, _ := os.ReadFile(Path())
 		if strings.Contains(string(b), "chaos") {

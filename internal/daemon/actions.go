@@ -84,10 +84,13 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "couldn't tell which process is asking (half-closed or foreign connection)")
 		return
 	}
-	if verb == "done" && j.ClientPID > 1 && caller != j.ClientPID && !callerHuman && !a.Force {
+	if verb == "done" && j.ClientPID > 1 && caller != j.ClientPID && !callerHuman {
 		// Closing a job someone else is running would leave its process ungoverned: cancel it instead.
-		fail(w, http.StatusForbidden, "only the job's own client reports it done; use cancel to stop it")
-		return
+		if !a.Force {
+			fail(w, http.StatusForbidden, "only the job's own client reports it done; use cancel to stop it")
+			return
+		}
+		verb = "cancel" // forced: stop it for real, so no process runs on outside the guard's view
 	}
 	switch verb {
 	case "start":
@@ -131,7 +134,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 		logf("%s: started pid %d after %.1f min", j.Name, a.PID, now.Sub(j.Created).Minutes())
 		d.st.Open = d.openJobs(now) // now: a daemon that dies before the next save still knows it
-		_ = d.st.write()
+		d.saveState()
 	case "container":
 		if a.Container == "" || caller < 0 || (j.ClientPID > 1 && caller != j.ClientPID) {
 			fail(w, http.StatusForbidden, "only the job's own client can name its container")
@@ -227,6 +230,10 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			logf("%s: re-bid %d", j.Name, j.Bid)
 		}
 	case "extend":
+		if j.State == "done" {
+			fail(w, http.StatusConflict, "job "+id+" has ended")
+			return
+		}
 		if a.Minutes <= 0 || a.Minutes > 24*60 {
 			fail(w, 400, "extend by 1 to 1440 minutes")
 			return

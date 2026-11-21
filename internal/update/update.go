@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,10 +49,25 @@ type Release struct {
 // scripted readings, it only works with a separate FIREFIGHTER_HOME, so nothing can point the real
 // guard at another source of programs.
 func api() (base string, test bool) {
-	if u := os.Getenv("FIREFIGHTER_UPDATE_API"); u != "" && !config.IsDefaultHome() {
+	if u := os.Getenv("FIREFIGHTER_UPDATE_API"); u != "" && !config.IsDefaultHome() && loopback(u) {
 		return strings.TrimRight(u, "/"), true
 	}
 	return "https://api.github.com", false
+}
+
+// loopback: the test override may only name a server on this machine. It skips provenance, and the
+// program it replaces is the one every home shares, so content an agent reads must not be able to
+// point it at a host on the internet (review round 6).
+func loopback(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
 }
 
 var httpc = &http.Client{Timeout: 5 * time.Minute}

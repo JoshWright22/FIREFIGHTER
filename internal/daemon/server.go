@@ -90,7 +90,7 @@ func (d *Daemon) Shutdown() {
 	d.mu.Lock()
 	d.release()
 	d.st.Open = d.openJobs(time.Now())
-	_ = d.st.write()
+	d.saveState()
 	d.mu.Unlock()
 	close(d.stop)
 }
@@ -140,8 +140,14 @@ func (d *Daemon) routes() http.Handler {
 }
 
 func reply(w http.ResponseWriter, v any) {
+	b, err := json.Marshal(v) // whole reply first: a half-written body would read as a truncated success
+	if err != nil {
+		logf("reply: %v", err)
+		fail(w, http.StatusInternalServerError, "couldn't encode the reply")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(append(b, '\n'))
 }
 
 func fail(w http.ResponseWriter, code int, msg string) { http.Error(w, msg, code) }

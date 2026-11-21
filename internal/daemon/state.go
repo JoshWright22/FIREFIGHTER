@@ -107,7 +107,13 @@ func statePath() string { return filepath.Join(config.Home(), "state.json") }
 func load() saved {
 	s := saved{Accounts: map[string]*policy.Account{}, History: map[string]*History{}, Receipts: map[string]*Receipt{}}
 	if b, err := os.ReadFile(statePath()); err == nil {
-		_ = json.Unmarshal(b, &s)
+		if err := json.Unmarshal(b, &s); err != nil {
+			// Keep the damaged file for a look and start clean, instead of running on half of it.
+			bad := statePath() + ".bad-" + time.Now().Format("20060102-150405")
+			logf("state.json is damaged (%v); moved to %s, starting with empty accounts and history", err, bad)
+			_ = os.Rename(statePath(), bad)
+			s = saved{}
+		}
 	}
 	if s.Accounts == nil {
 		s.Accounts = map[string]*policy.Account{}
@@ -131,4 +137,12 @@ func (s saved) write() error {
 		return err
 	}
 	return os.Rename(tmp, statePath())
+}
+
+// saveState writes state.json now and says so when it can't (a full disk would otherwise lose
+// accounts and receipts without a word).
+func (d *Daemon) saveState() {
+	if err := d.st.write(); err != nil {
+		logf("couldn't save state.json: %v", err)
+	}
 }

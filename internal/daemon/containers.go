@@ -335,7 +335,7 @@ func memSize(v string) float64 {
 		mult = 1.0 / (1 << 30) // bytes, as with no unit
 	}
 	n, err := strconv.ParseFloat(strings.TrimRight(v, "gmkb"), 64)
-	if err != nil || n <= 0 {
+	if err != nil || !(n > 0) || math.IsInf(n, 0) || n*mult > 1e6 { // NaN, Inf or over a petabyte: not a real size
 		return 0
 	}
 	return n * mult

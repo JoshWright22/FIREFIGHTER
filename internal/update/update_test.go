@@ -146,3 +146,13 @@ func TestExtractFindsTheProgramWhateverItsCase(t *testing.T) {
 		}
 	}
 }
+
+// Review round 6 (Fable): the test override never names a host off this machine.
+func TestOverrideIsLoopbackOnly(t *testing.T) {
+	for raw, want := range map[string]bool{"http://127.0.0.1:5555": true, "http://localhost:1": true, "http://[::1]:9": true,
+		"http://evil.example": false, "https://example.com": false, "http://127.0.0.1.evil.example": false, "::bad": false} {
+		if loopback(raw) != want {
+			t.Errorf("loopback(%q) != %v", raw, want)
+		}
+	}
+}

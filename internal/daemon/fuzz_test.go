@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -60,6 +61,18 @@ func FuzzCleanText(f *testing.F) {
 		}
 		if n := len([]rune(out)); n > 100 {
 			t.Fatalf("cleanText kept %d runes, max 100", n)
+		}
+	})
+}
+
+// Memory sizes come from agent command lines and docker inspect: always a finite size in range.
+func FuzzMemSize(f *testing.F) {
+	for _, s := range []string{"4g", "512m", "1e400g", "nan", "-0", "0x10g", "Infgb"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		if g := memSize(s); math.IsNaN(g) || math.IsInf(g, 0) || g < 0 || g > 1e6 {
+			t.Fatalf("memSize(%q) = %v", s, g)
 		}
 	})
 }

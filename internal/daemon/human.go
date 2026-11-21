@@ -70,7 +70,7 @@ func (d *Daemon) senseUser(now time.Time) {
 		why = d.gameWhy
 	}
 	if why != "" {
-		d.gameWhy, d.gameTill = why, now.Add(time.Duration(c.Reserve.GameCoolSeconds*float64(time.Second)))
+		d.gameWhy, d.gameTill = cleanText(why, 200), now.Add(time.Duration(c.Reserve.GameCoolSeconds*float64(time.Second)))
 	} else if !now.Before(d.gameTill) {
 		d.gameApp = ""
 	}
