@@ -93,6 +93,7 @@ type Daemon struct {
 	seenCtr       map[string]bool // containers already looked at for an owner job
 	notify        chan struct{}
 	rng           *rand.Rand
+	admissionDraw []*policy.Ticket
 	harvestQ      chan harvestCmd // harvester start/stop commands, run in order, one at a time
 	harvest       struct {
 		on        bool

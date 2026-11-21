@@ -113,12 +113,8 @@ func (d *Daemon) drivesOf(j *job) []string {
 	return out
 }
 
-// diskWhy says which drive under the human's disk reserve, or which storage space over its claim,
-// keeps a job from starting ("" if none).
+// diskWhy says which drive lacks room beyond the human's disk reserve ("" if none).
 func (d *Daemon) diskWhy(j *job) string {
-	if w := d.storageWhy(j); w != "" {
-		return w
-	}
 	if d.cfg.Reserve.DiskFreeGB <= 0 {
 		return ""
 	}

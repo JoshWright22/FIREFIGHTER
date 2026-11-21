@@ -245,25 +245,27 @@ func (d *Daemon) ramMargin() float64 {
 	return d.snap.RAMTotalGB * d.cfg.Reserve.RAMMarginPct / 100
 }
 
-// ramSettling says why no job may start for RAM reasons right now ("" when none): a reclaim is
+// ramSettling says why no job may start for RAM reasons right now: a reclaim is
 // running, a job is suspended to free RAM (it comes back first), or RAM was under the reserve
 // within the last reserve.ram_shrink_seconds.
-func (d *Daemon) ramSettling(now time.Time) string {
+func (d *Daemon) ramSettling(now time.Time) Decision {
 	if d.reclaim.on {
-		return "giving the WSL/Docker VM's file cache back to Windows first"
+		return blocked(blockRAM, "giving the WSL/Docker VM's file cache back to Windows first", false)
 	}
 	for _, j := range d.jobs {
 		if j.State == "running" && j.held == "ram" {
-			return j.Name + " is suspended to free RAM and resumes first"
+			return blocked(blockRAM, j.Name+" is suspended to free RAM and resumes first", false)
 		}
 	}
 	if ago := now.Sub(d.ramLowLast).Seconds(); !d.ramLowLast.IsZero() && ago < d.cfg.Reserve.RAMShrinkSeconds {
 		if ago < 1 {
-			return fmt.Sprintf("RAM is under the human's %.0f%% reserve (%.1f GB free)", d.res.RAMPct, d.snap.RAMAvailGB)
+			return blocked(blockRAM, fmt.Sprintf("RAM is under the human's %.0f%% reserve (%.1f GB free)", d.res.RAMPct, d.snap.RAMAvailGB), false)
 		}
-		return fmt.Sprintf("RAM was under the human's reserve %.0f s ago: waiting %.0f s for it to settle", ago, d.cfg.Reserve.RAMShrinkSeconds)
+		hold := blocked(blockRAM, fmt.Sprintf("RAM was under the human's reserve %.0f s ago: waiting %.0f s for it to settle", ago, d.cfg.Reserve.RAMShrinkSeconds), true)
+		hold.retryIn = dur(d.cfg.Reserve.RAMShrinkSeconds) - now.Sub(d.ramLowLast)
+		return hold
 	}
-	return ""
+	return Decision{}
 }
 
 // hold suspends a job to free a resource the human is short of. On Windows its RAM is also moved

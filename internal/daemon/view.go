@@ -101,6 +101,14 @@ type View struct {
 
 func (d *Daemon) view(j *job) View {
 	now := time.Now()
+	var decision Decision
+	if j.State == "waiting" {
+		decision = d.waitingDecision(j, now)
+	}
+	return d.viewWithDecision(j, now, decision)
+}
+
+func (d *Daemon) viewWithDecision(j *job, now time.Time, decision Decision) View {
 	a := d.peek(j.Project, now)
 	v := View{ID: j.ID, Name: j.Name, Project: j.Project, State: j.State, Band: j.Band, Tier: tierOf(j.Ticket),
 		Declared: &Declared{RAMGB: j.RAMGB, VRAMGB: j.VRAMGB, Minutes: j.Minutes, Bid: j.Bid, Spot: j.Spot},
@@ -120,25 +128,23 @@ func (d *Daemon) view(j *job) View {
 	}
 	switch j.State {
 	case "waiting":
-		// One source for every estimate: the market's schedule simulation, which counts the human
-		// holding the GPU and GPU work outside firefighter.
+		// Apply the admission hold to the market's schedule before showing either estimate.
 		q := d.quote(*j.Ticket, now)
+		for index := range q.Menu {
+			q.Menu[index].StartsIn = decision.startsIn(q.Menu[index].StartsIn)
+		}
 		own, _ := q.Tier(tierOf(j.Ticket))
-		v.Position, v.Why = own.Position, d.blocker(j)
-		v.StartsIn = d.startsIn(j, own.StartsIn, now)
+		v.Position, v.Why = own.Position, blockerText(j, decision.Text)
+		v.StartsIn, v.Quote = own.StartsIn, &q
 		v.ETA = "unknown"
 		if v.StartsIn >= 0 {
 			v.ETA = clock(now.Add(time.Duration(v.StartsIn * float64(time.Minute))))
-		}
-		v.Quote, v.Market = &q, q.Line()
-		if v.StartsIn < 0 {
+			q.Do = policy.Advise(q, j.Bid >= policy.BidUrgent)
+			v.Market = q.Line()
+		} else {
 			// The schedule's start times don't hold while something outside it blocks the job:
 			// no market line with a start in it, and the advice says what it waits for (review 11/20).
 			q.Do = "keep working meanwhile; it starts when this clears: " + v.Why
-			v.Market = ""
-			for i := range q.Menu {
-				q.Menu[i].StartsIn = -1 // unknown in the structured quote too, not the schedule's guess
-			}
 		}
 	case "running":
 		v.RAMNow = round1(j.ramGB)
@@ -158,60 +164,19 @@ func Approx(eta string) string {
 	return "~" + eta
 }
 
-// startsIn is when a waiting job should start, in minutes, from what blocks it now (-1: no
-// forecast). The market's schedule knows when firefighter's own jobs end, so its estimate holds
-// when that is what the job waits for: a turn, or RAM/VRAM those jobs hold. A back-off ends at a
-// known time. RAM or VRAM held by other programs, outside GPU work, the human's game, a full disk or
-// the network end when they end: no forecast, rather than a time that silently goes stale (11/20:
-// "starts ~8:31 AM" stayed up while the blocker went RAM, then VRAM, then OBS).
 func (d *Daemon) startsIn(j *job, sim float64, now time.Time) float64 {
-	if left := d.backoffLeft(j.ID, now); left > 0 {
-		return math.Max(sim, left.Minutes())
-	}
-	if why := d.blockedByHuman(j, now); why != "" {
-		return -1
-	}
-	if d.diskWhy(j) != "" || (j.Net && !d.netFree()) {
-		return -1
-	}
-	if j.GPU && len(d.snap.GPUs) > 0 {
-		if card, _ := d.cardFor(j.Ticket); card < 0 {
-			return -1
-		}
-		if short := d.jobNeed(j) - d.cardLeft(j.Ticket); short > 0 {
-			held := 0.0 // VRAM firefighter's running jobs hold, given back when they end
-			for _, o := range d.running() {
-				if o.GPU {
-					held += math.Max(o.vramGB, o.NeedVRAM)
-				}
-			}
-			if held < short {
-				return -1
-			}
-		}
-	}
-	ram, _ := d.headroom(now)
-	if short := j.NeedRAM + d.ramMargin() - ram; short > 0 {
-		held := 0.0
-		for _, o := range d.jobs {
-			if o.State == "running" || o.State == "granted" {
-				held += o.ramGB + d.reservedRAM(o)
-			}
-		}
-		if held < short {
-			return -1
-		}
-	}
-	if j.GPU && len(d.busyOutside()) > 0 {
-		return -1
-	}
-	return sim
+	return d.waitingDecision(j, now).startsIn(sim)
 }
 
-// blocker says what a waiting job waits for. A spot job (over budget, or --spot) waits for the same
-// things as any other, only behind in-budget jobs: its line names the real reason and adds that.
 func (d *Daemon) blocker(j *job) string {
-	why := d.blockerOf(j)
+	return blockerText(j, d.blockerOf(j))
+}
+
+func (d *Daemon) blockerOf(j *job) string {
+	return d.waitingDecision(j, time.Now()).Text
+}
+
+func blockerText(j *job, why string) string {
 	if j.WantRAM > 0 {
 		src := "its past runs point to"
 		if j.RAMGB >= j.WantRAM-0.05 {
@@ -223,36 +188,6 @@ func (d *Daemon) blocker(j *job) string {
 		why += " [spot: over budget or --spot, so it goes after in-budget jobs and is preempted first; it still runs whenever there is room]"
 	}
 	return why
-}
-
-func (d *Daemon) blockerOf(j *job) string {
-	now := time.Now()
-	ram, _ := d.headroom(now)
-	if why := d.blockedByHuman(j, now); why != "" {
-		return why
-	}
-	switch {
-	case d.diskWhy(j) != "":
-		return d.diskWhy(j)
-	case d.cpuWhy(j) != "":
-		return d.cpuWhy(j)
-	case j.GPU && len(d.snap.GPUs) > 0 && func() bool { c, _ := d.cardFor(j.Ticket); return c < 0 }():
-		return "waiting for a " + j.WantVendor + " GPU (none is reporting right now)"
-	case j.GPU && len(d.snap.GPUs) > 0 && d.jobNeed(j) > d.cardLeft(j.Ticket):
-		left := math.Max(0, d.cardLeft(j.Ticket))
-		return fmt.Sprintf("needs %.1f GB VRAM, %.1f GB free after the human's reserve", d.jobNeed(j), left) +
-			nearMiss(j.ID, "vram", d.jobNeed(j), j.VRAMGB, left)
-	case j.NeedRAM+d.ramMargin() > ram:
-		return fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ram)) + d.ramNote(now) +
-			nearMiss(j.ID, "ram", j.NeedRAM, j.RAMGB, ram-d.ramMargin())
-	case d.ramSettling(now) != "":
-		return d.ramSettling(now)
-	case j.GPU && len(d.busyOutside()) > 0:
-		return "GPU busy outside firefighter: " + strings.Join(d.busyOutside(), ", ")
-	case j.GPU:
-		return "GPU turn queue"
-	}
-	return "starting"
 }
 
 // ramNote adds, to "needs N GB RAM", what admission keeps on top and where the RAM went when the
@@ -273,23 +208,11 @@ func (d *Daemon) ramNote(now time.Time) string {
 	return note
 }
 
-// blockedByHuman: reasons a waiting job gives way that have nothing to do with room.
 func (d *Daemon) blockedByHuman(j *job, now time.Time) string {
-	switch {
-	case d.backingOff(j.ID, now):
-		b := d.backoff[j.ID]
-		why := b.why
-		if why == "" {
-			why = "for the human"
-		}
-		return fmt.Sprintf("stopped %s ago (%s); tries again in %s (stopped %d time(s) in a row; the wait doubles each time, up to 30 min)",
-			now.Sub(b.at).Round(time.Second), why, d.backoffLeft(j.ID, now).Round(time.Second), b.n)
-	case j.GPU && d.waitsForAway(j.Ticket):
-		return "needs more VRAM than the card frees beside the human's reserve: starts while the human is away"
-	case j.Net && !d.netFree():
-		return d.netWhy()
-	case j.GPU && d.gpuHeld():
-		return "the human needs the GPU (" + d.why() + ")"
+	decision := d.waitingDecision(j, now)
+	switch decision.Kind {
+	case blockBackoff, blockHuman, blockNetwork:
+		return decision.Text
 	}
 	return ""
 }
@@ -434,8 +357,14 @@ func (d *Daemon) status() Status {
 			s.Running = append(s.Running, d.view(j))
 		}
 	}
-	for _, t := range d.waiting() {
-		s.Waiting = append(s.Waiting, d.view(d.jobs[t.ID]))
+	waiting := d.waiting()
+	ctx := d.newAdmitCtx(now)
+	decisions := make(map[string]Decision, len(waiting))
+	for _, ticket := range d.gateOrder(waiting) {
+		decisions[ticket.ID] = d.gate(d.jobs[ticket.ID], ctx)
+	}
+	for _, ticket := range waiting {
+		s.Waiting = append(s.Waiting, d.viewWithDecision(d.jobs[ticket.ID], now, decisions[ticket.ID]))
 	}
 	for p := range d.st.Accounts {
 		a := d.peek(p, now)

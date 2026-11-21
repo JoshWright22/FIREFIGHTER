@@ -87,10 +87,14 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 
 // Windows free RAM is critically low because the WSL/Docker VM is full of file cache. The guard has
 // the VM give the cache back and touches no job, and a job waiting for RAM says what it waits for.
+// Learn the helper command first so first-run pacing cannot mask the RAM gate.
 func TestVMCacheIsReclaimedNotJobs(t *testing.T) {
 	v, _ := mem.VirtualMemory()
 	total := float64(v.Total) / (1 << 30)
 	e := newEnv(t, nil)
+	if out, code := e.job("sleep:1500:"+filepath.Join(e.home, "warmup.txt"), "--minutes", "1", "--name", "learn helper"); code != 0 {
+		t.Fatalf("warming up the helper: %s", out)
+	}
 	e.extra = []string{"FF_HOG_MB=600"}
 	e.ff("config", "set", "ladder.pressure_seconds", "1")
 	e.ff("config", "set", "reserve.ram_shrink_seconds", "2")

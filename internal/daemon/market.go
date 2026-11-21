@@ -252,7 +252,7 @@ func (d *Daemon) share(t *policy.Ticket) float64 {
 func (d *Daemon) fitsNow(t *policy.Ticket) bool {
 	ram, vram := d.headroom(time.Now())
 	_, vt := d.snap.MaxFreeVRAM()
-	if t.NeedRAM+d.ramMargin() > ram || d.ramSettling(time.Now()) != "" {
+	if t.NeedRAM+d.ramMargin() > ram || d.ramSettling(time.Now()).Kind != blockNone {
 		return false
 	}
 	return !t.GPU || vt == 0 || t.NeedVRAM <= vram
