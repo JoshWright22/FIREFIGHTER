@@ -23,7 +23,9 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	if !j.Started.IsZero() {
 		ran = now.Sub(j.Started).Minutes()
 	}
-	if j.State == "running" && outcome != "lost" && len(j.pids) > 0 { // nothing measured: nothing to learn
+	// Learn from any run that was measured. Not "still has pids": the process scan can drop an exited
+	// job's pids before its client reports done, and the run was then thrown away (CI, 11/20).
+	if j.State == "running" && outcome != "lost" && (j.measured || len(j.pids) > 0) {
 		h := d.st.History[histKey(j.Ticket)]
 		if h == nil {
 			h = &History{}
