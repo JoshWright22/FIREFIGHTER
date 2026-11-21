@@ -505,3 +505,27 @@ func desktopQuote(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", `$`, `\$`)
 	return `"` + r.Replace(s) + `"`
 }
+
+// RuleState is one agent instruction file's firefighter block: "current", "outdated" (an older
+// firefighter wrote it: `firefighter setup` refreshes it), or "missing".
+type RuleState struct {
+	Path, State string
+}
+
+// Rules reports the firefighter block in every installed agent's global instruction file.
+func Rules() []RuleState {
+	var out []RuleState
+	for _, f := range instructionFiles() {
+		b, err := os.ReadFile(f)
+		s := strings.ReplaceAll(string(b), "\r\n", "\n")
+		switch {
+		case err != nil || !strings.Contains(s, begin):
+			out = append(out, RuleState{f, "missing"})
+		case strings.Contains(s, strings.TrimSuffix(Instructions, "\n")):
+			out = append(out, RuleState{f, "current"})
+		default:
+			out = append(out, RuleState{f, "outdated"})
+		}
+	}
+	return out
+}
