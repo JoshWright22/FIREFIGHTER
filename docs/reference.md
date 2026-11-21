@@ -8,73 +8,111 @@ compares with other tools, the FAQ and how it's tested. For how it decides, see
 
 The one-command installers are in the [README](../README.md#install-one-command).
 
-**Requirements:** Windows 10/11, macOS 12+ or Linux, on x64 or arm64. No admin rights needed. For
-GPU numbers you need `nvidia-smi` (NVIDIA driver) or `rocm-smi` (AMD). On Linux, idle detection
-uses GNOME, KDE or another freedesktop ScreenSaver desktop, or `xprintidle`; headless machines
-count you as "present".
+**Requirements:** Releases target Windows, macOS and Linux on x64 and arm64. No admin rights needed.
+GPU reporting depends on the platform; see [Per-OS support](#per-os-support). On Linux, idle detection
+uses GNOME, a desktop with the freedesktop ScreenSaver interface, or `xprintidle` on X11. With no idle
+reading, the guard counts you as "present".
 
-**What install changes** (each config file gets a one-time `*.firefighter.bak` backup first):
+**What install changes** (setup makes a one-time `*.firefighter.bak` for existing agent files it rewrites directly):
 
 | What | Where |
 |---|---|
-| Binary | `%LOCALAPPDATA%\Programs\firefighter` (added to your user PATH) or `~/.local/bin` (added to your shell rc) |
-| Autostart | Task Scheduler task `firefighter` (falls back to the HKCU Run key) · `~/Library/LaunchAgents/dev.firefighter.plist` · `~/.config/systemd/user/firefighter.service` (falls back to XDG autostart) |
-| Agent rules | a marked block in `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` |
-| MCP server | `claude mcp add` (or `~/.claude.json`), `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.cursor/mcp.json` |
+| Binary | `%LOCALAPPDATA%\Programs\firefighter` (user PATH) or `~/.local/bin` (the Unix installer adds it to existing `.bashrc`, `.zshrc` or `.profile` files when needed) |
+| Autostart | Task Scheduler task `firefighter` (falls back to the HKCU Run key) · `~/Library/LaunchAgents/dev.firefighter.plist` · `~/.config/systemd/user/firefighter.service` on Linux when user systemd is available, otherwise `~/.config/autostart/firefighter.desktop` (needs a desktop that honors XDG autostart) |
+| Agent rules | a marked block in supported instruction files, such as `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` or `~/.gemini/GEMINI.md` |
+| MCP server | `claude mcp add` (or a direct config edit), `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.cursor/mcp.json` and other supported agent configs |
 | State | `%LOCALAPPDATA%\firefighter`, `~/Library/Application Support/firefighter`, `~/.local/state/firefighter` (or `FIREFIGHTER_HOME`) |
 
-**Verify:** open a new terminal and run `firefighter status`. **Remove:** `firefighter uninstall` undoes
-autostart, the rule blocks and the MCP entries. Then delete the binary and, if you want to forget
-budgets and history, the state folder.
+**Verify:** open a new shell on macOS or Linux to pick up any PATH change, then run `firefighter status`.
+`go install` puts the binary in Go's bin directory and reports version `dev`, which does not self-update.
+
+**Remove:** `firefighter uninstall` removes autostart, the rule blocks and the MCP entries, and stops
+the guard. It leaves the binary, PATH and state folder alone. Delete the installed binary. If you no
+longer need its bin directory on PATH, remove the installer-added entry from your Windows user PATH
+or shell startup files. Don't remove a shared entry you still use. Delete the state folder to remove
+settings, budgets and history.
 
 ## Using it
 
 ```sh
 firefighter run --gpu --minutes 40 --vram 10 --name "nanoGPT train" -- python train.py
-firefighter run --gpu --urgent --minutes 10 -- python eval.py          # you're waiting on it: 2x
-firefighter run --gpu --spot --minutes 120 -- python sweep.py          # can wait: 1/3 price
+firefighter run --gpu --urgent --minutes 10 -- python eval.py          # you're waiting on it: 2x by default
+firefighter run --gpu --spot --minutes 120 -- python sweep.py          # can wait: 1/3 price by default
 firefighter run --minutes 5 -- npm run build                          # long CPU work
 firefighter run --gpu --minutes 20 -- docker run --gpus all my/eval    # containers are governed too
 id=$(firefighter run --detach --gpu --minutes 90 -- python sweep.py) && firefighter wait "$id"
-firefighter quote --gpu --minutes 30 --vram 8                          # the market, no side effects
+firefighter quote --gpu --minutes 30 --vram 8                          # prices only, queues nothing
 firefighter bid <id> 10                                                # make a waiting job urgent (5 = normal)
 firefighter status                                                     # who's on stage until when, the queue, budgets
-firefighter plan "eval sweep" --when tonight --minutes 120 --gpu 90 --vram 12
+firefighter plan "eval sweep" --when 22:00 --minutes 120 --gpu 90 --vram 12
 firefighter extend <id> 15                                             # running long? say so
 ```
 
-`run` waits for a turn, then runs your command **in your own environment** (venv, conda, uv, nvm and
-docker all just work), passes its output and exit code through, and ends with a receipt:
+In the foreground, `run` waits for a turn, runs the command in your environment and passes its
+output through. It prints a receipt for each completed attempt and returns the final exit code:
 
 ```
 ◆ 3f2a91c0 nanoGPT train waiting #2, starts ~2:05 PM (in 22m): GPU turn queue
-   gpu 40m: start ~22m, cost ~42 of 212 (urgent ~6m ~84) (spot ~70m ~14) | busy 15/60/120m 92/35/12% | quiet 02:00 (usually 8% busy) | do: queue it at normal (starts ~22m); keep working meanwhile
+   gpu 40m: start ~22m, cost ~42 of 212 (urgent ~6m ~84) (spot ~22m ~14) | busy 15/60/120m 79/35/12% | quiet 02:00 (usually 8% busy) | do: queue it at normal (starts ~22m); keep working meanwhile
 ◆ nanoGPT train: spotlight's yours (lease 40 min, budget left 212.0)
-◆ nanoGPT train: curtain call, ok (exit 0) in 37.2 min (declared 40), waited 6.1, charged 31.4 machine-min, peak 3.1 GB RAM / 9.4 GB VRAM
+◆ nanoGPT train: curtain call, ok (exit 0) in 37.2 min (declared 40), waited 22.0, charged 31.4 machine-min, peak 3.1 GB RAM / 9.4 GB VRAM
 ```
 
-**MCP tools** (one-line text replies plus `structuredContent`): `firefighter_submit`,
-`firefighter_wait`, `firefighter_status` (which also gives quotes), `firefighter_job` (extend,
-urgent/normal, amend, cancel), `firefighter_plan` and `firefighter_storage` (show, claim, label, items, free, release). `firefighter_config` is listed only when you allow
-agents to change the policy.
+**MCP tools:** Six by default: `firefighter_submit`, `firefighter_wait`, `firefighter_status`,
+`firefighter_job`, `firefighter_plan` and `firefighter_storage`. `firefighter_config` is available
+only when `guard.agents_can_configure` is true.
+
+`firefighter_job` actions are `extend`, `urgent`, `normal`, `amend` and `cancel`.
+`firefighter_storage` actions are `show`, `claim`, `label`, `items`, `free` and `release`.
+Pass `cwd` (your absolute working directory) for `claim`, `label`, `free` and `release`. To change
+another project's space, also pass `force=true`.
 
 ## CLI reference
 
 | Command | What it does |
 |---|---|
-| `run [flags] -- <cmd...>` | Wait for a turn, run, receipt. Flags: `--gpu`, `--minutes N` (lease; 30 if omitted), `--vram GB`, `--ram GB`, `--urgent` (2×, the human is waiting), `--spot` (⅓, leftovers), `--name`, `--project` (default: the git repo or folder), `--evict never\|graceful\|force`, `--detach` (prints the id), `--quiet`, `--bid 1-10` (legacy; 5 normal, 10 urgent) |
-| `wait <id> [--timeout s]` | Block until the job ends (following requeues); prints the receipt and log tail. Exits with the job's exit code, or 124 on timeout |
-| `quote [--gpu] --minutes N [--vram GB] [--ram GB] [--urgent] [--json]` | The market for a job, no side effects |
-| `bid <id> <5\|10>` · `extend <id> <minutes>` · `cancel <id>` | Change a job's tier, lease, or cancel it |
+| `run [flags] -- <cmd...>` | Wait for a turn, run a command and print a receipt. See flags below. |
+| `wait <id> [--timeout s]` | Follow a job through requeues. Prints its JSON receipt and a log tail if available. Returns the job's exit code, or 124 on timeout. |
+| `quote [--gpu] [--minutes N] [--vram GB] [--ram GB] [--urgent] [--json] [-- <cmd...>]` | Prices a job (30 minutes by default). An optional command lets it use matching history. May start the guard, but queues nothing. |
+| `bid <id> <1-10> [--force]` | Change a waiting job's bid. 5 is normal, 10 is urgent. |
+| `amend <id> [--ram GB] [--vram GB] [--minutes N] [--urgent] [--force]` | Change a waiting job's estimates or mark it urgent without resetting its wait. |
+| `extend <id> <minutes> [--force]` · `cancel <id> [--force]` | Lengthen a running job's lease or cancel a waiting or running job. |
 | `status [--json]` | The human's state and reserve, the market, running and waiting jobs, budgets, plans |
-| `update [--check]` | Install the newest release now and restart the guard (`--check` only says whether there is one). The guard does this by itself unless `update.auto` is `false` |
+| `update [--check]` | On a release build, install a newer release and restart the guard. `--check` reports without installing. Release builds also check and update automatically unless `update.auto` is `false`. |
 | `forecast [--json]` | What has been learned: the human's use and reserve per state, and what each known command is expected to need on its next run (RAM, VRAM, CPUs, GPU load, disk, network, minutes) |
-| `adopt <pid> [--gpu] [--name] [--minutes]` | Govern a process that's already running |
-| `plan "<what>" --when ... --minutes N [--gpu %] [--vram GB] [--ram GB]` · `plan --done [--project p]` | Announce or remove planned work |
-| `storage [claim --gb N [--why text] \| path \| label <path> --rank keep\|useful\|scratch\|none --for text \| items \| free --gb N [--upto scratch\|unranked\|useful] [--dry-run] \| release [--delete]] [--project P]` | The disk space the human allots agents (`storage.gb`, `storage.root`, `storage.projects.<name>`): claim, grow, shrink or release your project's space; rank what's in it and what it's for; free the least important first (keep is never deleted) |
+| `adopt <pid> [--gpu] [--name NAME] [--minutes N] [--force]` | Govern a process that's already running. `--force` allows adoption outside the caller's agent session. |
+| `plan "<what>" --minutes N [--when now\|HH:MM] [--gpu PCT] [--vram GB] [--ram GB] [--project P]` | Announce work without reserving resources. The forecast only interprets `now` (the default) and `HH:MM`. |
+| `plan [<id>] --done [--project P]` | Remove one plan by ID or all plans for the project. |
+| `harvest [earned <usd> [--through <date-or-time>] [--note TEXT] \| reset]` | Show power costs and earnings (`show` and `status` are aliases). `earned` adds income since the last report; `--through` accepts `YYYY-MM-DD` or `"YYYY-MM-DD HH:MM"` and defaults to now. `reset` clears the profit-guard trip. |
+| `storage [show\|status\|ls] [--json]` | Show the allotment and all project spaces. |
+| `storage claim --gb N [--why TEXT] [--project P] [--force]` · `storage path [--project P]` | Set a project's claim and print its folder, or look up the existing folder. |
+| `storage label <path> --rank keep\|useful\|scratch\|none [--for TEXT] [--project P] [--force]` | Rank a file or folder and say what needs it. `--for` is required unless removing a label with `none`. |
+| `storage items [--json] [--project P]` | List a project's contents, least important first. |
+| `storage free --gb N [--upto scratch\|unranked\|useful] [--dry-run] [--project P] [--force]` | Free the least important items first, never `keep`. Defaults to `scratch`; `--dry-run` previews the selection. |
+| `storage release [--delete] [--project P] [--force]` | Give back a claim. `--delete` also removes its files. |
 | `config [show \| set <key> <value> \| unset <key> \| presets \| path]` | Every key is in `config show` |
 | `protocol` | The pause/checkpoint helper |
-| `setup` · `uninstall` · `daemon [--stop]` · `mcp` · `version` | Install, remove, run or stop the guard, MCP server |
+| `statusline [--json]` · `events` | One line for a status bar, or an NDJSON stream of status changes. Neither starts the guard. |
+| `setup` (`install`) · `uninstall` | Add or remove integrations and start or stop the guard. |
+| `daemon [--stop]` · `mcp` | Run or stop the guard, or run the MCP server on stdio. |
+| `version` (`--version`, `-v`) · `help` (`--help`, `-h`) | Show the version or CLI help. |
+
+**`run` flags:**
+
+| Flag | What it does |
+|---|---|
+| `--minutes N` | Estimate runtime and set the lease. Defaults to 30 minutes, or 2 with `--quick`. |
+| `--ram GB` · `--vram GB` | Declare peak RAM and VRAM. The needs used for admission can be clamped. |
+| `--gpu` · `--gpu-vendor nvidia\|amd\|intel\|any` | Request GPU scheduling and optionally restrict which cards may run the job. Defaults to NVIDIA if present. |
+| `--net` | Mark the job as network-heavy. Known downloads and installs can also be detected automatically. |
+| `--quick` | Use a lease of at most 3 minutes for a short task. Normal resource and storage checks still apply. |
+| `--spot` · `--urgent` · `--bid 1-10` | Use leftover capacity, mark work the human is waiting on, or set the bid directly (5 normal, 10 urgent). By default, spot pays one third and urgent pays twice the normal rate. `pricing.policy=free` removes the bid multiplier; the spot discount is separate. |
+| `--evict never\|graceful\|force` | Choose how readily a job can be stopped. `graceful` is the default; `force` skips checkpoint grace. `never` is not an exemption from critical pressure. |
+| `--detach` · `--quiet` | Return the job ID without waiting, or suppress routine status output. |
+| `--name NAME` · `--project P` | Set the job and project names. The project defaults to the Git repo or folder. |
+
+For job controls, `--force` allows changing a job outside your project or session. For `storage`,
+pass `--force` when using `claim`, `label`, `free` or `release` on another project's space.
 
 **Files** in the state folder: `firefighter.toml` (your settings), `state.json` (budgets, learned
 history, receipts, the hour-of-week occupancy), `STATUS.md` (a status snapshot rewritten every 15 s
@@ -94,8 +132,8 @@ for agents that read files), `daemon.log`, `logs/<id>.log` (detached jobs, kept 
 
 ## Editors and agent apps
 
-- **Every agent `setup` finds** (see the list in the [README](../README.md#agents-it-sets-up), T3 Code's providers included): MCP and the rules
-  are wired up automatically.
+- **Agents `setup` finds** (see the [README](../README.md#agents-it-sets-up), including supported T3 Code
+  profiles): setup adds an MCP entry, an instruction block, or both, depending on the agent.
 - **Claude Code plugin:** a live status-line entry, `/firefighter`, and a guard that sends heavy Bash
   commands back to the agent to rerun through the queue:
   `/plugin install firefighter --marketplace JoshWright22/FIREFIGHTER`
@@ -110,8 +148,8 @@ for agents that read files), `daemon.log`, `logs/<id>.log` (detached jobs, kept 
 |---|---|---|---|---|---|
 | Runs on Windows, macOS and Linux | ✅ | partial (Windows, Linux) | ❌ macOS/Linux | ❌ Linux | Linux clusters |
 | Protects the human at the keyboard | ✅ dynamic reserve, game detection | partial: static reserve, manual gaming mode | ❌ | gpu-arbiter: Steam games | ❌ |
-| GPU, CPU and RAM together | ✅ DRF | ✅ | ❌ slots | ❌ GPU only | ✅ |
-| Any mix of GPUs, pinned per card | ✅ NVIDIA/AMD/Intel | ❌ | ❌ | NVIDIA | ✅ |
+| GPU, CPU and RAM together | ✅ LAS by default, DRF available | ✅ | ❌ slots | ❌ GPU only | ✅ |
+| Per-card GPU scheduling | ✅ NVIDIA/AMD/Intel where detected | ❌ | ❌ | NVIDIA | ✅ |
 | Agent protocol (MCP + rules in agent instructions) | ✅ automatic, ~20 agents | partial (Claude only) | load-lock ✅ ~10 CLIs | partial | ❌ |
 | Market information for every agent | ✅ quotes, busy odds | partial: ETAs | ❌ | ❌ | ❌ |
 | Catches agents that skip the queue | ✅ adoption | partial: tags it | ❌ | gpulease: adopts, no limits | n/a |
@@ -124,46 +162,46 @@ about half of this, and none on all three OSes. Details: [research.md](research.
 ## FAQ
 
 **How do I stop several Claude Code or Codex agents from fighting over my GPU?** Install
-FIREFIGHTER. New sessions read the rule block and register the MCP server, so they queue GPU work
-through `firefighter run` or `firefighter_submit` and wait their turn.
+FIREFIGHTER. Setup registers the MCP server and adds the shared-machine rules for these agents.
+New sessions can queue GPU work through `firefighter run` or `firefighter_submit`.
 
 **Why do I get CUDA out of memory when two AI agents train at once?** Each agent sees the whole
-card free and starts its own job, so together they ask for more VRAM than the card has. FIREFIGHTER
-starts a GPU job only when its VRAM need fits on one card next to what's already running and your
-reserve; the need is learned from that command's past runs.
+card free and starts its own job, so together they can ask for more VRAM than the card has.
+FIREFIGHTER checks the job's estimated need against what's free on one card after the reserve and
+existing jobs. That estimate comes from declarations and past runs, and can be clamped to what the
+card can offer. It isn't a guarantee against running out of VRAM.
 
 **Can several AI agents share one GPU?** Yes. They take turns, or run side by side when the card
-has room (`gpu.max_jobs` per card). With more than one GPU, each card takes jobs on its own and a job
-goes to the least busy card that fits.
+has room (`gpu.max_jobs` per card). With more than one GPU, the guard prefers an open, less loaded
+card that fits and matches the job's GPU vendor choice.
 
-**Is there an MCP server for queuing GPU jobs?** `firefighter mcp`, registered for every agent setup
-finds. Tools: `firefighter_submit`, `firefighter_wait`, `firefighter_status`, `firefighter_job`,
-`firefighter_plan`.
+**Is there an MCP server for queuing GPU jobs?** Yes. `firefighter mcp` runs it on stdio, and setup
+registers it for supported agents. Use `firefighter_submit` to queue work and `firefighter_wait` for
+the receipt. The full tool list is in [Using it](#using-it).
 
-**Will it slow down my games?** It's designed to do the opposite. Fullscreen apps and 3D-engine use
-switch you to the "game" state (on macOS and Linux, list your games in `reserve.exclusive_apps`).
-Running GPU jobs get a cooperative pause; jobs that ignore it are suspended. If your game then needs
-the memory a job holds, that job checkpoints (or, if it ignored the pause, is stopped) and requeues.
-No new GPU jobs start until you're done.
+**What happens when I start a game?** Windows detects fullscreen and 3D-engine use. On macOS and
+Linux, list your games in `reserve.exclusive_apps`. By default, the game state holds new GPU jobs.
+Running GPU jobs get a chance to pause. The guard can suspend them, ask them to checkpoint, or stop
+them if it needs their memory back. Jobs that checkpoint and exit with code 75 requeue.
 
-**Does it work with Docker and Kubernetes?** Containers you run yourself count as your load and are
-protected by the reserve. `firefighter run -- docker run ...` labels the container so FIREFIGHTER can
-pin, pause and stop it like any other job.
+**Does it work with Docker?** Docker containers you run yourself count as outside load.
+`firefighter run -- docker run ...` labels the container so the guard can track, pause and stop it.
+Keep `docker run` in the foreground. Use `firefighter run --detach` if you don't want to wait.
 
-**What if an agent ignores the rules?** If an agent CLI starts something that stays heavy for 60
-seconds outside FIREFIGHTER, it gets adopted. It's put on idle priority, charged to its project, and
-evicted first under pressure.
+**What if an agent ignores the rules?** With auto-adopt on, the guard looks for unmanaged processes
+descended from known agent CLIs (`guard.agent_parents`) that stay heavy for `guard.heavy_seconds`
+(60 seconds by default). Adopted work runs at idle priority and goes first under pressure.
 
-**Can agents cheat the market?** Prices are posted, not auctioned, so there's no bidding game. A bid
-of 10 costs double and buys at most 30 minutes of lead. Budgets belong to projects, so running more
-jobs doesn't buy more turns. Runtimes are checked against each command's history. Agents can read
-the policy but not change it unless you set `guard.agents_can_configure`. An agent with shell
-access could still edit FIREFIGHTER's files directly. FIREFIGHTER is a referee for cooperative
-agents, not a security boundary.
+**Can agents cheat the market?** Prices are posted, not auctioned. By default, a bid of 10 pays twice
+the normal rate and subtracts up to 30 machine-minutes from the ordering key. It doesn't guarantee
+a 30-minute earlier start. Jobs in one project share a budget. The guard checks runtime estimates
+against measured history when available. Agents can change the policy through MCP only if you set
+`guard.agents_can_configure`, but agents with shell access can use the CLI or edit the files directly.
+FIREFIGHTER is a referee for cooperative agents, not a security boundary.
 
-**Does it need an NVIDIA GPU?** No. It reads NVIDIA (nvidia-smi plus Windows GPU counters) and AMD
-(rocm-smi). On Apple silicon it schedules unified memory as RAM. Without a GPU it still schedules CPU
-and RAM.
+**Does it need an NVIDIA GPU?** No. Windows also reports AMD and Intel GPUs through DXGI and GPU
+counters. Linux can read AMD GPUs through `rocm-smi` or amdgpu sysfs. On Apple silicon, unified memory
+counts as RAM. Without a GPU it still schedules CPU and RAM.
 
 ## Testing
 
