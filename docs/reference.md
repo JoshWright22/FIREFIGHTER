@@ -109,6 +109,7 @@ another project's space, also pass `force=true`.
 | `--spot` · `--urgent` · `--bid 1-10` | Use leftover capacity, mark work the human is waiting on, or set the bid directly (5 normal, 10 urgent). By default, spot pays one third and urgent pays twice the normal rate. `pricing.policy=free` removes the bid multiplier; the spot discount is separate. |
 | `--evict never\|graceful\|force` | Choose how readily a job can be stopped. `graceful` is the default; `force` skips checkpoint grace. `never` is not an exemption from critical pressure. |
 | `--detach` · `--quiet` | Return the job ID without waiting, or suppress routine status output. |
+| `--request-id KEY` | Idempotent submit: the same key in the same project never queues a second copy; a retry gets the first job (waits on it, or prints its id with `--detach`). MCP: `request_id` on `firefighter_submit`. |
 | `--name NAME` · `--project P` | Set the job and project names. The project defaults to the Git repo or folder. |
 
 For job controls, `--force` allows changing a job outside your project or session. For `storage`,

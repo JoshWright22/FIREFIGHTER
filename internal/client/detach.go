@@ -17,12 +17,17 @@ func LogPath(id string) string { return filepath.Join(config.Home(), "logs", id+
 // file, and returns the job id at once. `firefighter wait ID` (or the firefighter_wait MCP tool)
 // blocks until it ends and returns the receipt.
 func Detached(runArgs []string, cwd string) (id, log string, err error) {
+	return DetachedID(daemon.NewID(), runArgs, cwd)
+}
+
+// DetachedID is Detached with a given job id (one derived from a request id: a retried submit
+// gets the same id, so it finds the job instead of queuing a second copy).
+func DetachedID(id string, runArgs []string, cwd string) (string, string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", "", err
 	}
-	id = daemon.NewID()
-	log = LogPath(id)
+	log := LogPath(id)
 	if err := os.MkdirAll(filepath.Dir(log), 0o700); err != nil {
 		return "", "", err
 	}

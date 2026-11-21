@@ -148,7 +148,7 @@ type runFlags struct {
 	minutes, vram, ram                           float64
 	bid                                          int
 	name, project, evict, vendor                 string
-	id, log                                      string
+	id, log, requestID                           string
 }
 
 func parseRun(args []string) (*runFlags, []string, error) {
@@ -170,6 +170,7 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	fs.StringVar(&r.project, "project", "", "project (default: the git repo or folder name)")
 	fs.StringVar(&r.evict, "evict", "graceful", "never | graceful | force")
 	fs.StringVar(&r.id, "id", "", "job id (internal)")
+	fs.StringVar(&r.requestID, "request-id", "", "idempotency key: the same key (in the same project) never queues a second copy; a retry waits on the first")
 	fs.StringVar(&r.log, "log", "", "log file (internal)")
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, err
@@ -305,11 +306,38 @@ func run(args []string) (int, error) {
 		ui.Say(ui.Ivory, "no --minutes given: assuming 30. Pass an honest estimate; it's your lease.")
 		r.minutes = 30
 	}
+	if r.requestID != "" && r.id == "" {
+		cwd, _ := os.Getwd()
+		project := r.project
+		if project == "" {
+			project = projectOf(cwd)
+		}
+		r.id = daemon.RequestID(project, r.requestID)
+		if c, err := client.Connect(); err == nil {
+			if v, err := c.Get(r.id, "", 0); err == nil { // submitted before: never a second copy
+				if r.detach {
+					fmt.Println(r.id)
+					ui.Note("request %q was already submitted as %s (%s); `firefighter wait %s` for the receipt", r.requestID, r.id, v.State, r.id)
+					return 0, nil
+				}
+				ui.Note("request %q was already submitted as %s (%s): waiting on it", r.requestID, r.id, v.State)
+				return wait([]string{r.id})
+			}
+		}
+	}
 	if r.detach {
 		cwd, _ := os.Getwd()
-		id, log, err := client.Detached(detachArgs(r, argv), cwd)
+		if r.id == "" {
+			r.id = daemon.NewID()
+		}
+		id, log, err := client.DetachedID(r.id, detachArgs(r, argv), cwd)
 		if err != nil {
 			return 1, err
+		}
+		if r.requestID != "" { // registered before returning, so a retry right after finds it
+			if c, err := client.Connect(); err == nil {
+				_, _ = c.GetSoon(id)
+			}
 		}
 		fmt.Println(id)
 		ui.Note("queued as %s; output in %s; `firefighter wait %s` for the receipt", id, log, id)

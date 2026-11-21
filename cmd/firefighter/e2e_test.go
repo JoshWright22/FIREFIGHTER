@@ -1248,3 +1248,29 @@ func TestFailedJobSaysWhyAndLearns(t *testing.T) {
 		t.Fatalf("log:\n%s", e.log())
 	}
 }
+
+// Idempotent submit (after Gczmy/sched): the same request id in the same project never queues a
+// second copy; a retry gets the first job.
+func TestRequestIDNeverQueuesTwice(t *testing.T) {
+	e := newEnv(t, nil)
+	self, _ := os.Executable()
+	sub := func() string {
+		out, err := e.cmd([]string{"FF_HELPER=sleep:3000:" + filepath.Join(e.home, "s.txt")}, "run", "--detach", "--request-id", "eval-42", "--minutes", "1", "--project", "demo", "--", self).CombinedOutput()
+		if err != nil {
+			t.Fatalf("submit: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	first := sub()
+	id := strings.TrimSpace(strings.Split(first, "\n")[0])
+	second := sub()
+	if strings.TrimSpace(strings.Split(second, "\n")[0]) != id || !strings.Contains(second, "already submitted") {
+		t.Fatalf("a retried submit should get the first job %s:\n%s", id, second)
+	}
+	st := e.status()
+	r, _ := st["running"].([]any)
+	w, _ := st["waiting"].([]any)
+	if len(r)+len(w) != 1 {
+		t.Fatalf("want one job, got %d running %d waiting", len(r), len(w))
+	}
+}

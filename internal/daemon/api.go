@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -45,6 +46,14 @@ func writeAtomic(path string, b []byte, mode os.FileMode) error {
 }
 
 func EndpointPath() string { return filepath.Join(config.Home(), "daemon.json") }
+
+// RequestID is the job id for an idempotent submit: the same project and request key always give
+// the same id, so a submit retried after a timeout or a lost reply finds its job (waiting, running
+// or done) instead of queuing a second copy (idea from Gczmy/sched's `submit --request-id`).
+func RequestID(project, key string) string {
+	h := sha256.Sum256([]byte("firefighter-request\x00" + project + "\x00" + key))
+	return hex.EncodeToString(h[:4])
+}
 
 func NewID() string {
 	b := make([]byte, 4)

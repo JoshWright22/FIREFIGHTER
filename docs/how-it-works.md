@@ -96,6 +96,13 @@ Zero config gives you the researched defaults below. You can swap each part by n
 
 ### Waiting jobs, quick looks, the human's state
 
+- **Retries never duplicate.** `firefighter run --request-id <key>` (MCP: `request_id`) makes a submit
+  idempotent: the same key in the same project gives the same job, so an agent that retries after a
+  timeout or a lost reply gets the job it already queued (after Gczmy/sched's `--request-id`).
+- **Failures say why.** A job that fails on its own gets a cause (out of VRAM, RAM or disk, a missing
+  program, the network, the Docker engine, a crash), whether running it again as-is can help, and
+  the fix, from its exit code and the end of its output (after OpenPAI's job exit spec). Out of VRAM
+  or RAM, the command's learned need goes up for its next run.
 - **Amend, don't resubmit.** `firefighter amend <id> [--ram GB] [--vram GB] [--minutes N] [--urgent]`
   changes a waiting job's declarations in place: same id, same waiting `firefighter run`, same place
   in line. When a job's own declaration misses by a little, its wait line says what would start it

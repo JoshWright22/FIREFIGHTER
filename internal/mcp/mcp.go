@@ -93,6 +93,7 @@ var baseTools = []tool{
 		"net":        boo("Network-heavy (downloads, uploads); known installers and downloads are detected"),
 		"gpu_vendor": str("GPUs the job can use: nvidia, amd, intel or any (default NVIDIA if present)"),
 		"name":       str("'<project> <what>'"),
+		"request_id": str("Idempotency key: a retry with the same key (same cwd project) returns the first job instead of queuing a copy"),
 	}, "command", "cwd", "minutes")},
 	{"firefighter_wait", "Wait up to ~45 s on a job. One line, short if nothing changed; receipt and log tail when done.", obj(map[string]any{
 		"id": str("Job id"), "timeout_s": num("Seconds, max 50"),
@@ -323,7 +324,14 @@ func call(name string, a map[string]any) (string, any, error) {
 			shell = []string{"cmd", "/c"}
 		}
 		args = append(append(append(args, "--"), shell...), s(a, "command"))
-		id, _, err := client.Detached(args, s(a, "cwd"))
+		id := daemon.NewID()
+		if key := s(a, "request_id"); key != "" {
+			id = daemon.RequestID(projectIn(s(a, "cwd")), key)
+			if v, err := c.Get(id, "", 0); err == nil { // submitted before (a retried call): never a second copy
+				return "already submitted " + jobLine(v), v, nil
+			}
+		}
+		id, _, err := client.DetachedID(id, args, s(a, "cwd"))
 		if err != nil {
 			return "", nil, err
 		}
