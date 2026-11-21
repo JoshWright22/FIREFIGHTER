@@ -2,8 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -142,16 +140,7 @@ func (d *Daemon) adoptRogues(rs []rogue, now time.Time) {
 }
 
 // projectOf names the git repo (or folder) a path is in.
-func projectOf(dir string) string {
-	for d := dir; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return filepath.Base(d)
-		}
-		if filepath.Dir(d) == d {
-			return filepath.Base(dir)
-		}
-	}
-}
+func projectOf(dir string) string { return policy.ProjectOf(dir) }
 
 // agentSeen: an agent found above a heavy process while its parents were still there.
 type agentSeen struct {

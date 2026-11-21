@@ -96,6 +96,9 @@ Zero config gives you the researched defaults below. You can swap each part by n
 
 ### Waiting jobs, quick looks, the human's state
 
+- **One project per repo, worktrees included.** A job's project is its git repo's name; a linked
+  worktree (what agent orchestrators make per task) counts as its main repo, so one repo's agents
+  share one budget, one learned history and one storage space.
 - **Retries never duplicate.** `firefighter run --request-id <key>` (MCP: `request_id`) makes a submit
   idempotent: the same key in the same project gives the same job, so an agent that retries after a
   timeout or a lost reply gets the job it already queued (after Gczmy/sched's `--request-id`).

@@ -19,6 +19,7 @@ import (
 	"github.com/JoshWright22/firefighter/internal/client"
 	"github.com/JoshWright22/firefighter/internal/config"
 	"github.com/JoshWright22/firefighter/internal/daemon"
+	"github.com/JoshWright22/firefighter/internal/policy"
 	"github.com/JoshWright22/firefighter/internal/storage"
 )
 
@@ -511,16 +512,7 @@ func callerProject() string {
 }
 
 // projectIn is the project a folder belongs to: its git repo's name, else the folder's name.
-func projectIn(wd string) string {
-	for d := wd; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return filepath.Base(d)
-		}
-		if filepath.Dir(d) == d {
-			return filepath.Base(wd)
-		}
-	}
-}
+func projectIn(wd string) string { return policy.ProjectOf(wd) }
 
 // readLine reads one newline-terminated message, refusing ones over max bytes (they're skipped).
 func readLine(in *bufio.Reader, max int) ([]byte, error) {

@@ -201,16 +201,7 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	return r, fs.Args(), nil
 }
 
-func projectOf(dir string) string {
-	for d := dir; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return filepath.Base(d)
-		}
-		if filepath.Dir(d) == d {
-			return filepath.Base(dir)
-		}
-	}
-}
+func projectOf(dir string) string { return policy.ProjectOf(dir) }
 
 // hashCmd names a command for learning its runtime and peaks: the program and its script, not
 // its arguments. Shell wrappers (sh -c, cmd /c) are looked through, and docker runs are named by
