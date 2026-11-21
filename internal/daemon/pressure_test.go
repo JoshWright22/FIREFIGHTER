@@ -462,12 +462,26 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 		t.Fatalf("a guessed container was acted on: %v", args)
 	default:
 	}
-	// Named by the job's own CLI: proven, so it is held to the job's reservation.
+	// Named by the job's own CLI: still only a hint (review round 5: name and timing can match the
+	// human's container). Its RAM counts; control needs the firefighter.job label.
 	j.ctrSeen, d.seenCtr = "", nil
 	lines = map[string][]string{j.ID: {"docker run --rm --gpus all --cpus=4 --memory=16g --name keen_grothendieck img python stage.py"}}
 	d.adoptContainers(cs, lines, since)
+	if j.container != "" || j.ctrSeen != "1a9a7107362a" {
+		t.Fatalf("named container: container %q seen %q", j.container, j.ctrSeen)
+	}
+	select {
+	case args := <-d.dockerQ:
+		t.Fatalf("a name-matched container was acted on: %v", args)
+	default:
+	}
+	// Labeled for the job (its script set firefighter.job from FIREFIGHTER_JOB_ID): proven.
+	j.ctrSeen, d.seenCtr = "", nil
+	j.RAMGB = 6
+	labeled := []sysinfo.Container{{ID: "1a9a7107362a", Name: "keen_grothendieck", MemGB: 1.3, Created: now.Add(-50 * time.Second), Job: j.ID}}
+	d.adoptContainers(labeled, nil, nil)
 	if j.container != "1a9a7107362a" {
-		t.Fatalf("named container not given to its job: %q", j.container)
+		t.Fatalf("labeled container not given to its job: %q", j.container)
 	}
 	select {
 	case args := <-d.dockerQ:
@@ -475,7 +489,7 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 			t.Fatalf("docker call %q", got)
 		}
 	default:
-		t.Fatal("the container was not held to the job's reservation")
+		t.Fatal("the labeled container was not held to the job's declared --ram")
 	}
 	// Two jobs with a live docker run and nothing naming the container: no guess.
 	k := d.addRunning("second", 0.1, now)
@@ -729,16 +743,20 @@ func TestCardWithRoomBeatsEmptyFullCard(t *testing.T) {
 // slow start can't land after the stop that followed it.
 func TestHarvesterCommandsRunInOrder(t *testing.T) {
 	d := testDaemon(t)
-	d.harvestQ = make(chan string, 16)
+	d.harvestQ = make(chan harvestCmd, 16)
 	go func() {
 		for c := range d.harvestQ {
-			shell(c)
+			shellWait(c.cmd, 90*time.Second) // as the guard's worker does
+			if c.done != nil {
+				close(c.done)
+			}
 		}
 	}()
 	f := filepath.Join(t.TempDir(), "order.txt")
-	for _, w := range []string{"start", "stop", "start", "stop"} {
+	for _, w := range []string{"start", "stop", "start"} {
 		d.harvestDo("echo " + w + ">>" + f)
 	}
+	d.harvestDoWait("echo stop>>"+f, 20*time.Second) // shutdown's stop: after the rest, and waited for
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if b, _ := os.ReadFile(f); strings.Count(string(b), "\n") >= 4 {

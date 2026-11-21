@@ -530,12 +530,19 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 		_, _ = c.Act(t.ID, "cancel", daemon.Act{Project: t.Project})
 		return 1, false, fmt.Errorf("the guard didn't accept the job's start (%v); not running it ungoverned", err)
 	}
+	attemptDone := make(chan struct{}) // closed when this attempt ends: a late registration can't reach the next one
+	defer close(attemptDone)
 	if container != "" {
 		engine := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe")
+		rc := c     // its own copy: the loop below may replace c on a reconnect (review 11/20: data race)
 		go func() { // the container appears once its image is pulled: keep trying for 10 minutes
 			for i := 0; i < 200; i++ {
-				time.Sleep(3 * time.Second)
-				if _, err := c.Act(t.ID, "container", daemon.Act{Container: container, Engine: engine}); err == nil {
+				select {
+				case <-attemptDone:
+					return
+				case <-time.After(3 * time.Second):
+				}
+				if _, err := rc.Act(t.ID, "container", daemon.Act{Container: container, Engine: engine}); err == nil {
 					return
 				}
 			}

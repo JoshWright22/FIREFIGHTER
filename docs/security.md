@@ -10,8 +10,9 @@ cooperative agents, not a sandbox.
   keeps its folder private (0700/0600 on Unix).
 - It only acts on what a job's own client started (the caller is identified by its exact TCP
   connection, not by what it claims; only that client can start the job), on containers proven to
-  be that job's (labeled `firefighter.job=<id>`, or named by the job's own `docker run --name` and
-  created after it started; a container that merely appeared meanwhile is only counted), and on
+  be that job's by the `firefighter.job=<id>` label (`firefighter run -- docker run` adds it; a job's
+  script can set it from `FIREFIGHTER_JOB_ID`; a container matched only by name or timing is counted,
+  never paused, capped or stopped), and on
   processes adopted by you or, for agent work only, by an agent (`--force` never reaches your other
   programs).
   Ancestry and ownership checks ignore reused pids. "You" means a caller whose unbroken process

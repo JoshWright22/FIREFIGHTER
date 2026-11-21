@@ -176,7 +176,7 @@ type Daemon struct {
 	seenCtr       map[string]bool // containers already looked at for an owner job
 	notify        chan struct{}
 	rng           *rand.Rand
-	harvestQ      chan string // harvester start/stop commands, run in order
+	harvestQ      chan harvestCmd // harvester start/stop commands, run in order, one at a time
 	harvest       struct {
 		on        bool
 		stop      string // the stop command of the harvester that was started (config can change while it runs)
@@ -262,10 +262,13 @@ func New(version string) *Daemon {
 	}()
 	// Harvester start and stop run one at a time, in the order asked: a slow start can't finish
 	// after the stop that followed it and leave the harvester running (review 11/20).
-	d.harvestQ = make(chan string, 16)
+	d.harvestQ = make(chan harvestCmd, 64)
 	go func() {
 		for c := range d.harvestQ {
-			shellWait(c, 90*time.Second) // to completion (90 s at most): a start can't finish after the stop behind it, and a hung one can't hold the stop for long
+			shellWait(c.cmd, 90*time.Second) // to completion (90 s at most): a start can't finish after the stop behind it, and a hung one can't hold the stop for long
+			if c.done != nil {
+				close(c.done)
+			}
 		}
 	}()
 	// The harvester's state isn't known after a restart: stop it; it restarts after the idle wait.
@@ -380,7 +383,7 @@ func (d *Daemon) release() {
 		if stop == "" {
 			stop = d.cfg.Harvester.Stop
 		}
-		shellWait(stop, 30*time.Second)
+		d.harvestDoWait(stop, 2*time.Minute) // behind any start still running, never beside it
 	}
 }
 
@@ -630,11 +633,18 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 			d.seenCtr[c.ID] = true
 			j.container, j.engine, j.ctrSeen = c.ID, "docker", ""
 			logf("%s: container %s (%s) is labeled firefighter.job=%s; it counts as the job's", j.Name, c.Name, c.ID, j.ID)
+			// Held to the job's need when the job declared --ram (a guessed need could OOM-kill real
+			// work); never under what it uses now. Its file cache counts toward the limit (11/20).
+			if j.NeedRAM > 0 && j.RAMGB > 0 {
+				lim := math.Max(j.NeedRAM, c.MemGB*1.2+0.5)
+				m := fmt.Sprintf("%dm", int(lim*1024))
+				d.docker("docker", "update", "--memory", m, "--memory-swap", m, c.ID)
+				logf("%s: container %s limited to %.1f GB (the job declared %.1f GB)", j.Name, c.Name, lim, j.RAMGB)
+			}
 			continue
 		}
 		// The owner: the one job with a live `docker run`, or the one whose CLI names the container.
 		var owner *job
-		var cl string
 		n, byName := 0, false
 		for id, ls := range lines {
 			j := d.jobs[id]
@@ -643,14 +653,14 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 			}
 			for _, l := range ls {
 				if namedIn(l, c.Name) {
-					owner, cl, n, byName = j, l, 1, true
+					owner, n, byName = j, 1, true
 					break
 				}
 			}
 			if n == 1 && owner == j {
 				break
 			}
-			owner, cl = j, ls[0]
+			owner = j
 			n++
 		}
 		if n == 0 {
@@ -688,29 +698,17 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		if owner.container != "" || owner.ctrSeen != "" {
 			continue // a job's container is never replaced by another one
 		}
-		if !byName {
+		// Only the firefighter.job label (checked above) proves a container is the job's. A --name match
+		// or the timing is a hint: the container's RAM counts toward the job's, but it is never paused,
+		// capped or stopped with it (it could be the human's; review round 5, both reviewers).
+		{
 			owner.ctrSeen = c.ID
-			logf("%s: container %s (%s) appeared while this job's docker run was live; its RAM counts toward the job's, but it is not paused, capped or stopped with it (it could be the human's)", owner.Name, c.Name, c.ID)
-			continue
-		}
-		owner.container, owner.engine = c.ID, "docker"
-		if strings.Contains(strings.ToLower(cl), "podman") {
-			owner.engine = "podman"
-		}
-		logf("%s: container %s (%s) was started by this job (its --name); it counts as the job's", owner.Name, c.Name, c.ID)
-		// A container with no --memory is capped only when the job declared --ram: the need of a job
-		// with no declaration may be a guess (0.5 GB), and capping on it OOM-kills real work (review 11/20).
-		if dm := dockerMemGB(cl); owner.NeedRAM > 0 && (dm > 0 || owner.RAMGB > 0) {
-			// The limit is the job's need, not more: the container's file cache counts toward it,
-			// and with half again on top (11.6 GB for a 7.7 GB job, 11/20) the cache it read filled
-			// the WSL VM, Windows fell under the floor and the job was stopped four times.
-			lim := math.Max(owner.NeedRAM, c.MemGB*1.2+0.5)
-			if dm == 0 || dm > lim+0.05 {
-				s := fmt.Sprintf("%dm", int(lim*1024))
-				d.docker(owner.engine, "update", "--memory", s, "--memory-swap", s, c.ID)
-				logf("%s: container %s limited to %.1f GB (job needs %.1f GB; the container asked %s)", owner.Name, c.Name, lim, owner.NeedRAM,
-					map[bool]string{true: "no limit", false: fmt.Sprintf("%.1f GB", dm)}[dm == 0])
+			how := "appeared while this job's docker run was live"
+			if byName {
+				how = "has the --name this job's docker run used"
 			}
+			logf("%s: container %s (%s) %s; its RAM counts toward the job's, but it is not paused, capped or stopped with it without the firefighter.job=%s label", owner.Name, c.Name, c.ID, how, owner.ID)
+			continue
 		}
 	}
 	for id := range d.seenCtr {
@@ -2232,9 +2230,33 @@ func (d *Daemon) harvestDo(cmd string) {
 		return
 	}
 	select {
-	case d.harvestQ <- cmd:
-	default:
-		go shell(cmd) // 16 queued already (a stuck command): don't block the loop
+	case d.harvestQ <- harvestCmd{cmd: cmd}:
+	case <-time.After(time.Second):
+		logf("harvester: %d commands already queued; dropped %q", cap(d.harvestQ), cmd) // never run out of order
+	}
+}
+
+// harvestCmd is one queued harvester command; done (if set) is closed once it has finished.
+type harvestCmd struct {
+	cmd  string
+	done chan struct{}
+}
+
+// harvestDoWait queues cmd behind whatever is queued and waits until it has run (at most limit):
+// shutdown's stop can't overtake a start still running.
+func (d *Daemon) harvestDoWait(cmd string, limit time.Duration) {
+	if cmd == "" || d.harvestQ == nil {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case d.harvestQ <- harvestCmd{cmd: cmd, done: done}:
+	case <-time.After(limit):
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(limit):
 	}
 }
 

@@ -104,8 +104,12 @@ Zero config gives you the researched defaults below. You can swap each part by n
 - **Retries never duplicate.** `firefighter run --request-id <key>` (MCP: `request_id`) makes a submit
   idempotent: the same key in the same project gives the same job, so an agent that retries after a
   timeout or a lost reply gets the job it already queued, and two submits that race get one job
-  (the second waits on the first). This holds while the job's receipt is kept (48 hours). After
-  Gczmy/sched's `--request-id`.
+  (the second waits on the first), including across a guard restart while the first client is
+  alive. This holds while the job's receipt is kept (48 hours). After Gczmy/sched's `--request-id`.
+- **Job output is data, not instructions.** MCP `firefighter_wait` returns the receipt and the path
+  of the job's log, not the log itself: the job's output is anyone's text, and next to the
+  receipt's `do:` line it could pass for firefighter's guidance. Agent-written names, plans and
+  notes have `|` and `do:` neutralized for the same reason.
 - **Failures say why.** A job that fails on its own gets a cause (out of VRAM, RAM or disk, a missing
   program, the network, the Docker engine, a crash), whether running it again as-is can help, and
   the fix (after OpenPAI's job exit spec). It comes from the exit code (a Unix signal as 128+n, a
@@ -126,12 +130,11 @@ Zero config gives you the researched defaults below. You can swap each part by n
 - **Containers.** A container a job starts (directly or from its own script) counts toward the job's
   memory in receipts and in what is learned, and its VRAM (seen through the WSL VM) is the card's use
   beyond the usual floor. The guard only pauses, caps or stops a container it can prove is the
-  job's: one labeled `firefighter.job=<id>` (a job's script gets its id in `FIREFIGHTER_JOB_ID`;
-  `firefighter run -- docker run` adds the label itself), or one with the exact `--name` from the
-  job's own `docker run`, created after that command started. A container that only appeared while
-  the job's `docker run` was live is counted, never controlled (it could be the human's). A proven
-  container with a memory limit above the job's need, or none when the job declared `--ram`, is held
-  to the need (its file cache counts toward it). `firefighter run --quick -- docker run --rm <image> ls`
+  job's: one labeled `firefighter.job=<id>` (`firefighter run -- docker run` adds the label itself; a
+  job's script can set it from `FIREFIGHTER_JOB_ID`). A container matched only by the `--name` in the
+  job's `docker run`, or by appearing while it was live, is counted, never controlled (it could be the
+  human's). A labeled container is held to the job's need when the job declared `--ram` or the
+  container asked for more (its file cache counts toward it). `firefighter run --quick -- docker run --rm <image> ls`
   is the cheap path for a look inside an image: a 2-minute lease (3 at most, never extended), a short
   job that can start ahead of longer ones when RAM allows, and the VM's file cache is dropped when it
   ends.

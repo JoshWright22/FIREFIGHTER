@@ -679,7 +679,9 @@ func TestMCPServer(t *testing.T) {
 		w := call(5+i, "tools/call", map[string]any{"name": "firefighter_wait", "arguments": map[string]any{"id": id, "timeout_s": 20}})
 		waitText = w["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 	}
-	if !strings.Contains(waitText, "done ok exit 0") || !strings.Contains(waitText, "mcp-job") {
+	// The job's output isn't inlined (it could pass for firefighter's do: guidance); its log is named.
+	if !strings.Contains(waitText, "done ok exit 0") || strings.Contains(waitText, "mcp-job") || !strings.Contains(waitText, "untrusted data") ||
+		!strings.Contains(readFile(filepath.Join(e.home, "logs", id+".log")), "mcp-job") {
 		t.Fatalf("wait:\n%s", waitText)
 	}
 	stat := call(19, "tools/call", map[string]any{"name": "firefighter_status", "arguments": map[string]any{"minutes": 20, "gpu": true}})

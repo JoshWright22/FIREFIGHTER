@@ -176,7 +176,7 @@ playing. The full details are in [How it works](docs/how-it-works.md).
   running it again as-is can work, and what to change. Out of memory, the next run automatically
   asks for more.
 - **Retries never double up.** `--request-id` gives a job a name; an agent that retries after a
-  timeout gets the job it already queued instead of starting a second copy.
+  timeout gets the job it already queued (kept for 48 hours) instead of starting a second copy.
 - **It learns.** Each run teaches it what that command needs, and your own use teaches it how much
   to keep free for you. `firefighter forecast` shows what it expects.
 - **Docker containers count.** A container a job starts counts toward that job's memory, and
