@@ -81,21 +81,6 @@ type OpenJob struct {
 	Seen     time.Time `json:"seen"`
 }
 
-// Plan is an announcement of heavy work coming later; it reserves nothing, it tells others.
-type Plan struct {
-	ID      string    `json:"id"`
-	Project string    `json:"project"`
-	What    string    `json:"what"`
-	When    string    `json:"when"`
-	Minutes float64   `json:"minutes"`
-	GPUPct  float64   `json:"gpu_pct"`
-	VRAMGB  float64   `json:"vram_gb"`
-	RAMGB   float64   `json:"ram_gb"`
-	Added   time.Time `json:"added"`
-	Owner   int       `json:"owner,omitempty"`    // agent session that announced it; -1: the human
-	OwnerAt int64     `json:"owner_at,omitempty"` // its start time (a reused pid isn't the same session)
-}
-
 type saved struct {
 	Accounts map[string]*policy.Account `json:"accounts"`
 	History  map[string]*History        `json:"history"`
