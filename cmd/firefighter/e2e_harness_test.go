@@ -200,6 +200,15 @@ func (e *env) cleanup() {
 	time.Sleep(500 * time.Millisecond)
 	_ = e.cmd(nil, "daemon", "--stop").Run()
 	time.Sleep(300 * time.Millisecond)
+	// A cancelled job's runner can still hold its log open for a moment, and Windows can't delete an
+	// open file: retry before the test's TempDir cleanup fails the test over it.
+	logs := filepath.Join(e.home, "logs")
+	for i := 0; i < 50; i++ {
+		if os.RemoveAll(logs) == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func (e *env) setFake(m map[string]any) {
