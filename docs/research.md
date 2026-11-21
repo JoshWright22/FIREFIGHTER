@@ -85,7 +85,7 @@ Everything in this section is design, labeled **[I]** unless it repeats a source
 | 1 Agent-interactive | Short jobs (under 3 min declared, no `--gpu` or VRAM under 2 GB) such as tests and small evals | Admitted at once if they fit, token-bucketed per project (for example 20/h); never auctioned | Band 0 only | [I] |
 | 2 Batch market | In-budget `--gpu` and long CPU jobs | Capacity minus R(t), ordered by fair share, urgency paid from budget | Band 0; band 2 only at lease end or after min runtime | Tiresias, Karma, Themis leases [S]; rules [I] |
 | 3 Spot | Over-budget projects, jobs past their lease, `--spot` jobs | Leftovers only, when bands 1 and 2 are empty | Anything, immediately | Borg best-effort, EC2 spot [S] |
-| 4 Salad | Salad container | GPU idle for 180 s and no one waiting (current rules) | Anything | Current code |
+| 4 Harvester | An optional idle-GPU program the user configures (Salad, BOINC, Folding@home, ...) | GPU idle for 180 s and no one waiting | Anything | Current code |
 
 ### Reserve sizing R(t)
 
