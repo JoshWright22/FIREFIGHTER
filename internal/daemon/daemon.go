@@ -90,6 +90,8 @@ type job struct {
 	written0                float64 // GB already written when first measured
 	measured                bool
 	oom                     bool // stopped for lack of RAM: its need is above the peak it reached
+	vramOOM                 bool // it failed on its own with the GPU out of memory: its VRAM need is above what it reached
+	failure                 *policy.Failure
 }
 
 func newJob(t *policy.Ticket) *job {

@@ -519,6 +519,7 @@ type Act struct {
 	Exit      int     `json:"exit"`
 	Minutes   float64 `json:"minutes"`
 	Log       string  `json:"log"`
+	Tail      string  `json:"tail,omitempty"` // done: the last part of the job's output, to tell why it failed
 	Container string  `json:"container"`
 	// Project is the caller's project: cancel, bid and extend on another project's job need Force.
 	// A guard against agents touching each other's jobs by accident, not a security boundary.
@@ -750,6 +751,20 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		if !j.checkpoint.IsZero() || a.Exit == 75 { // 75 = checkpointed, requeue me (EX_TEMPFAIL)
 			outcome = "evicted"
 		}
+		if outcome == "failed" && j.killedAt.IsZero() {
+			// It failed on its own: say why and what to change; out of VRAM or RAM, its learned
+			// need goes up so the next run is admitted with room (review 11/20, after OpenPAI).
+			if f := policy.ClassifyExit(a.Exit, a.Tail); f != nil {
+				j.failure = f
+				switch f.Kind {
+				case "vram":
+					j.vramOOM = true
+				case "ram":
+					j.oom = true
+				}
+				logf("%s: failed: %s (%s)", j.Name, f.Why, f.Kind)
+			}
+		}
 		// Shown to other agents in status: one short, printable line, like every text an agent sends.
 		d.finish(id, a.Exit, outcome, cleanText(a.Log, 500))
 	case "cancel":
@@ -820,7 +835,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	if j.held != "" {
 		j.heldTotal += now.Sub(j.heldAt)
 	}
-	if j.oom && j.charged > 0 {
+	if j.oom && j.failure == nil && j.charged > 0 { // not when it ran itself out of memory
 		// The guard stopped it for the human's RAM and its work is lost: it isn't billed as well.
 		d.account(j.Project, now).Refund(d.cfg, j.charged)
 		logf("%s: its %.1f machine-minutes are refunded (stopped by the guard for RAM)", j.Name, j.charged)
@@ -830,7 +845,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		Declared: j.Minutes, Waited: round1(waited), Charged: round1(j.charged), PeakVRAM: round1(j.peakVRAM),
 		PeakRAM: round1(j.peakRAM), Log: log, Ended: now, Requeue: outcome == "evicted",
 		Client: j.ClientPID, ClientAt: j.clientAt,
-		Held: j.holds, HeldMinutes: round1(j.heldTotal.Minutes()), FreedRAM: round1(j.freedGB)}
+		Held: j.holds, HeldMinutes: round1(j.heldTotal.Minutes()), FreedRAM: round1(j.freedGB), Failure: j.failure}
 	if outcome == "evicted" || outcome == "killed" || outcome == "lost" || !j.killedAt.IsZero() {
 		rec.Reason = j.reason
 	}
@@ -888,7 +903,11 @@ func (d *Daemon) learnRun(h *History, j *job, now time.Time) {
 	}
 	add(&h.RAM, 0.05, ram, usage.RunHalfLifePeak)
 	if j.GPU {
-		add(&h.VRAM, 0.05, j.peakVRAM, usage.RunHalfLifePeak)
+		vram := j.peakVRAM
+		if j.vramOOM { // it needed more than it reached, and at least what it was admitted with
+			vram = usage.OOMBump(math.Max(j.peakVRAM, j.NeedVRAM))
+		}
+		add(&h.VRAM, 0.05, vram, usage.RunHalfLifePeak)
 	}
 	if j.workSec < 10 {
 		return

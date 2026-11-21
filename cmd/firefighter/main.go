@@ -436,7 +436,8 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 	}
 	argv = dockerGPU(argv, v.Device, v.Vendor) // a docker --gpus job goes to the card it was admitted on
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	tail := &tailBuffer{max: 64 << 10}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, teeIfPiped(os.Stdout, tail), teeIfPiped(os.Stderr, tail)
 	cmd.Env = append(os.Environ(),
 		"FIREFIGHTER_JOB_ID="+t.ID,
 		"FIREFIGHTER_PAUSE_FILE="+daemon.PauseFile(t.ID),
@@ -550,7 +551,7 @@ loop:
 	} else if werr != nil {
 		code = 1
 	}
-	v, err = c.Act(t.ID, "done", daemon.Act{Exit: code, Project: t.Project})
+	v, err = c.Act(t.ID, "done", daemon.Act{Exit: code, Project: t.Project, Tail: tail.String()})
 	if err != nil {
 		return code, false, nil
 	}
@@ -566,6 +567,10 @@ loop:
 			t.Name, rec.Outcome, rec.Exit, time.Since(start).Minutes(), rec.Declared, rec.Waited, rec.Charged, rec.PeakRAM, rec.PeakVRAM)
 		if rec.Requeue && rec.Reason != "" && askedAt.IsZero() {
 			ui.Say(ui.Hot, "%s: stopped because %s", t.Name, rec.Reason)
+		}
+		if f := rec.Failure; f != nil {
+			retry := map[string]string{"same": "running it again may work", "change": "change something before running it again", "no": "it won't work as it is"}[f.Retry]
+			ui.Say(ui.Hot, "%s: failed because %s; %s | do: %s", t.Name, f.Why, retry, f.Fix)
 		}
 		if rec.Held > 0 {
 			ui.Say(ui.Hot, "%s: suspended %d time(s), %.1f min in all, to free RAM or disk for the human (%.1f GB of RAM given back); it resumed where it stopped",

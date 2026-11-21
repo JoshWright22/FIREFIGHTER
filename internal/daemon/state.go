@@ -60,6 +60,9 @@ type Receipt struct {
 	Ended    time.Time `json:"ended"`
 	Requeue  bool      `json:"requeue"`
 	Reason   string    `json:"reason,omitempty"` // why firefighter stopped it (evicted/killed jobs)
+	// Failure: why a job that ended on its own failed, whether running it again can help, and what
+	// to change (from its exit code and the tail of its output; OpenPAI's job exit spec).
+	Failure *policy.Failure `json:"failure,omitempty"`
 	// Held: times the guard suspended it to free RAM or disk for the human (it resumed each time
 	// where it stopped), for HeldMinutes in all. FreedRAM: the RAM that gave back, or, for a job
 	// stopped for RAM, what stopping it freed.

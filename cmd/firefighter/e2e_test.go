@@ -64,6 +64,9 @@ func helper(spec string) int {
 		fmt.Println("helper-out")
 		n, _ := strconv.Atoi(f[1])
 		return n
+	case "cudaoom": // fail the way PyTorch does when the GPU runs out of memory
+		fmt.Fprintln(os.Stderr, "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB")
+		return 1
 	case "sleep":
 		ms, _ := strconv.Atoi(f[1])
 		file := strings.Join(f[2:], ":")
@@ -1230,5 +1233,18 @@ func TestStorageSpaces(t *testing.T) {
 	}
 	if exists(dir) {
 		t.Fatal("space folder still there")
+	}
+}
+
+// OpenPAI-style exit classification: a job that fails on its own gets a reason, whether a retry
+// can help, and a fix; out of VRAM, its learned need goes up for the next run.
+func TestFailedJobSaysWhyAndLearns(t *testing.T) {
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16, "used_gb": 1}}})
+	out, code := e.job("cudaoom", "--gpu", "--minutes", "1", "--vram", "4", "--name", "oomer")
+	if code != 1 || !strings.Contains(out, "failed because the GPU ran out of memory") || !strings.Contains(out, "do: declare more VRAM") {
+		t.Fatalf("receipt should say why it failed: %d\n%s", code, out)
+	}
+	if !strings.Contains(e.log(), "oomer: failed: the GPU ran out of memory (vram)") {
+		t.Fatalf("log:\n%s", e.log())
 	}
 }
