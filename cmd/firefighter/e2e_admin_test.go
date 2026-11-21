@@ -18,8 +18,25 @@ import (
 // run is expected to need, and the human's reserve per state.
 func TestForecastShowsWhatWasLearned(t *testing.T) {
 	e := newEnv(t, nil)
-	e.extra = []string{"FF_HOG_MB=300"}
-	if out, code := e.job("sleep:4000:"+filepath.Join(e.home, "s.txt"), "--minutes", "1", "--name", "hog job"); code != 0 { // long enough to be measured after filling its RAM
+	// A run is learned only once the guard's process scan has found and measured it: wait for that
+	// (a slow CI runner finished a 4 s job before its first scan), then let it end.
+	self, _ := os.Executable()
+	sub, err := e.cmd([]string{"FF_HELPER=sleep:8000:" + filepath.Join(e.home, "s.txt"), "FF_HOG_MB=300"},
+		"run", "--detach", "--minutes", "1", "--name", "hog job", "--", self).Output()
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	id := strings.TrimSpace(strings.Split(string(sub), "\n")[0])
+	eventually(t, "the job measured", 60*time.Second, func() bool {
+		r, _ := e.status()["running"].([]any)
+		if len(r) != 1 {
+			return false
+		}
+		m, _ := r[0].(map[string]any)
+		gb, _ := m["ram_now_gb"].(float64)
+		return gb >= 0.2
+	})
+	if out, code := e.ff("wait", id, "--timeout", "60"); code != 0 {
 		t.Fatalf("job failed:\n%s", out)
 	}
 	out, _ := e.ff("forecast")
