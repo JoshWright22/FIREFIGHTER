@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -411,7 +412,10 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 		return len(r) == 1
 	})
 	time.Sleep(1500 * time.Millisecond)                                                           // its RAM has been measured
-	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "ram_avail_gb": total*0.05 - 0.3}) // 0.3 GB under the 5% reserve
+	// 0.3 GB under the floor kept for the human: the away reserve (5%), but never under
+	// reserve.min_free_gb (4 GB, at most 15% of RAM). A shortfall the job's 0.6 GB can cover.
+	floor := math.Max(total*0.05, math.Min(4, total*0.15))
+	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "ram_avail_gb": floor - 0.3})
 	if runtime.GOOS == "windows" {
 		eventually(t, "suspended and its RAM freed", 20*time.Second, func() bool { return strings.Contains(e.log(), "suspending it freed") })
 		if out, _ := e.ff("status"); !strings.Contains(out, "suspended, not stopped") {
