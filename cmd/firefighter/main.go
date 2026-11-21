@@ -163,7 +163,7 @@ func parseRun(args []string) (*runFlags, []string, error) {
 	fs.Float64Var(&r.ram, "ram", 0, "peak RAM GB")
 	fs.IntVar(&r.bid, "bid", 5, "1-10; prefer --urgent (10) or the default (5)")
 	fs.BoolVar(&r.urgent, "urgent", false, "the human is waiting on the result: starts sooner, costs 2x")
-	fs.BoolVar(&r.quick, "quick", false, "a short look (under ~3 min), e.g. `docker run --rm img ls`: starts at once when RAM allows; the WSL/Docker VM's file cache it read is given back after")
+	fs.BoolVar(&r.quick, "quick", false, "a short look (under ~3 min), e.g. `docker run --rm img ls`: a short job, so it can start ahead of longer ones when RAM allows; the WSL/Docker VM's file cache it read is given back after")
 	fs.BoolVar(&r.net, "net", false, "network-heavy (downloads, uploads); known installers and downloads are detected")
 	fs.StringVar(&r.vendor, "gpu-vendor", "", "GPUs the job can use: nvidia, amd, intel or any (default: NVIDIA if present)")
 	fs.StringVar(&r.name, "name", "", "job name")
@@ -256,49 +256,10 @@ func hashCmd(argv []string) string {
 // dockerImage finds the image in `docker run` arguments: the first argument that isn't a flag
 // or a flag's value.
 func dockerImage(args []string) string {
-	if i := dockerImageAt(args); i >= 0 {
+	if i := daemon.DockerImageAt(args); i >= 0 {
 		return args[i]
 	}
 	return ""
-}
-
-// dockerImageAt is the index of the image in `docker run` arguments (after "run"), -1 if none:
-// everything after it belongs to the container's own command and is never rewritten.
-func dockerImageAt(args []string) int {
-	withValue := map[string]bool{"--name": true, "-e": true, "--env": true, "-v": true, "--volume": true, "-p": true, "--publish": true,
-		"-w": true, "--workdir": true, "--gpus": true, "--label": true, "-l": true, "--network": true, "--entrypoint": true, "-u": true, "--user": true,
-		"--shm-size": true, "--memory": true, "-m": true, "--cpus": true, "--mount": true, "--env-file": true, "--platform": true}
-	// Options that never take a value; any other "--opt" without "=" takes the next argument (docker
-	// has many more valued options than flags, so this errs toward finding the real image).
-	flags := map[string]bool{"--detach": true, "--interactive": true, "--tty": true, "--rm": true, "--privileged": true,
-		"--init": true, "--read-only": true, "--publish-all": true, "--no-healthcheck": true, "--oom-kill-disable": true,
-		"--help": true, "--quiet": true, "--disable-content-trust": true, "--replace": true, "--sig-proxy": true}
-	_ = withValue
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			if i+1 < len(args) {
-				return i + 1
-			}
-			return -1
-		case strings.HasPrefix(a, "--"):
-			if !strings.Contains(a, "=") && !flags[a] {
-				i++
-			}
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-			// Short options: a cluster of flags (-it, -d, -P, -q), possibly ending in one valued
-			// option (-dp 8080:80, -itv /a:/b), or a valued option with its value attached (-p80:80).
-			rest := a[1:]
-			k := strings.IndexFunc(rest, func(c rune) bool { return !strings.ContainsRune("ditPq", c) })
-			if k >= 0 && k == len(rest)-1 && !strings.Contains(a, "=") {
-				i++ // the last letter takes the next argument
-			}
-		default:
-			return i
-		}
-	}
-	return -1
 }
 
 // detachArgs rebuilds the child's command line from the parsed flags (never by filtering raw
@@ -618,12 +579,15 @@ loop:
 // dockerize labels `docker run` / `podman run` so the guard can find, pause, pin and kill the container.
 func dockerize(argv []string, id string) ([]string, string) {
 	base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe")
+	if (base == "docker" || base == "podman") && len(argv) >= 3 && argv[1] == "container" && argv[2] == "run" {
+		argv = append([]string{argv[0], "run"}, argv[3:]...) // `docker container run` is `docker run`: labeled too
+	}
 	if (base != "docker" && base != "podman") || len(argv) < 2 || argv[1] != "run" {
 		return argv, ""
 	}
 	name := ""
 	end := len(argv)
-	if k := dockerImageAt(argv[2:]); k >= 0 {
+	if k := daemon.DockerImageAt(argv[2:]); k >= 0 {
 		end = k + 2
 	}
 	for i, a := range argv[:end] {
@@ -1337,7 +1301,7 @@ func dockerGPU(argv []string, dev *int, vendor string) []string {
 	out := append([]string{}, argv...)
 	want := fmt.Sprintf("device=%d", *dev) // one device: no comma, so no CSV quoting needed
 	end := len(out)
-	if k := dockerImageAt(out[2:]); k >= 0 {
+	if k := daemon.DockerImageAt(out[2:]); k >= 0 {
 		end = k + 2
 	}
 	for i, a := range out[:end] {

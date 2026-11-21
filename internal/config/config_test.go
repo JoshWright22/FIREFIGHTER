@@ -90,3 +90,19 @@ func TestBrokenFileKeepsDefaults(t *testing.T) {
 		t.Fatalf("broken file: err=%v policy=%s", err, c.Order.Policy)
 	}
 }
+
+// Review round 3 (Fable): NaN makes every limit comparison false (unlimited storage claims).
+func TestNaNIsRefused(t *testing.T) {
+	t.Setenv("FIREFIGHTER_HOME", t.TempDir())
+	for _, kv := range [][2]string{{"storage.gb", "nan"}, {"storage.projects.alpha", "NaN"}, {"reserve.min_free_gb", "inf"}} {
+		if err := Set(kv[0], kv[1]); err == nil {
+			t.Errorf("config set %s %s accepted", kv[0], kv[1])
+		}
+	}
+	if err := Set("storage.gb", "50"); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Load(); err != nil || c.Storage.GB != 50 {
+		t.Fatalf("load after set: %v %v", c.Storage.GB, err)
+	}
+}

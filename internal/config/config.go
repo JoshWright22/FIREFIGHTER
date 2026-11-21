@@ -5,9 +5,12 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -294,10 +297,13 @@ func Path() string { return filepath.Join(Home(), "firefighter.toml") }
 // Load reads defaults, then the preset named in the file, then the file itself.
 func Load() (Config, error) {
 	raw := map[string]any{}
-	if b, err := os.ReadFile(Path()); err == nil {
-		if _, err := toml.Decode(string(b), &raw); err != nil {
-			return Defaults(), fmt.Errorf("%s: %w", Path(), err)
-		}
+	b, err := os.ReadFile(Path())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Unreadable is not "no file": say so (the guard keeps its last good config on an error).
+		return Defaults(), fmt.Errorf("%s: %w", Path(), err)
+	}
+	if _, err := toml.Decode(string(b), &raw); err != nil {
+		return Defaults(), fmt.Errorf("%s: %w", Path(), err)
 	}
 	return build(raw)
 }
@@ -321,7 +327,51 @@ func build(raw map[string]any) (Config, error) {
 	return c, c.Validate()
 }
 
+// finite reports the first NaN or infinite number in the config: every limit compares with it,
+// and NaN makes every comparison false (storage.gb = nan made claims unlimited; review 11/20).
+func finite(v reflect.Value, path string) error {
+	switch v.Kind() {
+	case reflect.Float32, reflect.Float64:
+		if f := v.Float(); math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Errorf("%s must be a finite number", path)
+		}
+	case reflect.Struct:
+		t := v.Type()
+		for i := 0; i < v.NumField(); i++ {
+			if !t.Field(i).IsExported() {
+				continue
+			}
+			name := t.Field(i).Tag.Get("toml")
+			if name == "" {
+				name = strings.ToLower(t.Field(i).Name)
+			}
+			p := name
+			if path != "" {
+				p = path + "." + name
+			}
+			if err := finite(v.Field(i), p); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			if err := finite(v.MapIndex(k), path+"."+fmt.Sprint(k.Interface())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (c Config) Validate() error {
+	if err := finite(reflect.ValueOf(c), ""); err != nil {
+		return err
+	}
+	for name, gb := range c.Storage.Projects {
+		if gb < 0 {
+			return fmt.Errorf("storage.projects.%s can't be negative", name)
+		}
+	}
 	if !contains(OrderPolicies, c.Order.Policy) {
 		return fmt.Errorf("order.policy %q: use one of %s", c.Order.Policy, strings.Join(OrderPolicies, ", "))
 	}
@@ -387,7 +437,7 @@ func Set(key, value string) error {
 	if err := toml.NewEncoder(&buf).Encode(raw); err != nil {
 		return err
 	}
-	return os.WriteFile(Path(), buf.Bytes(), 0o600)
+	return writeAtomic(Path(), buf.Bytes())
 }
 
 // Unset removes a key so its default (or preset value) applies again.
@@ -414,7 +464,28 @@ func Unset(key string) error {
 	if err := toml.NewEncoder(&buf).Encode(raw); err != nil {
 		return err
 	}
-	return os.WriteFile(Path(), buf.Bytes(), 0o600)
+	return writeAtomic(Path(), buf.Bytes())
+}
+
+// writeAtomic replaces path with b through a temp file and a rename: the guard, reloading the
+// config every second, never reads a half-written file (review 11/20: it then ran on defaults).
+func writeAtomic(path string, b []byte) error {
+	t, err := os.CreateTemp(filepath.Dir(path), "firefighter-*.toml.tmp")
+	if err != nil {
+		return err
+	}
+	_, werr := t.Write(b)
+	if cerr := t.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(t.Name(), 0o600)
+	}
+	if werr != nil {
+		os.Remove(t.Name())
+		return werr
+	}
+	return os.Rename(t.Name(), path)
 }
 
 // Show renders the effective config as TOML.

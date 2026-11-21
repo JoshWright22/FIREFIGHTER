@@ -115,7 +115,7 @@ func (p Pool) SetLabel(home, project, path, rank, purpose string) (string, error
 	if rank == "none" {
 		delete(g.Labels, rel)
 	} else {
-		g.Labels[rel] = Label{Rank: rank, For: strings.TrimSpace(purpose), At: time.Now()}
+		g.Labels[rel] = Label{Rank: rank, For: text(purpose, 200), At: time.Now()}
 	}
 	f.Grants[project] = g
 	return rel, save(home, f)
@@ -133,7 +133,11 @@ func (p Pool) Items(home, project string) ([]Item, error) {
 		return nil, err
 	}
 	project = canonical(f, project)
-	return items(filepath.Join(p.Root, project), f.Grants[project].Labels), nil
+	its := items(filepath.Join(p.Root, project), f.Grants[project].Labels)
+	for i := range its { // shown to agents and the human: file names are anyone's to choose
+		its[i].Path, its[i].For = text(its[i].Path, 1000), text(its[i].For, 200)
+	}
+	return its, nil
 }
 
 // foldCase: Windows and macOS file names ignore case, so labels match whatever case the files have.
@@ -364,8 +368,16 @@ func pruneEmpty(rt *os.Root, dir, item string, protected map[string]bool) {
 		}
 		return nil
 	})
+	under := func(rel string) bool { // the folder or one above it is protected
+		for p := rel; p != ""; p = parent(p) {
+			if protected[foldKey(p)] {
+				return true
+			}
+		}
+		return false
+	}
 	for i := len(dirs) - 1; i >= 0; i-- {
-		if !protected[foldKey(dirs[i])] {
+		if !under(dirs[i]) {
 			rt.Remove(filepath.FromSlash(dirs[i])) // fails, harmlessly, while it still holds something
 		}
 	}

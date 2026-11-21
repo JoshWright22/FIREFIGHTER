@@ -411,7 +411,7 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 		r, _ := st["running"].([]any)
 		return len(r) == 1
 	})
-	time.Sleep(1500 * time.Millisecond)                                                           // its RAM has been measured
+	time.Sleep(1500 * time.Millisecond) // its RAM has been measured
 	// 0.3 GB under the floor kept for the human: the away reserve (5%), but never under
 	// reserve.min_free_gb (4 GB, at most 15% of RAM). A shortfall the job's 0.6 GB can cover.
 	floor := math.Max(total*0.05, math.Min(4, total*0.15))

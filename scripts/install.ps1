@@ -101,16 +101,14 @@ if ($env:FIREFIGHTER_LOCAL_BINARY) {
         $want = ((Get-Content "$tmp\checksums.txt") | Where-Object { $_ -match " $([regex]::Escape($name))$" }).Split(' ')[0]
         $got = (Get-FileHash "$tmp\$name" -Algorithm SHA256).Hash.ToLower()
         if ($want -ne $got) { throw "checksum mismatch for $name" }
-        # With the GitHub CLI signed in, also check the release's signed build provenance. A release
-        # with none (made before releases were signed) still installs on its checksum, with a note;
-        # FIREFIGHTER_REQUIRE_PROVENANCE=1 refuses it.
+        # With the GitHub CLI signed in, also check the release's signed build provenance. Every release
+        # this installer can fetch (v0.2.0 on) is signed, so a file with none is refused: someone who
+        # could edit the release would replace the archive and checksums.txt, and a missing
+        # attestation is exactly what that looks like (review 11/20).
         switch (Test-Provenance "$tmp\$name") {
             'verified' { Write-Host 'verified signed build provenance' }
             'failed' { throw "provenance check failed for $name" }
-            'none' {
-                if ($env:FIREFIGHTER_REQUIRE_PROVENANCE -eq '1') { throw "no signed build provenance for $name" }
-                Write-Host "note: this release has no signed build provenance for $name; installing on its checksum alone"
-            }
+            'none' { throw "no signed build provenance for ${name}: refusing to install it (report it: https://github.com/$repo/issues)" }
         }
         $src = "$tmp\firefighter.exe"
         try { Expand-Archive "$tmp\$name" -DestinationPath $tmp -Force } catch { Write-Host "could not unpack ${name}: $_" }

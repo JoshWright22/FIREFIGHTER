@@ -452,8 +452,22 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 		t.Fatal("assigned with no CLI seen")
 	}
 	d.adoptContainers(cs, lines, since) // the next look finds the job's docker run
-	if j.container != "1a9a7107362a" || other.container != "" {
-		t.Fatalf("container not given to the job that started it: %q / %q\n%s", j.container, other.container, daemonLog(t))
+	// Only guessed (no label, no --name): its RAM is the job's, but no control (review round 3:
+	// the human may have started a container in that window).
+	if j.ctrSeen != "1a9a7107362a" || j.container != "" || other.container != "" {
+		t.Fatalf("guessed container: seen %q container %q other %q\n%s", j.ctrSeen, j.container, other.container, daemonLog(t))
+	}
+	select {
+	case args := <-d.dockerQ:
+		t.Fatalf("a guessed container was acted on: %v", args)
+	default:
+	}
+	// Named by the job's own CLI: proven, so it is held to the job's reservation.
+	j.ctrSeen, d.seenCtr = "", nil
+	lines = map[string][]string{j.ID: {"docker run --rm --gpus all --cpus=4 --memory=16g --name keen_grothendieck img python stage.py"}}
+	d.adoptContainers(cs, lines, since)
+	if j.container != "1a9a7107362a" {
+		t.Fatalf("named container not given to its job: %q", j.container)
 	}
 	select {
 	case args := <-d.dockerQ:
@@ -467,7 +481,7 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 	k := d.addRunning("second", 0.1, now)
 	cs = append(cs, sysinfo.Container{ID: "bbbbbbbbbbbb", Name: "other_name", MemGB: 1, Created: now})
 	d.adoptContainers(cs, map[string][]string{j.ID: {"docker run img"}, k.ID: {"docker run img2"}}, map[string]time.Time{j.ID: now.Add(-time.Minute), k.ID: now.Add(-time.Second)})
-	if k.container != "" || j.container != "1a9a7107362a" {
+	if k.container != "" || k.ctrSeen != "" || j.container != "1a9a7107362a" {
 		t.Fatalf("ambiguous container was assigned: %q %q", j.container, k.container)
 	}
 	if !isDockerRun(`"C:\Program Files\Docker\docker.exe" run --rm x`) || isDockerRun("docker ps") {
@@ -583,6 +597,17 @@ func TestBackoffLineSaysWhy(t *testing.T) {
 
 // Review 11/20 (GPT): the human's container, already running when a job's docker run starts, must
 // never be guessed to be the job's (it would be capped, paused and killed with it).
+// A container labeled firefighter.job=<id> (a job's script sets it from FIREFIGHTER_JOB_ID) is the
+// job's with no CLI line at all.
+func TestLabeledContainerIsTheJobs(t *testing.T) {
+	d := testDaemon(t)
+	j := d.addRunning("script", 1, time.Now().Add(-time.Minute))
+	d.adoptContainers([]sysinfo.Container{{ID: "abcabcabcabc", Name: "x", Job: j.ID}}, nil, nil)
+	if j.container != "abcabcabcabc" {
+		t.Fatalf("labeled container: %q", j.container)
+	}
+}
+
 func TestHumansContainerIsNotGuessed(t *testing.T) {
 	d := testDaemon(t)
 	now := time.Now()

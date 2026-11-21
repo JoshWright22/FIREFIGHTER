@@ -588,19 +588,26 @@ type Container struct {
 	MemGB float64 `json:"mem_gb"`
 	// Created: when the container was made (FillCreated), for telling a job's from the human's.
 	Created time.Time `json:"-"`
+	// Job: its firefighter.job label (FillCreated): the job that started it, proven by the label a
+	// job's own script sets from FIREFIGHTER_JOB_ID.
+	Job string `json:"-"`
 }
 
 // FillCreated sets each container's creation time from `docker inspect` (left zero on error).
 func FillCreated(cs []Container) {
-	args := []string{"inspect", "--format", "{{.Id}} {{.Created}}"}
+	args := []string{"inspect", "--format", `{{.Id}} {{.Created}} {{index .Config.Labels "firefighter.job"}}`}
 	for _, c := range cs {
 		args = append(args, c.ID)
 	}
 	out, _ := run(8*time.Second, "docker", args...)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) != 2 {
+		if len(f) < 2 {
 			continue
+		}
+		job := ""
+		if len(f) >= 3 && f[2] != "<no" { // "<no value>" when unlabeled
+			job = f[2]
 		}
 		t, err := time.Parse(time.RFC3339Nano, f[1])
 		if err != nil {
@@ -608,7 +615,7 @@ func FillCreated(cs []Container) {
 		}
 		for i := range cs {
 			if cs[i].ID != "" && strings.HasPrefix(f[0], cs[i].ID) {
-				cs[i].Created = t
+				cs[i].Created, cs[i].Job = t, job
 			}
 		}
 	}

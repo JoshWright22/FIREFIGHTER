@@ -117,7 +117,9 @@ pass `--force` when using `claim`, `label`, `free` or `release` on another proje
 **Files** in the state folder: `firefighter.toml` (your settings), `state.json` (budgets, learned
 history, receipts, the hour-of-week occupancy), `STATUS.md` (a status snapshot rewritten every 15 s
 for agents that read files), `daemon.log`, `logs/<id>.log` (detached jobs, kept 7 days),
-`signals/` (pause and checkpoint files), `daemon.json` and `daemon.lock`.
+`signals/` (pause and checkpoint files), `daemon.json` and `daemon.lock`; with agent storage,
+`storage.json` (claims and labels) and `storage.lock`; with a harvester, `harvest-ledger.csv`,
+`harvest-earnings.csv` and `harvest-trip.txt`.
 
 ## Per-OS support
 

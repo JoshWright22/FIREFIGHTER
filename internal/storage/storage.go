@@ -338,7 +338,7 @@ func (p Pool) Claim(home, project string, gb float64, why string) (string, error
 	}
 	g.GB = gb
 	g.Root = p.Root
-	if why != "" {
+	if why = text(why, 200); why != "" {
 		g.Why = why
 	}
 	f.Grants[project] = g
@@ -371,7 +371,7 @@ func (p Pool) Release(home, project string, deleteFiles bool) (freedGB float64, 
 	if !granted && files == 0 {
 		return 0, fmt.Errorf("%s has no space", project)
 	}
-	if files > 0 && deleteFiles {
+	if granted { // anything ranked keep that still exists, even an empty folder, blocks a release
 		for path, l := range g.Labels {
 			if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(path))); l.Rank == Keep && err == nil {
 				return 0, fmt.Errorf("%s holds %s, ranked keep (%s): move it out, or rank it none first, then release --delete", project, path, l.For)
@@ -460,6 +460,10 @@ func (p Pool) Look(home string) (Report, error) {
 			}
 		}
 	}
+	for i := range r.Spaces { // shown to agents and the human: folder names are anyone's to choose
+		sp := &r.Spaces[i]
+		sp.Project, sp.Path, sp.Why, sp.Elsewhere = text(sp.Project, 200), text(sp.Path, 1000), text(sp.Why, 200), text(sp.Elsewhere, 1000)
+	}
 	sort.Slice(r.Spaces, func(a, b int) bool { return r.Spaces[a].Project < r.Spaces[b].Project })
 	r.GrantedGB, r.UsedGB = round1(r.GrantedGB), round1(r.UsedGB)
 	if p.FloorGB != nil {
@@ -477,6 +481,25 @@ func firstExisting(path string) string {
 			return p
 		}
 	}
+}
+
+// text is agent-written text made safe to show other agents and the human: control characters
+// (a newline and a forged "do:" line, terminal escapes) become spaces, and it is cut to max runes
+// (review 11/20).
+func text(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n >= max {
+			break
+		}
+		if sysinfo.Printable(string(r)) == "" {
+			r = ' '
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // FromConfig is the allotment firefighter.toml sets.

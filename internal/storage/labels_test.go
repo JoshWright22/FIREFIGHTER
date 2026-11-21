@@ -203,3 +203,26 @@ func TestKeepEmptyFolderDuplicateLabelsAndNaN(t *testing.T) {
 		}
 	}
 }
+
+// Review round 3 (Fable): an empty folder under a folder ranked keep is kept too, and a space whose
+// only content is an empty folder ranked keep is not released.
+func TestKeepCoversWhatIsUnderIt(t *testing.T) {
+	p, home := pool(t, 10, 500)
+	dir, _ := p.Claim(home, "alpha", 5, "")
+	if err := os.MkdirAll(filepath.Join(dir, "a", "b", "out"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "a", "c.tmp"), 10)
+	if _, err := p.SetLabel(home, "alpha", "a/b", Keep, "outputs go here"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.Free(home, "alpha", 1, Unranked, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a", "b", "out")); err != nil {
+		t.Fatal("an empty folder under a keep folder was pruned")
+	}
+	if _, err := p.Release(home, "alpha", false); err == nil {
+		t.Fatal("released a space whose keep folder still exists")
+	}
+}

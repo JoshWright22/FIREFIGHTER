@@ -32,35 +32,39 @@ const tick = 500 * time.Millisecond
 
 type job struct {
 	*policy.Ticket
-	rootCreated  int64
-	clientAt     int64          // the client's start time (with ClientPID: one process, for good)
-	human        bool           // the human created it: only the human (or --force) changes it
-	pids         map[int]int64  // member pid -> start time (pid + start time = one process, for good)
-	applied      map[int]string // pid -> cpu set applied
-	cpuNow       float64        // CPUs in use
-	ramGB        float64
-	vramGB       float64
-	gpuUtil      float64
-	peakVRAM     float64
-	peakRAM      float64
-	charged      float64
-	overrun      bool
-	granted      time.Time
-	pausedAt     time.Time // cooperative pause flag set
-	pausedTotal  time.Duration
-	suspended    time.Time
-	checkpoint   time.Time // checkpoint-and-exit requested
-	termAt       time.Time
-	killedAt     time.Time
-	reason       string
-	container    string
-	receipt      *Receipt
-	extended     float64
-	price        float64   // locked at grant: bid price x congestion x surcharge
-	adopted      bool      // auto-adopted: heavy work an agent started outside firefighter
-	backfilled   bool      // started ahead of a GPU head waiting on VRAM: can't extend its lease
-	device       int       // GPU index the job was placed on (-1: any/unknown)
-	engine       string    // container engine of j.container: docker | podman
+	rootCreated int64
+	clientAt    int64          // the client's start time (with ClientPID: one process, for good)
+	human       bool           // the human created it: only the human (or --force) changes it
+	pids        map[int]int64  // member pid -> start time (pid + start time = one process, for good)
+	applied     map[int]string // pid -> cpu set applied
+	cpuNow      float64        // CPUs in use
+	ramGB       float64
+	vramGB      float64
+	gpuUtil     float64
+	peakVRAM    float64
+	peakRAM     float64
+	charged     float64
+	overrun     bool
+	granted     time.Time
+	pausedAt    time.Time // cooperative pause flag set
+	pausedTotal time.Duration
+	suspended   time.Time
+	checkpoint  time.Time // checkpoint-and-exit requested
+	termAt      time.Time
+	killedAt    time.Time
+	reason      string
+	container   string
+	receipt     *Receipt
+	extended    float64
+	price       float64 // locked at grant: bid price x congestion x surcharge
+	adopted     bool    // auto-adopted: heavy work an agent started outside firefighter
+	backfilled  bool    // started ahead of a GPU head waiting on VRAM: can't extend its lease
+	device      int     // GPU index the job was placed on (-1: any/unknown)
+	engine      string  // container engine of j.container: docker | podman
+	// ctrSeen: a container only guessed to be this job's (created while its docker run was live, no
+	// label, no --name match). It counts toward the job's RAM, but the guard never caps, pauses or
+	// kills it: the human may have started it in that window (review 11/20).
+	ctrSeen      string
 	ownerAgent   int       // pid of the agent session that submitted it (0: a human)
 	ownerCreated int64     // its start time (a reused pid isn't the same session)
 	ackBusy      time.Time // acked the pause but still computing on the GPU since then
@@ -526,7 +530,7 @@ func (d *Daemon) refreshDocker(now time.Time) {
 				}
 			}
 		}
-		if len(lines) > 0 && len(cs) > 0 {
+		if len(cs) > 0 && len(clis) > 0 { // creation times and job labels, only while a job runs a docker CLI
 			sysinfo.FillCreated(cs)
 		}
 		d.mu.Lock()
@@ -595,12 +599,19 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		}
 		owned := false
 		for _, j := range d.jobs {
-			if j.container != "" && strings.HasPrefix(j.container, c.ID) {
+			if (j.container != "" && strings.HasPrefix(j.container, c.ID)) || (j.ctrSeen != "" && strings.HasPrefix(j.ctrSeen, c.ID)) {
 				owned = true
 			}
 		}
 		if owned {
 			d.seenCtr[c.ID] = true
+			continue
+		}
+		// Labeled firefighter.job=<id> by the job's own script (FIREFIGHTER_JOB_ID): proven, the job's.
+		if j := d.jobs[c.Job]; c.Job != "" && j != nil && j.State == "running" && j.container == "" {
+			d.seenCtr[c.ID] = true
+			j.container, j.engine, j.ctrSeen = c.ID, "docker", ""
+			logf("%s: container %s (%s) is labeled firefighter.job=%s; it counts as the job's", j.Name, c.Name, c.ID, j.ID)
 			continue
 		}
 		// The owner: the one job with a live `docker run`, or the one whose CLI names the container.
@@ -652,11 +663,19 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 				continue // several new containers since then: no guess
 			}
 		}
+		if owner.container != "" || owner.ctrSeen != "" {
+			continue // a job's container is never replaced by another one
+		}
+		if !byName {
+			owner.ctrSeen = c.ID
+			logf("%s: container %s (%s) appeared while this job's docker run was live; its RAM counts toward the job's, but it is not paused, capped or stopped with it (it could be the human's)", owner.Name, c.Name, c.ID)
+			continue
+		}
 		owner.container, owner.engine = c.ID, "docker"
 		if strings.Contains(strings.ToLower(cl), "podman") {
 			owner.engine = "podman"
 		}
-		logf("%s: container %s (%s) was started by this job; it counts as the job's", owner.Name, c.Name, c.ID)
+		logf("%s: container %s (%s) was started by this job (its --name); it counts as the job's", owner.Name, c.Name, c.ID)
 		// A container with no --memory is capped only when the job declared --ram: the need of a job
 		// with no declaration may be a guess (0.5 GB), and capping on it OOM-kills real work (review 11/20).
 		if dm := dockerMemGB(cl); owner.NeedRAM > 0 && (dm > 0 || owner.RAMGB > 0) {
@@ -798,9 +817,9 @@ func (d *Daemon) applyMeasurements(meas map[string]measured, now time.Time, dt t
 		if !j.measured {
 			j.measured, j.written0 = true, m.writtenGB
 		}
-		if j.container != "" {
+		if ctr := j.container + j.ctrSeen; ctr != "" { // at most one of the two is set
 			for _, o := range d.others {
-				if o.ID != "" && strings.HasPrefix(j.container, o.ID) {
+				if o.ID != "" && strings.HasPrefix(ctr, o.ID) {
 					// The container's memory lives in the WSL/Docker VM, outside the job's process
 					// tree: it adds to what the job's own processes hold (a driver script, the CLI).
 					j.ramGB, j.cpuNow = m.ramGB+o.MemGB, o.CPU/100

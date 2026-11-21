@@ -32,9 +32,9 @@ cooperative agents, not a sandbox.
   locked npm toolchain for the extension, and least-privilege tokens, and carry signed build
   provenance. The installers check it automatically when the GitHub CLI is installed and signed in;
   by hand: `gh attestation verify firefighter_windows_amd64.zip --repo JoshWright22/FIREFIGHTER`.
-  A release from before signing (v0.1.0) has none: the installers then say so and install on the
-  checksum alone, unless `FIREFIGHTER_REQUIRE_PROVENANCE=1`. Provenance that exists and doesn't
-  check out always stops the install.
+  Every release the installers can fetch (v0.2.0 on) is signed, so with the CLI signed in a
+  missing or failing attestation stops the install (a replaced archive and checksums.txt look
+  exactly like an unsigned release). Without the GitHub CLI only the checksum is checked.
 - The guard updates itself (`update.auto`, on by default). It only ever asks this repository's
   GitHub releases over HTTPS, never installs an older version, and refuses an archive that doesn't
   match the release's `checksums.txt`. With the GitHub CLI installed and signed in it also requires

@@ -195,6 +195,12 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		// "starts in days".
 		t.Minutes = lim
 	}
+	if t.PID < 0 || t.PID > math.MaxInt32 || t.ClientPID < 0 || t.ClientPID > math.MaxInt32 {
+		// Larger values wrap when cast for the OS call, after the checks below compared the full
+		// value: 2^32+<guard pid> passed "isn't firefighter itself" and adopted the guard (review 11/20).
+		fail(w, 400, "pid out of range")
+		return
+	}
 	if req.Running && (t.PID <= 1 || !sysinfo.Alive(t.PID)) {
 		fail(w, 400, fmt.Sprintf("pid %d isn't a running process", t.PID))
 		return
@@ -209,6 +215,16 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		// Re-registration after a daemon restart comes from the job's own client.
 		fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't a job this client started", t.PID))
 		return
+	}
+	if req.Running && req.Adopt && !human && req.Force {
+		// --force from an agent reaches only other agents' work: a process with no agent CLI or
+		// agent host above it (a browser, an IDE window, a game) is the human's (review 11/20: it
+		// would be put on idle priority, suspended first and killed by a cancel).
+		g := d.cfgShared.Load().Guard
+		if sysinfo.AgentAncestorPID(t.PID, g.AgentParents) == 0 && sysinfo.AgentAncestorPID(t.PID, g.AgentHosts) == 0 {
+			fail(w, http.StatusForbidden, fmt.Sprintf("pid %d isn't agent work; only the human adopts other processes (from a terminal window)", t.PID))
+			return
+		}
 	}
 	if req.Running && req.Adopt && !human && !req.Force && !sysinfo.DescendantOf(t.PID, owner) {
 		// An agent may adopt work from its own session; any other process is the human's to adopt.
@@ -578,7 +594,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "job "+id+" is "+j.State+", not granted")
 			return
 		}
-		if a.PID <= 1 {
+		if a.PID <= 1 || a.PID > math.MaxInt32 { // larger values wrap when cast for the OS call
 			fail(w, 400, fmt.Sprintf("pid %d isn't a process", a.PID))
 			return
 		}
@@ -656,7 +672,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "job "+id+" is "+j.State+"; amend only changes a waiting job")
 			return
 		}
-		if a.RAMGB < 0 || a.VRAMGB < 0 || a.Minutes < 0 || a.Minutes > d.cfg.Ladder.MaxLeaseMinutes || (a.VRAMGB > 0 && !j.GPU) {
+		if a.RAMGB < 0 || a.VRAMGB < 0 || a.Minutes < 0 || (d.cfg.Ladder.MaxLeaseMinutes > 0 && a.Minutes > d.cfg.Ladder.MaxLeaseMinutes) || (a.VRAMGB > 0 && !j.GPU) {
 			fail(w, 400, "amend: --ram/--vram in GB (--vram only for a GPU job), --minutes up to the longest lease")
 			return
 		}

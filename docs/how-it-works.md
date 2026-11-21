@@ -112,7 +112,7 @@ Zero config gives you the researched defaults below. You can swap each part by n
   memory adds to the job's in receipts and in what is learned, its VRAM (seen through the WSL VM) is
   the card's use beyond the usual floor, and its limit is set to the job's need (its file cache
   counts toward it). `firefighter run --quick -- docker run --rm <image> ls` is the cheap path for a
-  look inside an image: a 2-minute lease (3 at most, never extended), starts at once when RAM allows, and the VM's file cache is
+  look inside an image: a 2-minute lease (3 at most, never extended), a short job that can start ahead of longer ones when RAM allows, and the VM's file cache is
   dropped when it ends.
 - **Hysteresis.** Stepping up (toward game) is immediate. Stepping down needs the lower state in 2 of
   3 readings 10 s apart, and a fullscreen game stays the game while it is the app in front.
