@@ -1,5 +1,5 @@
 {
   "name": "firefighter",
   "version": "0.1.0",
-  "description": "FIREFIGHTER, the coordinator and scheduler for unmanaged AI agents: live GPU/CPU/RAM status in the status line, a /firefighter command, and a guard that routes heavy Bash work through the shared-machine queue."
+  "description": "FIREFIGHTER lets several AI coding agents share one computer and keeps it usable for you. This plugin shows what is using your graphics card, processor and memory in the status line, adds a /firefighter command, and sends heavy commands through FIREFIGHTER's queue."
 }

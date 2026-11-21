@@ -26,7 +26,7 @@ function manifest(goos, exe) {
     name: "firefighter",
     display_name: "FIREFIGHTER",
     version,
-    description: "The coordinator and scheduler for unmanaged AI agents sharing one computer.",
+    description: "Lets several AI coding agents share one computer without slowing it down or getting in your way.",
     long_description:
       "Agents queue heavy work (training, evals, builds, renders, docker jobs) with firefighter_submit and " +
       "firefighter_wait instead of colliding on the GPU, VRAM, CPU or RAM, and jobs pause or checkpoint when " +
