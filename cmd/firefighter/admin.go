@@ -79,6 +79,9 @@ func configCmd(args []string) error {
 		if len(args) != 3 {
 			return errors.New("usage: firefighter config set <dotted.key> <value>")
 		}
+		if err := agentMayConfigure(args[1]); err != nil {
+			return err
+		}
 		if err := config.Set(args[1], args[2]); err != nil {
 			return err
 		}
@@ -86,6 +89,9 @@ func configCmd(args []string) error {
 	case "unset":
 		if len(args) != 2 {
 			return errors.New("usage: firefighter config unset <dotted.key>")
+		}
+		if err := agentMayConfigure(args[1]); err != nil {
+			return err
 		}
 		return config.Unset(args[1])
 	case "presets":
@@ -292,3 +298,22 @@ def firefighter_step(save_checkpoint=None):
             save_checkpoint()
         sys.exit(75)
 `
+
+// agentMayConfigure: from an agent's session, the CLI follows the same rule as the MCP tool (only
+// order.*, pricing.* and gpu.*, and only when guard.agents_can_configure is on). A job held for RAM
+// must not lead an agent to lower the human's reserve with one command (review round 6). A test's
+// or sandbox's own state folder is its own to change. Not a sandbox: an agent running as the same
+// user can still edit the file, but it can't do it by accident.
+func agentMayConfigure(key string) error {
+	if !config.IsDefaultHome() {
+		return nil
+	}
+	c, _ := config.Load()
+	if sysinfo.AgentAncestorPID(os.Getpid(), c.Guard.AgentParents) == 0 {
+		return nil // the human's terminal
+	}
+	if c.Guard.AgentsCanConfigure && config.AgentKey(key) {
+		return nil
+	}
+	return fmt.Errorf("%s is the human's setting: an agent session can't change it (with guard.agents_can_configure on, agents may change order.*, pricing.* and gpu.* only); ask the human", key)
+}

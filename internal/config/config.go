@@ -254,6 +254,18 @@ var Presets = map[string]func(*Config){
 	},
 }
 
+// AgentKey: settings an agent may change when guard.agents_can_configure is on. Never guard.*
+// (the human's protections), harvester.* (shell commands the daemon runs), budget.*, reserve.*,
+// preset (a preset sets reserves) or order.max_wait_minutes (overdue jobs start while the human is
+// at the keyboard).
+func AgentKey(k string) bool {
+	k = strings.ToLower(strings.TrimSpace(k))
+	if k == "order.max_wait_minutes" {
+		return false
+	}
+	return strings.HasPrefix(k, "order.") || strings.HasPrefix(k, "pricing.") || strings.HasPrefix(k, "gpu.")
+}
+
 var OrderPolicies = []string{"las", "stride", "lottery", "drf", "fifo", "srpt"}
 
 // Home is the state folder: FIREFIGHTER_HOME, else the per-user local data folder.
@@ -265,12 +277,32 @@ func Home() string {
 }
 
 // IsDefaultHome says whether Home is the real, per-user one (not a test's or a sandbox's).
+// It compares folders, not strings: a relative path, a \\?\ prefix, a link or a changed LOCALAPPDATA
+// all name the real folder too, and the test-only overrides must stay off there (review round 6).
 func IsDefaultHome() bool {
-	a, b := filepath.Clean(Home()), filepath.Clean(DefaultHome())
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		return strings.EqualFold(a, b)
+	h := Home()
+	for _, d := range append([]string{DefaultHome()}, osDefaultHomes()...) {
+		if d != "" && sameDir(h, d) {
+			return true
+		}
 	}
-	return a == b
+	return false
+}
+
+func sameDir(a, b string) bool {
+	if aa, err := filepath.Abs(a); err == nil {
+		a = aa
+	}
+	if bb, err := filepath.Abs(b); err == nil {
+		b = bb
+	}
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if a == b || (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && strings.EqualFold(a, b) {
+		return true
+	}
+	sa, err1 := os.Stat(a)
+	sb, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(sa, sb)
 }
 
 // DefaultHome is where firefighter keeps its state when FIREFIGHTER_HOME isn't set.

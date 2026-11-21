@@ -271,7 +271,7 @@ func (d *Daemon) busyOutside() []string {
 	var out []string
 	for n, u := range d.foreign {
 		if u >= d.cfg.Reserve.ForeignGPUPct {
-			out = append(out, fmt.Sprintf("%s %.0f%%", n, u))
+			out = append(out, fmt.Sprintf("%s %.0f%%", cleanText(n, 60), u)) // a program names itself
 		}
 	}
 	return out

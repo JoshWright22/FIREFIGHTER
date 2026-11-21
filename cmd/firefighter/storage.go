@@ -162,10 +162,10 @@ func storageCmd(args []string) error {
 		}
 		for _, it := range chosen {
 			if it.Left > 0 {
-				fmt.Printf("  %d file(s) of %s are in use and were kept", it.Left, it.Path)
+				fmt.Printf("  %d file(s) of %q are in use and were kept", it.Left, it.Path)
 				fmt.Println()
 			}
-			fmt.Printf("  %s %s (%s, %.2f GB)\n", verb, it.Path, it.Rank, it.GB)
+			fmt.Printf("  %s %q (%s, %.2f GB)\n", verb, it.Path, it.Rank, it.GB)
 		}
 		fmt.Printf("%s: %s %.2f GB of the %.1f GB asked", *project, verb, freed, *gb)
 		if freed < *gb {

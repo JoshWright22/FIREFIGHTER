@@ -228,7 +228,7 @@ firefighter protocol                                              # how GPU jobs
 Agents connected through MCP get six tools: `firefighter_submit`, `firefighter_wait`,
 `firefighter_status`, `firefighter_job`, `firefighter_plan` and `firefighter_storage`
 (`firefighter_config` too, only if you allow agents to change settings with
-`guard.agents_can_configure`). Every command and option: [CLI reference](docs/reference.md#cli-reference).
+`guard.agents_can_configure`; `firefighter config set` from an agent's session follows the same rule). Every command and option: [CLI reference](docs/reference.md#cli-reference).
 
 ## Docs
 

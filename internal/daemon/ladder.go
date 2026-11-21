@@ -117,9 +117,10 @@ func (d *Daemon) ladder(now time.Time) {
 				d.suspend(j)
 				logf("%s: acked the pause but kept the GPU at %.0f%%; suspended", j.Name, j.gpuUtil)
 			}
-		case hold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.Evict != "never" && j.GPU &&
+		case hold && !j.suspended.IsZero() && j.checkpoint.IsZero() && j.GPU &&
 			now.Sub(j.suspended) > dur(c.Ladder.SuspendMaxSeconds) &&
-			((ramShort && j.ramGB > 0.5 && (!sysinfo.CanTrim || j.trimFailed)) || (vramCard >= 0 && d.onCard(j, vramCard))):
+			((j.Evict != "never" && ramShort && j.ramGB > 0.5 && (!sysinfo.CanTrim || j.trimFailed)) || (vramCard >= 0 && d.onCard(j, vramCard))):
+			// evict=never doesn't keep VRAM the human is short of through a whole game (review round 6).
 			// A GPU job suspended past the limit and holding memory the human is short of. It ignored
 			// the pause file, so it can't checkpoint: resuming it would only let it compute through
 			// the game. Stop it (requeued). A download frozen for the game is left to the RAM
@@ -146,7 +147,10 @@ func (d *Daemon) ladder(now time.Time) {
 			g := d.snap.GPUs[card]
 			short = math.Max(0.1, d.res.VRAMGB-(g.VRAMGB-g.UsedGB)) // what the human is missing, not the whole reserve
 		}
-		if v := d.victim(func(j *job) bool { return j.GPU && d.onCard(j, card) }, true, false, short, func(j *job) float64 { return j.vramGB }); v != nil {
+		// Still short after three pressure periods: critical, so an evict=never job is asked too
+		// (never is not an exemption from the human's reserve; review round 6).
+		critical := now.Sub(d.vramLow) > 3*dur(c.Ladder.PressureSeconds)
+		if v := d.victim(func(j *job) bool { return j.GPU && d.onCard(j, card) }, true, critical, short, func(j *job) float64 { return j.vramGB }); v != nil {
 			d.requestCheckpoint(v, now, fmt.Sprintf("VRAM below the human's %.1f GB reserve", d.res.VRAMGB))
 		}
 	}

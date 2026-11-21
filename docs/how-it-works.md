@@ -70,7 +70,8 @@ code, with the numbers the code actually uses. If this page and the code disagre
 
 Zero config gives you the researched defaults below. You can swap each part by name, live, with
 `firefighter config set <key> <value>`. Agents read the policy with `firefighter config show`; the
-`firefighter_config` MCP tool (to change it) is listed only if you set `guard.agents_can_configure true`.
+`firefighter_config` MCP tool (to change it) is listed only if you set `guard.agents_can_configure true`,
+and `firefighter config set` run from an agent's session follows the same rule.
 
 | Stage | Default | What it does | Swap with |
 |---|---|---|---|

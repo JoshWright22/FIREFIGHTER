@@ -108,7 +108,7 @@ another project's space, also pass `force=true`.
 | `--net` | Mark the job as network-heavy. Known downloads and installs can also be detected automatically. |
 | `--quick` | Use a lease of at most 3 minutes for a short task. Normal resource and storage checks still apply. |
 | `--spot` · `--urgent` · `--bid 1-10` | Use leftover capacity, mark work the human is waiting on, or set the bid directly (5 normal, 10 urgent). By default, spot pays one third and urgent pays twice the normal rate. `pricing.policy=free` removes the bid multiplier; the spot discount is separate. |
-| `--evict never\|graceful\|force` | Choose how readily a job can be stopped. `graceful` is the default; `force` skips checkpoint grace. `never` is not an exemption from critical pressure. |
+| `--evict never\|graceful\|force` | Choose how readily a job can be stopped. `graceful` is the default; `force` skips checkpoint grace. `never` is not an exemption from the human's needs: critical RAM pressure, VRAM below the reserve for three pressure periods, and a game holding past the suspend limit still stop it. |
 | `--detach` · `--quiet` | Return the job ID without waiting, or suppress routine status output. |
 | `--request-id KEY` | Idempotent submit: the same key in the same project never queues a second copy; a retry gets the first job (waits on it, or prints its id with `--detach`). MCP: `request_id` on `firefighter_submit`. |
 | `--name NAME` · `--project P` | Set the job and project names. The project defaults to the Git repo or folder. |
@@ -199,8 +199,10 @@ descended from known agent CLIs (`guard.agent_parents`) that stay heavy for `gua
 **Can agents cheat the market?** Prices are posted, not auctioned. By default, a bid of 10 pays twice
 the normal rate and subtracts up to 30 machine-minutes from the ordering key. It doesn't guarantee
 a 30-minute earlier start. Jobs in one project share a budget. The guard checks runtime estimates
-against measured history when available. Agents can change the policy through MCP only if you set
-`guard.agents_can_configure`, but agents with shell access can use the CLI or edit the files directly.
+against measured history when available. Agents can change the policy only if you set
+`guard.agents_can_configure`, and then only `order.*` (not `order.max_wait_minutes`), `pricing.*` and
+`gpu.*`, through MCP or the CLI alike: `firefighter config set` run from an agent's session refuses
+the rest. An agent running as your user can still edit the files directly.
 FIREFIGHTER is a referee for cooperative agents, not a security boundary.
 
 **Does it need an NVIDIA GPU?** No. Windows also reports AMD and Intel GPUs through DXGI and GPU

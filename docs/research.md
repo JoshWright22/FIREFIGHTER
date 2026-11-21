@@ -121,7 +121,7 @@ Each step is tried in order, and the next step fires only if the trigger persist
 | 4 | Graceful checkpoint-and-exit: CTRL_BREAK, or the `FIREFIGHTER_CHECKPOINT` flag, with 60 s grace, then requeue with priority kept | VRAM, RAM | VRAM or RAM below the reserve for 20 s; band-3 job when band 2 waits | Work since the last checkpoint (CheckFreq keeps overhead ≤ 3.5% [S]) | Borg eviction notice [S]; CheckFreq ([USENIX](https://usenix.org/conference/fast21/presentation/mohan)) |
 | 5 | TerminateJobObject: band 3 first, then band 2; heaviest first within a band | Everything | Available RAM < 3%, or a paging-stall proxy above threshold for 10 s | Lost work | lmkd ordering, earlyoom two-stage [S] |
 
-Jobs declare `--evict never|graceful|force` (gpubroker [S]). `never` jobs are admitted only while the user is Away and only in band 2, so the ladder never has to kill them for a band-2 rival. The user's own needs can still reach step 5 [I].
+Jobs declare `--evict never|graceful|force` (gpubroker [S]). Proposed here: `never` jobs admitted only while the user is Away and only in band 2. Built instead (11/20): `never` is admitted like any job, is never stopped for a rival, and still yields to the user's own needs (critical RAM, VRAM below the reserve for three pressure periods, a game past the suspend limit) [I].
 
 ## Ranked next changes
 

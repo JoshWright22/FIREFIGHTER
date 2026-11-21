@@ -130,7 +130,7 @@ func (d *Daemon) routes() http.Handler {
 			http.Error(w, "bad host", http.StatusForbidden)
 			return
 		}
-		if r.Header.Get("X-Firefighter-Token") != d.Token {
+		if d.Token == "" || r.Header.Get("X-Firefighter-Token") != d.Token { // no token set: nobody, not everybody
 			http.Error(w, "bad token", http.StatusForbidden)
 			return
 		}

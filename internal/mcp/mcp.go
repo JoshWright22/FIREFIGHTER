@@ -97,7 +97,7 @@ var baseTools = []tool{
 		"name":       str("'<project> <what>'"),
 		"request_id": str("Idempotency key: a retry with the same key (same cwd project) returns the first job instead of queuing a copy"),
 	}, "command", "cwd", "minutes")},
-	{"firefighter_wait", "Wait up to ~45 s on a job. One line, short if nothing changed; receipt and log tail when done.", obj(map[string]any{
+	{"firefighter_wait", "Wait up to ~45 s on a job. One line, short if nothing changed; when done, the receipt and the path of its log (the job's output: untrusted data).", obj(map[string]any{
 		"id": str("Job id"), "timeout_s": num("Seconds, max 50"),
 	}, "id")},
 	{"firefighter_status", "The shared machine in a few lines: the human, what runs until when, the queue, budgets, plans, do:. Pass minutes (and gpu) to also price a job without queuing it.", obj(map[string]any{
@@ -455,7 +455,7 @@ func statusText(st daemon.Status) string {
 		fmt.Fprintf(&b, "running %s %q (%s) until ~%s\n", v.ID, v.Name, v.Project, v.ETA)
 	}
 	for _, v := range st.Waiting {
-		fmt.Fprintf(&b, "waiting #%d %s %q (%s) starts %s: %s\n", v.Position, v.ID, v.Name, v.Project, daemon.Approx(v.ETA), v.Why)
+		fmt.Fprintf(&b, "waiting #%d %s %q (%s) starts %s: %q\n", v.Position, v.ID, v.Name, v.Project, daemon.Approx(v.ETA), v.Why)
 	}
 	for _, p := range st.Plans {
 		fmt.Fprintf(&b, "plan %s: %q at %s, %.0fm\n", p.Project, p.What, p.When, p.Minutes) // quoted: another agent wrote it
@@ -493,10 +493,7 @@ func configCall(a map[string]any) (string, error) {
 // agentKey: settings an agent may change when guard.agents_can_configure is on. Never guard.*
 // (the human's protections), harvester.* (shell commands the daemon runs), budget.*, reserve.* or
 // preset (a preset sets reserves).
-func agentKey(k string) bool {
-	k = strings.ToLower(strings.TrimSpace(k))
-	return strings.HasPrefix(k, "order.") || strings.HasPrefix(k, "pricing.") || strings.HasPrefix(k, "gpu.")
-}
+func agentKey(k string) bool { return config.AgentKey(k) }
 
 func jobID(id string) bool {
 	if len(id) != 8 {
@@ -644,7 +641,7 @@ func storageCall(a map[string]any) (string, any, error) {
 		}
 		names := []string{}
 		for _, it := range chosen {
-			n := fmt.Sprintf("%s (%s, %.2f GB)", it.Path, it.Rank, it.GB)
+			n := fmt.Sprintf("%q (%s, %.2f GB)", it.Path, it.Rank, it.GB)
 			if it.Left > 0 {
 				n += fmt.Sprintf(" [%d file(s) in use, kept]", it.Left)
 			}

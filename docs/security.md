@@ -45,7 +45,8 @@ cooperative agents, not a sandbox.
   the archive's signed build provenance (`gh attestation verify --repo JoshWright22/FIREFIGHTER`):
   that is what a tampered release can't forge, so sign in to `gh` if you want that guarantee, or
   set `update.auto false` and update by hand. The test-only override of the release address is
-  ignored in your real state folder, and even in a test folder it only accepts a server on this
+  ignored in your real state folder (compared as a folder, so a relative path, a link or a changed
+  `LOCALAPPDATA` still counts as the real one), and even in a test folder it only accepts a server on this
   machine (`localhost`, `127.0.0.1` or `::1`).
 - Windows binaries aren't code-signed yet, and Microsoft Defender's machine-learning rules have
   flagged a published build (`Behavior:Win32/Persistence.A!ml` and similar names: an unsigned,

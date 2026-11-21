@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false # nothing here pushes: no token left in .git/config
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod # the toolchain go.mod names, not whatever "stable" is today
@@ -113,6 +114,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: src           # build.mjs and its inputs (icon, LICENSE); it imports only node: modules
+          persist-credentials: false
       # npm code packed the bundles in a job without a write token. Before signing anything, this job
       # stages the same folders itself (plain Node, no dependencies) and requires every bundle to hold
       # exactly those files, byte for byte: the binary, but also manifest.json (what the MCP host
@@ -136,6 +138,23 @@ jobs:
             done
             echo "$b ok"
           done
+      # The extension too was packed by npm code: before it is signed, it must hold exactly the
+      # extension's files from this commit (package.json differing only in the version stamped in),
+      # plus vsce's two manifest files (review round 6).
+      - name: the extension is exactly the repo's files
+        run: |
+          set -eu
+          v=firefighter-vscode.vsix
+          want=$(printf '%s\n' '[Content_Types].xml' extension.vsixmanifest extension/LICENSE.txt extension/extension.js extension/icon.png extension/package.json extension/readme.md | sort)
+          got=$(unzip -Z1 "$v" | grep -v '/$' | sort)
+          [ "$want" = "$got" ] || { echo "$v: unexpected files"; echo "$got"; exit 1; }
+          for pair in extension.js:extension.js icon.png:icon.png LICENSE:LICENSE.txt README.md:readme.md; do
+            src=src/integrations/vscode/${pair%%:*}; in=extension/${pair##*:}
+            [ "$(sha256sum < "$src")" = "$(unzip -p "$v" "$in" | sha256sum)" ] || { echo "$v: $in differs from $src"; exit 1; }
+          done
+          unzip -p "$v" extension/package.json > packed.json
+          node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync("packed.json"));const b=JSON.parse(fs.readFileSync("src/integrations/vscode/package.json"));a.version=b.version="x";const c=o=>Array.isArray(o)?o.map(c):o&&typeof o==="object"?Object.fromEntries(Object.keys(o).sort().map(k=>[k,c(o[k])])):o;if(JSON.stringify(c(a))!==JSON.stringify(c(b))){console.error("package.json differs beyond the version");process.exit(1)}'
+          echo "$v ok"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
@@ -160,6 +179,8 @@ jobs:
       MCP_PUBLISHER_SHA256: 00b21004149a4ce66f0782508ae4a2bce67d1bea395a8da0bd8028159fb59579 # linux_amd64, from registry_1.8.7_checksums.txt
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: mcpb

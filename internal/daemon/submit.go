@@ -172,7 +172,7 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		t.Name = t.Project
 	}
 	if t.Quick && (t.Minutes <= 0 || t.Minutes > 3) {
-		t.Minutes = 3 // a quick look is short by definition (it skips the storage hold); the CLI refuses a longer one
+		t.Minutes = 3 // a quick look is short by definition; the CLI refuses a longer one
 	}
 	if caller > 1 {
 		t.ClientPID = caller

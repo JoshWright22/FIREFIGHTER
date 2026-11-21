@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -112,7 +113,7 @@ func load() saved {
 			bad := statePath() + ".bad-" + time.Now().Format("20060102-150405")
 			logf("state.json is damaged (%v); moved to %s, starting with empty accounts and history", err, bad)
 			_ = os.Rename(statePath(), bad)
-			s = saved{}
+			s = salvage(b) // the processes the dead guard froze must still be thawed
 		}
 	}
 	if s.Accounts == nil {
@@ -145,4 +146,32 @@ func (d *Daemon) saveState() {
 	if err := d.st.write(); err != nil {
 		logf("couldn't save state.json: %v", err)
 	}
+}
+
+// salvage reads the top-level entries of a damaged state.json up to the damage, and keeps only the
+// processes the guard froze and the jobs open then: losing those would leave a game-time freeze in
+// place for good (review round 6). Accounts and history start over.
+func salvage(b []byte) saved {
+	var s saved
+	dec := json.NewDecoder(bytes.NewReader(b))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return s
+	}
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			break
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			break
+		}
+		switch k {
+		case "frozen":
+			_ = json.Unmarshal(raw, &s.Frozen)
+		case "open":
+			_ = json.Unmarshal(raw, &s.Open)
+		}
+	}
+	return s
 }
