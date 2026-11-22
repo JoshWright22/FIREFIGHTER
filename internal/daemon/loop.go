@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -108,18 +109,30 @@ func (d *Daemon) Run() {
 			cpu, ram, written := sysinfo.Usage(pids)
 			meas[r.id] = measured{m, cpu, ram, written}
 		}
-		rogues := d.findRogues(now, cfg, snap, governed)
-		d.measureHumanCPU(now, cfg, governed)
-		d.refreshDocker(now)
-		d.refreshVM(now, vmWanted)
-		d.refreshDisks(now, folders, sysFolders)
-		d.refreshStorage(now, cfg)
+		// The scans outside the lock read the whole process table and the OS's own tools: a panic in
+		// one must not take the guard down (CI 2026-11-22: the guard vanished mid-test on macOS
+		// with nothing in its log). It is logged with its stack, and the pass goes on without it.
+		var rogues []rogue
+		scan := func(what string, f func()) {
+			defer func() {
+				if r := recover(); r != nil {
+					logf("loop panic (%s): %v\n%s", what, r, debug.Stack())
+				}
+			}()
+			f()
+		}
+		scan("rogues", func() { rogues = d.findRogues(now, cfg, snap, governed) })
+		scan("human CPU", func() { d.measureHumanCPU(now, cfg, governed) })
+		scan("docker", func() { d.refreshDocker(now) })
+		scan("vm", func() { d.refreshVM(now, vmWanted) })
+		scan("disks", func() { d.refreshDisks(now, folders, sysFolders) })
+		scan("storage", func() { d.refreshStorage(now, cfg) })
 
 		d.mu.Lock()
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					logf("loop panic: %v", r)
+					logf("loop panic: %v\n%s", r, debug.Stack())
 				}
 			}()
 			d.step(snap, meas, rogues, now, now.Sub(last))
