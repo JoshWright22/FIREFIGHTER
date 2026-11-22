@@ -212,6 +212,14 @@ func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 		if strings.Contains(readFile(log), "checkpointed") || strings.Contains(e.log(), "killed") {
 			t.Fatalf("a frozen download was stopped instead of having its RAM moved out:\n%s", e.log())
 		}
+	} else if runtime.GOOS == "darwin" {
+		// macOS compresses a stopped process's memory by itself (CI 2026-11-22: 600 MB down to 0.2
+		// GB), so no job's RAM covers the shortfall and nothing is asked to save. What must hold: a
+		// frozen download is never killed outright.
+		time.Sleep(10 * time.Second)
+		if strings.Contains(e.log(), "download: killed") {
+			t.Fatalf("a frozen download was killed:\n%s", e.log())
+		}
 	} else {
 		eventually(t, "asked to save, not killed", 30*time.Second, func() bool { return strings.Contains(readFile(log), "checkpointed") })
 	}
