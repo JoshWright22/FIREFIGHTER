@@ -40,6 +40,11 @@ type Decision struct {
 	Card         int
 	retryIn      time.Duration
 	backfilled   bool
+	// A backfill head (a job holding RAM or a card for itself): its bid, name and expected start
+	// in minutes; only lower-or-equal bids that don't end before then wait behind it.
+	headPrio  int
+	headName  string
+	headStart float64
 }
 
 func blocked(kind BlockKind, text string, forecastable bool) Decision {
@@ -160,7 +165,7 @@ func (d *Daemon) gateResources(j *job, ctx *admitCtx) Decision {
 		if decision.Kind != blockNone {
 			return decision
 		}
-	} else if head.Kind != blockNone && !shortJob(j.Ticket) {
+	} else if head.Kind != blockNone && !passesHead(j, *head) {
 		return backfillHold("RAM", *head)
 	}
 	if why := d.storageWhy(j); why != "" {
@@ -175,7 +180,7 @@ func (d *Daemon) gateResources(j *job, ctx *admitCtx) Decision {
 	if hold := d.ramGate(j, ctx, overdue); hold.Kind != blockNone {
 		ctx.ramBlocked = true
 		if overdue && head.Kind == blockNone {
-			*head = hold
+			d.makeHead(&hold, j, ctx, blockRAM, head)
 		}
 		return hold
 	}
@@ -201,7 +206,7 @@ func (d *Daemon) gpuGate(j *job, ctx *admitCtx, ramHead Decision) Decision {
 	if d.gpuDegraded {
 		return blocked(blockGPUReading, "waiting for GPU readings (only some GPUs are reporting)", false)
 	}
-	if ramHead.Kind != blockNone && !shortJob(j.Ticket) {
+	if ramHead.Kind != blockNone && !passesHead(j, ramHead) {
 		return backfillHold("RAM", ramHead)
 	}
 	card, left := d.cardFor(j.Ticket)
@@ -240,15 +245,18 @@ func (d *Daemon) gpuGate(j *job, ctx *admitCtx, ramHead Decision) Decision {
 		// 11/22: a 3 GB job waited behind an 8.5 GB one that couldn't start).
 		overdue := ctx.now.Sub(j.Created).Minutes() >= d.cfg.Order.MaxWaitMinutes
 		if _, exists := ctx.vramHeads[card]; !exists && overdue {
-			if ctx.vramHeads == nil {
-				ctx.vramHeads = make(map[int]Decision)
+			var h Decision
+			if d.makeHead(&hold, j, ctx, blockVRAM, &h) {
+				if ctx.vramHeads == nil {
+					ctx.vramHeads = make(map[int]Decision)
+				}
+				ctx.vramHeads[card] = h
 			}
-			ctx.vramHeads[card] = hold
 		}
 		return hold
 	}
 	vramHead, waiting := ctx.vramHeads[card]
-	if waiting && !shortJob(j.Ticket) {
+	if waiting && !passesHead(j, vramHead) {
 		return backfillHold("VRAM on this card", vramHead)
 	}
 	return Decision{Text: "GPU turn queue", Forecastable: true, Card: card, backfilled: waiting || ramHead.Kind != blockNone}
@@ -289,9 +297,37 @@ func (d *Daemon) vramHeldOn(card int) float64 {
 }
 
 func backfillHold(resource string, head Decision) Decision {
-	hold := blocked(blockBackfill, "backfill: only short jobs can start ahead of the job waiting for "+resource, head.Forecastable)
+	hold := blocked(blockBackfill, fmt.Sprintf("backfill: %s (bid %d) has waited longest for %s and should start in ~%.0f min; a job of its bid or lower starts ahead of it only if it ends by then (short jobs always may)",
+		head.headName, head.headPrio, resource, head.headStart), head.Forecastable)
 	hold.retryIn = head.retryIn
 	return hold
+}
+
+// makeHead turns an overdue job's hold into the backfill head for resource, when its start can be
+// predicted from the running jobs' ends. When it can't ("start not forecast": it needs more than
+// the running jobs would give back), it reserves nothing for a while: holding the whole line for a
+// start no one can foresee froze five bid-7 jobs behind one 6.5 GB job with 4.6 GB free (Josh 11/22).
+func (d *Daemon) makeHead(hold *Decision, j *job, ctx *admitCtx, kind BlockKind, head *Decision) bool {
+	start, ok := d.expectedStart(j, ctx, kind)
+	if !ok {
+		// Unknown start: nothing reserved, so jobs that fit keep the machine busy, until the job
+		// has waited twice order.max_wait_minutes; then it holds the resource and only short jobs
+		// pass, so it can't starve behind a steady stream of jobs that fit.
+		if ctx.now.Sub(j.Created).Minutes() < 2*d.cfg.Order.MaxWaitMinutes {
+			return false
+		}
+		start = 0
+	}
+	h := *hold
+	h.headPrio, h.headName, h.headStart = policy.Priority(j.Ticket), j.Name, start
+	*head = h
+	return true
+}
+
+// passesHead: j may start ahead of a backfill head: a higher bid, a short job, or one whose
+// declared minutes end before the head is expected to start.
+func passesHead(j *job, head Decision) bool {
+	return policy.Priority(j.Ticket) > head.headPrio || shortJob(j.Ticket) || (j.Minutes > 0 && j.Minutes <= head.headStart)
 }
 
 func (d *Daemon) backoffDecision(j *job, now time.Time) Decision {

@@ -97,22 +97,23 @@ func TestAdmissionGateAgreesWithBlockerAndETA(t *testing.T) {
 			grant := d.addRunning("has a grant", 1, now.Add(-time.Minute))
 			grant.State, grant.NeedVRAM = "granted", 5
 		}},
-		{"backfill behind outside VRAM", blockBackfill, "job waiting for VRAM on this card", -1, func(d *Daemon, _ *job, _ time.Time) {
+		{"backfill behind outside VRAM", blockBackfill, "waited longest for VRAM on this card", -1, func(d *Daemon, _ *job, _ time.Time) {
 			d.snap.GPUs[0].UsedGB = 10
-			d.addWaiting("VRAM head", 1, 30, time.Hour).NeedVRAM = 10
+			d.addWaiting("VRAM head", 1, 30, 2*time.Hour).NeedVRAM = 10 // waited past 2 x max_wait: holds the card even with its start unknown
 		}},
-		{"backfill behind managed VRAM", blockBackfill, "job waiting for VRAM on this card", 0, func(d *Daemon, _ *job, now time.Time) {
+		{"backfill behind managed VRAM", blockBackfill, "waited longest for VRAM on this card", 0, func(d *Daemon, j *job, now time.Time) {
+			j.Minutes, j.PredMinutes = 120, 120 // longer than the head's wait for the card (~59 min): it doesn't end first
 			d.snap.GPUs[0].UsedGB = 10
 			owner := d.addRunning("holds VRAM", 1, now.Add(-time.Minute))
 			owner.vramGB, owner.NeedVRAM = 8, 8
-			d.addWaiting("VRAM head", 1, 30, time.Hour).NeedVRAM = 10
+			d.addWaiting("VRAM head", 1, 30, 2*time.Hour).NeedVRAM = 10 // waited past 2 x max_wait: holds the card even with its start unknown
 		}},
-		{"CPU head waiting for RAM", blockBackfill, "job waiting for RAM", -1, func(d *Daemon, j *job, _ time.Time) {
+		{"CPU head waiting for RAM", blockBackfill, "waited longest for RAM", -1, func(d *Daemon, j *job, _ time.Time) {
 			j.GPU = false
-			d.addWaiting("CPU RAM head", 25, 30, time.Hour).GPU = false
+			d.addWaiting("CPU RAM head", 25, 30, 2*time.Hour).GPU = false
 		}},
-		{"GPU head waiting for RAM", blockBackfill, "job waiting for RAM", -1, func(d *Daemon, _ *job, _ time.Time) {
-			d.addWaiting("GPU RAM head", 25, 30, time.Hour)
+		{"GPU head waiting for RAM", blockBackfill, "waited longest for RAM", -1, func(d *Daemon, _ *job, _ time.Time) {
+			d.addWaiting("GPU RAM head", 25, 30, 2*time.Hour)
 		}},
 		{"storage claim", blockStorage, "space holds 12.0 GB, over its 10.0 GB claim", -1, func(d *Daemon, j *job, _ time.Time) {
 			d.storeRep = &storage.Report{Spaces: []storage.Space{{Project: j.Project, Over: true, GB: 10, UsedGB: 12}}}

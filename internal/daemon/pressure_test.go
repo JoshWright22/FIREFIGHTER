@@ -242,12 +242,12 @@ func TestAdmissionKeepsARAMMargin(t *testing.T) {
 	}
 }
 
-// With an overdue big job waiting for RAM, the GPU isn't left idle: a short job that fits starts
-// ahead of it; a long one doesn't (it would keep the RAM the head needs).
+// With a big job that has waited very long for RAM, the GPU isn't left idle: a short job that fits
+// starts ahead of it; a long one doesn't (it would keep the RAM the head needs).
 func TestShortJobsKeepTheGPUBusyWhileTheHeadWaitsForRAM(t *testing.T) {
 	d := testDaemon(t)
 	now := time.Now()
-	head := d.addWaiting("big", 20, 240, 50*time.Minute) // overdue (max wait 45 min)
+	head := d.addWaiting("big", 20, 240, 100*time.Minute) // past 2 x max wait (45 min), start unknown
 	long := d.addWaiting("long", 2, 120, 2*time.Minute)
 	short := d.addWaiting("short", 2, 5, time.Minute)
 	d.snap.RAMAvailGB = 12

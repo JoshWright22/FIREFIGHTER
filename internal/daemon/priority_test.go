@@ -71,3 +71,38 @@ func TestLowerBidKeepsOffTheGPUAHigherBidWaitsFor(t *testing.T) {
 		t.Fatalf("a job that ends first should pass: %s (%s)", small.State, d.blocker(small))
 	}
 }
+
+// Josh 11/22: five bid-7 jobs waited behind one overdue 6.5 GB job with 4.6 GB free and no running
+// job that would give it the rest ("start not forecast"). A head whose start can't be foreseen
+// reserves nothing (until it has waited 2 x max_wait); one that can be foreseen lets through only
+// jobs that end before it starts. A lower-bid head never holds a higher bid.
+func TestBackfillHeadsHoldOnlyWhatTheyCanUse(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	d.snap.RAMAvailGB = 2.56 + 4.6 // 4.6 GB for jobs beside the 8% reserve
+	d.cfg.Reserve.RAMMarginPct = 0
+	head := d.addWaiting("clean single-13m", 6.5, 110, 50*time.Minute) // overdue, start unknown
+	head.Bid = 7
+	next := d.addWaiting("proxy fx-infer-views8rd", 4, 90, 10*time.Minute)
+	next.Bid = 7
+	d.admit(now)
+	if head.State != "waiting" || next.State != "granted" {
+		t.Fatalf("head %s, next %s: a fitting job must start when the head's start can't be foreseen (%s)", head.State, next.State, d.blocker(next))
+	}
+
+	// A lower-bid overdue head doesn't hold a higher bid.
+	d2 := testDaemon(t)
+	d2.snap.RAMAvailGB = 2.56 + 4.6
+	d2.cfg.Reserve.RAMMarginPct = 0
+	low := d2.addWaiting("bid-6 head", 6.5, 110, 3*time.Hour)
+	low.Bid = 6
+	high := d2.addWaiting("bid-8 job", 4, 90, time.Minute)
+	high.Bid = 8
+	if got := d2.position(high, now); got != 1 {
+		t.Fatalf("the bid-8 job must be #1, got #%d", got)
+	}
+	d2.admit(now)
+	if high.State != "granted" {
+		t.Fatalf("a bid-8 job waited behind a bid-6 head: %s", d2.blocker(high))
+	}
+}

@@ -240,13 +240,16 @@ func Order(c config.Config, waiting []*Ticket, accts map[string]*Account, capy C
 		if a.Background != b.Background { // a bot waits behind project work, even when overdue
 			return b.Background
 		}
+		// The bid orders the line, before anything else (Josh 11/22: an overdue bid-6 job went
+		// ahead of a bid-8 one). Waiting past max_wait still goes first among equal bids, so no
+		// bid starves its peers; higher bids cost more of the budget.
+		if pa, pb := Priority(a), Priority(b); pa != pb {
+			return pa > pb
+		}
 		if oa, ob := overdue(a), overdue(b); oa != ob {
 			return oa
 		} else if oa {
 			return a.Created.Before(b.Created)
-		}
-		if pa, pb := Priority(a), Priority(b); pa != pb { // the bid orders the line (Josh 11/22)
-			return pa > pb
 		}
 		if ka, kb := keys[a.ID], keys[b.ID]; ka != kb {
 			return ka < kb

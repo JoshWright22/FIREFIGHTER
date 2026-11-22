@@ -70,9 +70,14 @@ func TestBackgroundWaitsBehindProjectWork(t *testing.T) {
 func TestMaxWaitBeatsKey(t *testing.T) {
 	c := config.Defaults()
 	accts := map[string]*Account{"heavy": {Charged: 1000}, "light": {}}
-	got := Order(c, []*Ticket{tk("a", "heavy", 1, 50), tk("b", "light", 10, 1)}, accts, Capacity{}, t0, nil)
+	got := Order(c, []*Ticket{tk("a", "heavy", 5, 50), tk("b", "light", 5, 1)}, accts, Capacity{}, t0, nil)
 	if ids(got) != "ab" {
-		t.Fatalf("a waited past max_wait and must go first: %s", ids(got))
+		t.Fatalf("among equal bids, a waited past max_wait and must go first: %s", ids(got))
+	}
+	// Josh 11/22: an overdue bid-6 job went ahead of a bid-8 one. The bid comes first.
+	got = Order(c, []*Ticket{tk("a", "heavy", 6, 50), tk("b", "light", 8, 1)}, accts, Capacity{}, t0, nil)
+	if ids(got) != "ba" {
+		t.Fatalf("a higher bid goes first even past max_wait: %s", ids(got))
 	}
 }
 
