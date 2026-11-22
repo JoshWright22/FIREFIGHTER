@@ -205,7 +205,7 @@ func TestGPUPackingUsesLearnedLoad(t *testing.T) {
 // work, then decays towards what it really uses (+15%), halving every 10 minutes.
 func TestUnusedRequestDecaysTowardsRealUse(t *testing.T) {
 	d := testDaemon(t)
-	j := d.addRunning("asked for 12", 12, time.Now().Add(-time.Hour))
+	j := d.addRunning("asked for 12", 12, time.Now().Add(-30*time.Minute)) // within its 60-minute lease
 	j.ramGB, j.peakRAM = 6, 6
 	j.workSec = 200
 	if got := d.reservedRAM(j); got != 6 {
