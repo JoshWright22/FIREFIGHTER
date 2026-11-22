@@ -312,8 +312,17 @@ func agentMayConfigure(key string) error {
 	if sysinfo.AgentAncestorPID(os.Getpid(), c.Guard.AgentParents) == 0 {
 		return nil // the human's terminal
 	}
-	if c.Guard.AgentsCanConfigure && config.AgentKey(key) {
+	return agentConfigRule(key, c.Guard.AgentsCanConfigure)
+}
+
+// agentConfigRule is the agent-session rule itself; its refusal names the reason that applies.
+// The reserve and packing need no agent: firefighter sizes them from measured use (docs/reserve.md).
+func agentConfigRule(key string, allowed bool) error {
+	switch {
+	case allowed && config.AgentKey(key):
 		return nil
+	case !allowed:
+		return fmt.Errorf("agents can't change settings here: guard.agents_can_configure is off, so every key, %s too, is the human's to set from their own terminal. firefighter already sizes the reserve and GPU packing from measured use (firefighter status shows what binds)", key)
 	}
-	return fmt.Errorf("%s is the human's setting: an agent session can't change it (with guard.agents_can_configure on, agents may change order.*, pricing.* and gpu.* only); ask the human", key)
+	return fmt.Errorf("%s is the human's setting: agents may change order.*, pricing.* and gpu.* only; ask the human", key)
 }

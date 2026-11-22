@@ -82,6 +82,7 @@ type Daemon struct {
 	netQuietFrom  time.Time          // when the last network job ended, or the daemon started (the human's traffic is measured after)
 	netWasBusy    bool               // a network job ran last tick
 	prevOpen      map[string]OpenJob // running jobs the previous daemon granted, until re-registered
+	prevQueued    map[string]OpenJob // waiting jobs of the previous daemon (Seen = when queued), until re-registered
 	backoff       map[string]backoff // job id -> evictions in a row: a requeued job waits longer each time
 	agentOf       map[int]agentSeen  // heavy processes an agent started, remembered past their parents' exit
 	gpuMax        int                // most GPUs seen in one reading
@@ -157,6 +158,7 @@ func New(version string) *Daemon {
 	}
 	// Jobs the previous daemon granted: their clients may re-register them as running.
 	d.prevOpen, d.st.Open = d.st.Open, nil
+	d.prevQueued, d.st.Queued = d.st.Queued, nil
 	_ = os.MkdirAll(signalDir(), 0o700)
 	// Pause files left by a daemon that died mid-game would freeze cooperative jobs: clear them.
 	if ents, err := os.ReadDir(signalDir()); err == nil {
@@ -209,6 +211,23 @@ func (d *Daemon) openJobs(now time.Time) map[string]OpenJob {
 		}
 	}
 	return open
+}
+
+// queuedJobs lists the waiting jobs (and the previous daemon's not yet re-registered, for 10
+// minutes) with when each was queued.
+func (d *Daemon) queuedJobs(now time.Time) map[string]OpenJob {
+	q := map[string]OpenJob{}
+	for id, o := range d.prevQueued {
+		if _, back := d.jobs[id]; !back && now.Sub(d.started) < 10*time.Minute {
+			q[id] = o
+		}
+	}
+	for id, j := range d.jobs {
+		if j.State == "waiting" && j.ClientPID > 1 {
+			q[id] = OpenJob{Client: j.ClientPID, ClientAt: j.clientAt, Seen: j.Created}
+		}
+	}
+	return q
 }
 
 func contains(list []string, s string) bool {

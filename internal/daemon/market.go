@@ -198,6 +198,9 @@ func (d *Daemon) quote(probe policy.Ticket, now time.Time) policy.Quote {
 	for _, tier := range []string{"spot", "normal", "urgent"} {
 		p := probe
 		p.Bid, p.Spot = policy.BidNormal, false
+		if probe.Bid > 0 && probe.Bid < policy.BidUrgent {
+			p.Bid = probe.Bid // the normal tier at the job's own bid: its own quote shows its own place
+		}
 		mult := 1.0
 		switch tier {
 		case "spot":
@@ -252,7 +255,7 @@ func (d *Daemon) share(t *policy.Ticket) float64 {
 func (d *Daemon) fitsNow(t *policy.Ticket) bool {
 	ram, vram := d.headroom(time.Now())
 	_, vt := d.snap.MaxFreeVRAM()
-	if t.NeedRAM+d.ramMargin() > ram || d.ramSettling(time.Now()).Kind != blockNone {
+	if t.NeedRAM+d.admitMargin() > ram || d.ramSettling(time.Now()).Kind != blockNone {
 		return false
 	}
 	return !t.GPU || vt == 0 || t.NeedVRAM <= vram

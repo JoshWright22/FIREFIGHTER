@@ -81,7 +81,7 @@ func (d *Daemon) newAdmitCtx(now time.Time) *admitCtx {
 	}
 	ctx.ram, ctx.vram = d.headroom(now)
 	_, ctx.vramSize = d.snap.MaxFreeVRAM()
-	ctx.margin, ctx.settling = d.ramMargin(), d.ramSettling(now)
+	ctx.margin, ctx.settling = d.admitMargin(), d.ramSettling(now)
 	for _, j := range d.jobs {
 		if j.State == "running" || j.State == "granted" {
 			ctx.active++
@@ -214,8 +214,11 @@ func (d *Daemon) gpuGate(j *job, ctx *admitCtx, ramHead Decision) Decision {
 		case blockGPUPacking:
 			return blocked(blockGPUPacking, "GPU packing: card utilization is at or above gpu.pack_below_util", true)
 		}
-		if d.cardJobs(card) > 0 && j.PredGPU > 0 && d.utilOf(card)+j.PredGPU > 110 {
-			return blocked(blockGPUPacking, "GPU packing: this job's usual load would exceed the card's remaining capacity", true)
+		// Measured, not feared: the card's smoothed load now plus this job's usual load. Two jobs
+		// past 100% only share the card's time (each runs slower, none fails), so the line is 150%:
+		// a half-busy card takes a second job (Josh 11/22: data-pow10 held at ~50% busy).
+		if now := d.measuredUtil(card); d.cardJobs(card) > 0 && j.PredGPU > 0 && now+j.PredGPU > 150 {
+			return blocked(blockGPUPacking, fmt.Sprintf("GPU packing: the card is %.0f%% busy (measured, last 30 s) and this job usually adds %.0f%%: more than 150%% would slow both a lot", now, j.PredGPU), true)
 		}
 	}
 	left -= d.res.VRAMGB
@@ -229,7 +232,11 @@ func (d *Daemon) gpuGate(j *job, ctx *admitCtx, ramHead Decision) Decision {
 			nearMiss(j.ID, "vram", need, j.VRAMGB, free)
 		hold := blocked(blockVRAM, why, d.vramHeldOn(card) >= need-left)
 		hold.Card = card
-		if _, exists := ctx.vramHeads[card]; !exists {
+		// Like RAM: a blocked job holds the card for itself (only short jobs pass it) once it has
+		// waited order.max_wait_minutes. Before that, any job that fits starts beside it (Josh
+		// 11/22: a 3 GB job waited behind an 8.5 GB one that couldn't start).
+		overdue := ctx.now.Sub(j.Created).Minutes() >= d.cfg.Order.MaxWaitMinutes
+		if _, exists := ctx.vramHeads[card]; !exists && overdue {
 			if ctx.vramHeads == nil {
 				ctx.vramHeads = make(map[int]Decision)
 			}
@@ -247,8 +254,7 @@ func (d *Daemon) gpuGate(j *job, ctx *admitCtx, ramHead Decision) Decision {
 func (d *Daemon) ramGate(j *job, ctx *admitCtx, overdue bool) Decision {
 	lone := overdue && ctx.active == 0 && j.NeedRAM <= ctx.ram
 	if need := j.NeedRAM + ctx.margin; need > ctx.ram && !lone {
-		why := fmt.Sprintf("needs %.1f GB RAM, %.1f GB free after the human's reserve", j.NeedRAM, math.Max(0, ctx.ram)) +
-			d.ramNote(ctx.now) + nearMiss(j.ID, "ram", j.NeedRAM, j.RAMGB, ctx.ram-ctx.margin)
+		why := d.waitRAMWhy(j, ctx) + nearMiss(j.ID, "ram", j.NeedRAM, j.RAMGB, ctx.ram-ctx.margin)
 		hold := blocked(blockRAM, why, d.ramHeld() >= need-ctx.ram)
 		if ctx.settling.Kind != blockNone {
 			hold.Forecastable = hold.Forecastable && ctx.settling.Forecastable

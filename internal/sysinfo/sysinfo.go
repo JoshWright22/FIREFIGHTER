@@ -93,13 +93,15 @@ func MediaEngine(engtype string) bool {
 type Snapshot struct {
 	Time       time.Time
 	CPUs       int
-	CPUBusy    float64 // logical CPUs busy, machine-wide
+	CPUBusy    float64   // logical CPUs busy, machine-wide
+	CoreBusy   []float64 // each logical CPU's busy fraction (0-1), by number; nil where unknown
 	RAMTotalGB float64
 	RAMAvailGB float64
 	// Windows commit: what programs have been promised (RAM + pagefile). 0 where unknown. Near the
 	// limit, Windows grows the pagefile and pages; past it, allocations fail.
 	CommitLimitGB float64
 	CommitUsedGB  float64
+	CommitMaxGB   float64 // the most the limit can grow to (RAM + the page files' maximum); 0 unknown
 	NetMbps       float64 // network throughput, received + sent, all non-loopback interfaces (megabits/s)
 	GPUs          []GPU
 	ProcGPU       map[int]ProcGPU
@@ -158,14 +160,19 @@ func NewReader() *Reader { return &Reader{platform: newPlatformReader()} }
 // Read samples the machine. GPU vendor tools are slow, so they refresh at most every 2 s.
 func (r *Reader) Read() Snapshot {
 	s := Snapshot{Time: time.Now(), CPUs: logicalCPUs(), Idle: -1}
-	if p, err := cpu.Percent(0, false); err == nil && len(p) > 0 {
+	if p, err := cpu.Percent(0, true); err == nil && len(p) > 0 {
+		for _, v := range p {
+			s.CoreBusy = append(s.CoreBusy, v/100)
+			s.CPUBusy += v / 100
+		}
+	} else if p, err := cpu.Percent(0, false); err == nil && len(p) > 0 {
 		s.CPUBusy = p[0] / 100 * float64(s.CPUs)
 	}
 	if v, err := mem.VirtualMemory(); err == nil {
 		s.RAMTotalGB = gb(v.Total)
 		s.RAMAvailGB = gb(v.Available)
 	}
-	s.CommitLimitGB, s.CommitUsedGB = commit()
+	s.CommitLimitGB, s.CommitUsedGB, s.CommitMaxGB = commit()
 	if c, err := psnet.IOCounters(true); err == nil {
 		var total uint64
 		for _, n := range c {
@@ -226,7 +233,10 @@ func applyFake(s *Snapshot) {
 		s.RAMAvailGB = *f.RAMAvailGB
 	}
 	if f.CommitFree != nil {
-		s.CommitLimitGB, s.CommitUsedGB = 100, 100-*f.CommitFree
+		s.CommitLimitGB, s.CommitUsedGB, s.CommitMaxGB = 100, 100-*f.CommitFree, 100
+		if f.CommitGrow != nil {
+			s.CommitMaxGB += *f.CommitGrow
+		}
 	}
 	if f.NetMbps != nil {
 		s.NetMbps = *f.NetMbps
@@ -671,4 +681,13 @@ func (s Snapshot) CommitFreeGB() float64 {
 		return -1
 	}
 	return s.CommitLimitGB - s.CommitUsedGB
+}
+
+// CommitRoomGB is the commit that can still be promised once the page file has grown as far as it
+// may (-1 where commit isn't measured).
+func (s Snapshot) CommitRoomGB() float64 {
+	if s.CommitLimitGB <= 0 {
+		return -1
+	}
+	return max(s.CommitLimitGB, s.CommitMaxGB) - s.CommitUsedGB
 }

@@ -29,6 +29,7 @@ func testDaemon(t *testing.T) *Daemon {
 	d.cfg = config.Defaults()
 	d.cfg.Guard.AutoAdopt = false
 	d.cfg.Reserve.MinFreeGB = 0 // the tests below do their arithmetic on the percentage reserve; floor tests set it
+	d.cfg.Reserve.Auto = false  // and on the configured reserve; the reserve.auto tests turn it on
 	d.cfgShared.Store(&d.cfg)
 	d.snap = sysinfo.Snapshot{CPUs: 16, RAMTotalGB: 32, RAMAvailGB: 20, Idle: 60,
 		GPUs: []sysinfo.GPU{{Name: "test", Vendor: "nvidia", VRAMGB: 16, UsedGB: 1}}}
@@ -220,7 +221,7 @@ func TestAdmissionKeepsARAMMargin(t *testing.T) {
 	if j.State != "waiting" {
 		t.Fatalf("granted with 0.3 GB to spare:\n%s", daemonLog(t))
 	}
-	if why := d.blocker(j); !strings.Contains(why, "needs 1.0 GB RAM, 1.3 GB free after the human's reserve") || !strings.Contains(why, "1.6 GB to spare") {
+	if why := d.blocker(j); !strings.Contains(why, "needs 1.0 GB RAM + 1.6 GB margin") || !strings.Contains(why, "1.3 GB free for jobs = 3.9 GB free - 2.6 GB kept for the human") {
 		t.Fatalf("blocker = %q", why)
 	}
 	if n := strings.Join(d.notes(now), "\n"); !strings.Contains(n, "GPU idle with 1 GPU job(s) waiting") || !strings.Contains(n, "needs 1.0 GB RAM") {

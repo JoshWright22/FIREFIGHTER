@@ -86,6 +86,12 @@ type View struct {
 	Tier     string  `json:"tier,omitempty"` // spot | normal | urgent
 	Budget   float64 `json:"budget_left"`    // project's machine-minutes left
 	Pred     float64 `json:"predicted_minutes,omitempty"`
+	GPU      bool    `json:"gpu,omitempty"`
+	NeedRAM  float64 `json:"need_ram_gb,omitempty"` // what admission counts (declared, learned, or the machine's most)
+	NeedVRAM float64 `json:"need_vram_gb,omitempty"`
+	// LearnedRAM: what its past runs alone point to, when that is more than what is counted.
+	LearnedRAM float64 `json:"learned_ram_gb,omitempty"`
+	Background bool    `json:"background,omitempty"` // its project is a bot: it waits behind project work
 	// Declared: the job's declarations now (after any amend or re-bid). A client that has to
 	// register its job again (the guard restarted) sends these, not the ones it started with.
 	Declared *Declared     `json:"declared,omitempty"`
@@ -113,6 +119,13 @@ func (d *Daemon) viewWithDecision(j *job, now time.Time, decision Decision) View
 	v := View{ID: j.ID, Name: j.Name, Project: j.Project, State: j.State, Band: j.Band, Tier: tierOf(j.Ticket),
 		Declared: &Declared{RAMGB: j.RAMGB, VRAMGB: j.VRAMGB, Minutes: j.Minutes, Bid: j.Bid, Spot: j.Spot},
 		Budget:   round1(math.Max(-1e9, math.Min(1e9, a.Left(d.cfg, d.cfg.Allowance(j.Project))))), Pred: round1(j.PredMinutes),
+		GPU: j.GPU, NeedRAM: round1(j.NeedRAM), NeedVRAM: round1(j.NeedVRAM), Background: j.Background,
+		LearnedRAM: func() float64 {
+			if j.LearnedRAM > j.NeedRAM+0.05 {
+				return j.LearnedRAM
+			}
+			return 0
+		}(),
 		Receipt: j.receipt, Paused: !j.pausedAt.IsZero(), Checkpt: !j.checkpoint.IsZero(), Why: j.reason,
 		StopIn: func() float64 {
 			if j.checkpoint.IsZero() {
@@ -134,7 +147,8 @@ func (d *Daemon) viewWithDecision(j *job, now time.Time, decision Decision) View
 			q.Menu[index].StartsIn = decision.startsIn(q.Menu[index].StartsIn)
 		}
 		own, _ := q.Tier(tierOf(j.Ticket))
-		v.Position, v.Why = own.Position, blockerText(j, decision.Text)
+		v.Position, v.Why = d.position(j, now), blockerText(j, decision.Text)
+		_ = own
 		v.StartsIn, v.Quote = own.StartsIn, &q
 		v.ETA = "unknown"
 		if v.StartsIn >= 0 {
@@ -177,12 +191,15 @@ func (d *Daemon) blockerOf(j *job) string {
 }
 
 func blockerText(j *job, why string) string {
-	if j.WantRAM > 0 {
+	switch {
+	case j.WantRAM > 0:
 		src := "its past runs point to"
 		if j.RAMGB >= j.WantRAM-0.05 {
 			src = "it declared"
 		}
-		why += fmt.Sprintf(" (%s %.1f GB of RAM, more than this machine ever has free for a job: counted as %.1f GB; declare --ram to set it yourself)", src, j.WantRAM, j.NeedRAM)
+		why += fmt.Sprintf(" (%s %.1f GB of RAM, more than this machine ever has free for a job: counted as %.1f GB, so it starts when the machine is at its emptiest)", src, j.WantRAM, j.NeedRAM)
+	case j.RAMGB > 0 && j.LearnedRAM > j.RAMGB+0.05 && strings.Contains(why, "GB RAM"):
+		why += fmt.Sprintf(" (counted at its declared --ram %.1f GB; its past runs point to %.1f GB, so if it grows past that it is suspended for the human, not killed)", j.RAMGB, j.LearnedRAM)
 	}
 	if j.Band == policy.BandSpot {
 		why += " [spot: over budget or --spot, so it goes after in-budget jobs and is preempted first; it still runs whenever there is room]"
@@ -190,22 +207,35 @@ func blockerText(j *job, why string) string {
 	return why
 }
 
-// ramNote adds, to "needs N GB RAM", what admission keeps on top and where the RAM went when the
-// local Linux VM holds it: a job waiting on RAM should say what would let it start.
-func (d *Daemon) ramNote(now time.Time) string {
-	note := ""
-	if m := d.ramMargin(); m >= 0.05 {
-		note = fmt.Sprintf(" (it starts with %.1f GB to spare)", m)
+// waitRAMWhy says why a job waits on RAM with the arithmetic shown: what it needs (and the margin kept
+// on top), what is free for jobs, and what that figure is made of. ctx.ram already has the jobs
+// admitted earlier in this pass taken off; those are named too.
+func (d *Daemon) waitRAMWhy(j *job, ctx *admitCtx) string {
+	parts := d.ramParts()
+	need := fmt.Sprintf("needs %.1f GB RAM", j.NeedRAM)
+	if ctx.margin >= 0.05 {
+		need = fmt.Sprintf("needs %.1f GB RAM + %.1f GB margin (reserve.ram_margin_pct)", j.NeedRAM, ctx.margin)
 	}
+	free := math.Max(0, ctx.ram)
+	why := fmt.Sprintf("%s; %.1f GB free for jobs = %s", need, free, parts)
+	if passed := parts.left() - ctx.ram; passed >= 0.05 {
+		why += fmt.Sprintf(" - %.1f GB for jobs starting ahead of it", passed)
+	}
+	return why + d.vmWaitNote(ctx.now)
+}
+
+// vmWaitNote adds where the RAM went when the local Linux VM holds it: a job waiting on RAM should say
+// what would let it start.
+func (d *Daemon) vmWaitNote(now time.Time) string {
 	switch cache := d.reclaimable(now); {
 	case d.reclaim.on:
-		note += "; the WSL/Docker VM is giving its file cache back now"
+		return "; the WSL/Docker VM is giving its file cache back now"
 	case cache >= reclaimMinGB:
-		note += fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache that is reclaimed next", d.vm.HostGB, cache)
+		return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache that is reclaimed next", d.vm.HostGB, cache)
 	case d.vm.HostGB >= 4:
-		note += fmt.Sprintf("; the WSL/Docker VM holds %.1f GB", d.vm.HostGB)
+		return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB", d.vm.HostGB)
 	}
-	return note
+	return ""
 }
 
 func (d *Daemon) blockedByHuman(j *job, now time.Time) string {
@@ -233,6 +263,14 @@ func (d *Daemon) notes(now time.Time) []string {
 			if waiting++; first == nil {
 				first = d.jobs[t.ID]
 			}
+		}
+	}
+	if exe, err := os.Executable(); err == nil {
+		if _, err := os.Stat(exe); err != nil {
+			// 2026-11-13, 11-20 and 11-21: Microsoft Defender's machine-learning rules quarantined the
+			// unsigned firefighter.exe while the guard ran from it; every new `firefighter` call then
+			// failed while this guard still answered.
+			out = append(out, fmt.Sprintf("this guard's program %s is gone from disk (antivirus quarantine? see Windows Security > Protection history); new firefighter commands fail until it is restored or rebuilt", exe))
 		}
 	}
 	if busy == 0 && waiting > 0 {
@@ -304,6 +342,8 @@ type Status struct {
 	ConfigErr string                  `json:"config_error,omitempty"`
 	Recent    []*Receipt              `json:"recent"`
 	Notes     []string                `json:"notes,omitempty"`    // what is holding work back right now, in plain words
+	Limits    []string                `json:"limits,omitempty"`   // the binding constraint of each line, with its numbers
+	Idle      []string                `json:"idle,omitempty"`     // resources idle in the last hour while jobs for them waited
 	Version   string                  `json:"version"`            // the guard's version
 	VM        *sysinfo.VM             `json:"vm,omitempty"`       // the WSL2/Docker VM's memory, when one runs
 	Disks     []sysinfo.Disk          `json:"disks,omitempty"`    // drives jobs and the system use
@@ -339,6 +379,8 @@ func (d *Daemon) status() Status {
 	s.Reserve["disk_free_gb"] = d.cfg.Reserve.DiskFreeGB
 	s.Storage = d.storeRep
 	s.Notes, s.Version = d.notes(now), d.Version
+	s.Limits, s.Idle = d.limits(now), d.utilLines()
+	s.Machine["ram_for_jobs_gb"], s.Machine["ram_reserve_gb"] = round1(math.Max(0, d.ramParts().left())), round1(d.ramFloor())
 	if d.updateNote != "" {
 		s.Notes = append(s.Notes, d.updateNote)
 	}
@@ -415,4 +457,79 @@ func nearMiss(id, flag string, need, declared, fits float64) string {
 		return ""
 	}
 	return fmt.Sprintf("; would start now with --%s %.1f (declared %.1f): firefighter amend %s --%s %.1f", flag, fits, declared, id, flag, fits)
+}
+
+// limitName names what holds a job, for status's binding-constraint lines.
+func (d *Daemon) limitName(k BlockKind) string {
+	switch k {
+	case blockRAM:
+		if d.ramParts().commitBound() {
+			return "commit"
+		}
+		return "physical RAM"
+	case blockVRAM:
+		return "VRAM"
+	case blockGPUPacking, blockGPUSlot:
+		return "GPU packing"
+	case blockOutsideGPU:
+		return "GPU in use outside firefighter"
+	case blockHuman:
+		return "the human"
+	case blockCPU:
+		return "CPU reserve"
+	case blockBackfill:
+		return "backfill (a bigger job waits first)"
+	case blockDisk, blockStorage:
+		return "disk"
+	case blockNetwork:
+		return "network"
+	case blockBackoff:
+		return "backoff"
+	case blockPacing:
+		return "pacing"
+	}
+	return "other"
+}
+
+// limits says, for the RAM jobs can take and for the head of each line, what binds right now.
+func (d *Daemon) limits(now time.Time) []string {
+	r := d.ramParts()
+	how := "basic use"
+	if !d.basicAuto(d.user) {
+		how = "fixed (reserve.auto off or a game)"
+	}
+	out := []string{fmt.Sprintf("RAM for jobs %.1f GB = %s [reserve %.1f GB for the human while %s: %s]", math.Max(0, r.left()), r, d.ramFloor(), d.user, how)}
+	seen := map[bool]bool{}
+	for _, t := range d.waiting() {
+		if seen[t.GPU] {
+			continue
+		}
+		seen[t.GPU] = true
+		j := d.jobs[t.ID]
+		dec := d.waitingDecision(j, now)
+		line := map[bool]string{true: "GPU", false: "CPU"}[t.GPU]
+		if dec.Kind == blockNone {
+			out = append(out, fmt.Sprintf("%s line: %s starts next", line, j.Name))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s line: %s held by %s: %s", line, j.Name, d.limitName(dec.Kind), dec.Text))
+	}
+	return out
+}
+
+// position is a waiting job's real place in its line (GPU or CPU), 1 = next: the order admission
+// walks, not a quote's guess for a new job (which priced every job at bid 5, so two jobs could
+// both show #2 and an amend seemed to move one; Josh 11/22).
+func (d *Daemon) position(j *job, now time.Time) int {
+	n := 0
+	for _, t := range d.gateOrder(policy.Order(d.cfg, d.queued(), d.st.Accounts, d.capacity(), now, nil)) {
+		if t.GPU != j.GPU {
+			continue
+		}
+		n++
+		if t.ID == j.ID {
+			return n
+		}
+	}
+	return n + 1
 }

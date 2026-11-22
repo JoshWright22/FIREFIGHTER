@@ -32,18 +32,38 @@ func TestLASPrefersLeastServedProject(t *testing.T) {
 	}
 }
 
-func TestBidLeadIsBounded(t *testing.T) {
-	c := config.Defaults() // max lead 30
+func TestBidOrdersTheLine(t *testing.T) {
+	c := config.Defaults()
 	accts := map[string]*Account{"heavy": {Charged: 100}, "light": {Charged: 5}}
-	// A bid of 10 buys 30 minutes of lead: not enough to pass a 95-minute gap.
-	got := Order(c, []*Ticket{tk("a", "heavy", 10, 10), tk("b", "light", 5, 1)}, accts, Capacity{}, t0, nil)
-	if ids(got) != "ba" {
-		t.Fatalf("bid 10 jumped too far: %s", ids(got))
-	}
-	accts["heavy"].Charged = 30 // gap 25 < 30: now the bid wins
-	got = Order(c, []*Ticket{tk("a", "heavy", 10, 10), tk("b", "light", 5, 1)}, accts, Capacity{}, t0, nil)
+	// Josh 11/22: bid-7 GPU jobs of a much-served project waited behind a lightly served
+	// project's bid-5 jobs. The bid orders the line; fairness (the las key) orders equal bids.
+	got := Order(c, []*Ticket{tk("b", "light", 5, 1), tk("a", "heavy", 7, 10)}, accts, Capacity{}, t0, nil)
 	if ids(got) != "ab" {
-		t.Fatalf("bid 10 should win a small gap: %s", ids(got))
+		t.Fatalf("bid 7 must go before bid 5: %s", ids(got))
+	}
+	got = Order(c, []*Ticket{tk("a", "heavy", 5, 10), tk("b", "light", 5, 1)}, accts, Capacity{}, t0, nil)
+	if ids(got) != "ba" {
+		t.Fatalf("equal bids: the least-served project first: %s", ids(got))
+	}
+}
+
+func TestBackgroundWaitsBehindProjectWork(t *testing.T) {
+	c := config.Defaults()
+	bot, work := tk("b", "hub-apply", 5, 60), tk("w", "nanoTSFM", 2, 0) // the bot overdue, the work bid low
+	bot.Background = true
+	for _, pol := range config.OrderPolicies {
+		c.Order.Policy = pol
+		got := Order(c, []*Ticket{bot, work}, map[string]*Account{}, Capacity{}, t0, rand.New(rand.NewSource(1)))
+		if ids(got) != "wb" {
+			t.Fatalf("%s: a background job must wait behind project work, even overdue: %s", pol, ids(got))
+		}
+	}
+	if Priority(bot) != BidLow {
+		t.Fatalf("background priority %d", Priority(bot))
+	}
+	bot.Bid = BidUrgent
+	if Priority(bot) != BidUrgent {
+		t.Fatal("an urgent background job keeps its bid")
 	}
 }
 

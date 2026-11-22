@@ -199,6 +199,10 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 	t.Bid = max(1, min(10, t.Bid))
 	delete(d.st.Receipts, t.ID) // a new attempt under the same id (requeue) replaces the old receipt
 	t.Created = now
+	if q, ok := d.prevQueued[t.ID]; ok && !req.Running && q.Client == t.ClientPID && (q.ClientAt == 0 || q.ClientAt == clientAt) && q.Seen.Before(now) {
+		t.Created = q.Seen // back in line after a restart: same age, same place
+		delete(d.prevQueued, t.ID)
+	}
 	if t.NetAuto && !d.cfg.Network.AutoDetect {
 		t.Net = false // detected, not declared, and detection is off
 	}
@@ -233,6 +237,10 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.fillNeeds(&t)
+	if !req.Running {
+		d.noteSubmit(t.Project, owner != caller || human, t.GPU, now)
+	}
+	t.Background, _ = d.background(t.Project, now)
 	a := d.account(t.Project, now)
 	t.Band = policy.BandFor(&t, a.Left(d.cfg, d.cfg.Allowance(t.Project)) > 0)
 	t.State = "waiting"
@@ -266,8 +274,8 @@ func (d *Daemon) create(w http.ResponseWriter, r *http.Request) {
 		d.lockPrice(j, now)
 	}
 	d.jobs[t.ID] = j
-	logf("%s [%s] %s: %s, band %d, bid %d, %.0f min declared (%.0f predicted), need %.1f GB RAM %.1f GB VRAM",
-		t.Name, t.Project, t.ID, map[bool]string{true: "GPU", false: "CPU"}[t.GPU], t.Band, t.Bid, t.Minutes, t.PredMinutes, t.NeedRAM, t.NeedVRAM)
+	logf("%s [%s] %s: %s, band %d, bid %d%s, %.0f min declared (%.0f predicted), need %.1f GB RAM %.1f GB VRAM",
+		t.Name, t.Project, t.ID, map[bool]string{true: "GPU", false: "CPU"}[t.GPU], t.Band, t.Bid, map[bool]string{true: " (background)"}[t.Background], t.Minutes, t.PredMinutes, t.NeedRAM, t.NeedVRAM)
 	d.admit(now)
 	reply(w, d.view(j))
 }
@@ -295,8 +303,18 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 	}
 	t.PredMinutes = policy.Predict(t.Minutes, h.Ratios)
 	t.NeedRAM = math.Max(t.RAMGB, h.PeakRAM*d.cfg.GPU.VRAMMargin)
+	t.LearnedRAM = 0
 	if h.RAM != nil && h.RAM.N > 0 {
 		t.NeedRAM = math.Max(0.1, usage.PeakNeed(h.RAM, t.RAMGB, 0)) // a known command: its history, not the default below
+		t.LearnedRAM = round1(usage.PeakNeed(h.RAM, 0, 0))
+	}
+	if t.RAMGB > 0 && t.NeedRAM > t.RAMGB && (h.RAM == nil || h.RAM.Min() <= t.RAMGB) {
+		// A declaration below what was learned is believed when some past run fit within it (Josh
+		// 11/22: the GPU sat idle 15 min behind a 17.3 GB estimate for jobs peaking at 6-7 GB; one
+		// history mixed runs of other configs). One below every run ever measured is not (the
+		// 2026-11-13 job declared 1 GB and used 7.6). A wrong low guess costs little: the RAM ladder
+		// suspends the job (its RAM paged out, nothing lost) if it grows into the human's reserve.
+		t.NeedRAM = t.RAMGB
 	}
 	// What it can be throttled on is predicted from its past runs' means; unknown stays 0 (no claim).
 	t.NeedCPU, t.NeedDisk, t.NeedNet, t.PredGPU = usage.RateNeed(h.CPU, 0), 0, usage.RateNeed(h.Net, 0), usage.RateNeed(h.GPU, 0)

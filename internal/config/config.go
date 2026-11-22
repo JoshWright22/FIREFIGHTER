@@ -36,6 +36,11 @@ type Config struct {
 		Policy         string  `toml:"policy"`           // las | stride | lottery | drf | fifo | srpt
 		HalfLifeHours  float64 `toml:"half_life_hours"`  // decay of attained service (las, drf)
 		MaxWaitMinutes float64 `toml:"max_wait_minutes"` // anything waiting this long goes next
+		// Background: projects that are bots (an application loop, a scraper): their jobs wait behind
+		// project work. Unattended recurring CPU-only projects are found by themselves; Foreground
+		// names projects that never count as background.
+		Background []string `toml:"background"`
+		Foreground []string `toml:"foreground"`
 	} `toml:"order"`
 
 	Pricing struct {
@@ -83,6 +88,16 @@ type Config struct {
 		CommitFreeGB   float64 `toml:"commit_free_gb"`   // free space kept on each drive jobs use (at most a tenth of the drive)
 		ReclaimVMCache bool    `toml:"reclaim_vm_cache"` // short of RAM: have the WSL2/Docker VM drop its file cache before any job is touched
 		Learn          bool    `toml:"learn"`            // size each state's reserve from what the human is seen to use (the values above bound it)
+		// Auto (Josh 11/22: "only reserving enough for basic use of my machine, browsing the web and
+		// such"): outside a game the reserve covers light use only, from the human's measured working
+		// set, between AutoMinGB and BasicGB of RAM, at most BasicVRAMGB of VRAM and BasicCPUs CPUs
+		// (plus whatever the human is using right now); min_free_gb and ram_margin_pct then apply in
+		// games only. When the human starts something heavy, the RAM ladder suspends jobs.
+		Auto        bool    `toml:"auto"`
+		AutoMinGB   float64 `toml:"auto_min_gb"`
+		BasicGB     float64 `toml:"basic_gb"`
+		BasicVRAMGB float64 `toml:"basic_vram_gb"`
+		BasicCPUs   int     `toml:"basic_cpus"`
 	} `toml:"reserve"`
 
 	Ladder struct {
@@ -188,6 +203,11 @@ func Defaults() Config {
 	c.Reserve.RAMMarginPct = 5
 	c.Reserve.DiskFreeGB = 10
 	c.Reserve.MinFreeGB = 4
+	c.Reserve.Auto = true
+	c.Reserve.AutoMinGB = 1.5
+	c.Reserve.BasicGB = 3
+	c.Reserve.BasicVRAMGB = 1
+	c.Reserve.BasicCPUs = 4
 	c.Reserve.CommitFreeGB = 3
 	c.Reserve.ReclaimVMCache = true
 	c.Reserve.Learn = true
@@ -442,6 +462,9 @@ func (c Config) Validate() error {
 	if c.Reserve.MaxCPUPct < 0 || c.Reserve.MaxCPUPct > 100 {
 		return fmt.Errorf("reserve.max_cpu_pct must be 0-100")
 	}
+	if c.Reserve.AutoMinGB < 0.5 || c.Reserve.BasicGB < c.Reserve.AutoMinGB || c.Reserve.BasicVRAMGB < 0 || c.Reserve.BasicCPUs < 1 {
+		return fmt.Errorf("reserve.auto_min_gb must be at least 0.5 and reserve.basic_gb at least that; reserve.basic_vram_gb 0 or more, reserve.basic_cpus 1 or more")
+	}
 	if c.Reserve.RAMMarginPct < 0 || c.Reserve.RAMMarginPct > 50 {
 		return fmt.Errorf("reserve.ram_margin_pct must be 0-50")
 	}
@@ -628,4 +651,19 @@ func (c Config) Allowance(project string) float64 {
 		return m
 	}
 	return c.Budget.DailyMinutes
+}
+
+// Listed says whether a project is named in order.background (bg) or order.foreground (fg).
+func (c Config) Listed(project string) (bg, fg bool) {
+	for _, p := range c.Order.Foreground {
+		if strings.EqualFold(p, project) {
+			return false, true
+		}
+	}
+	for _, p := range c.Order.Background {
+		if strings.EqualFold(p, project) {
+			return true, false
+		}
+	}
+	return false, false
 }

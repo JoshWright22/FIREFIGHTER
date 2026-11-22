@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
@@ -17,24 +19,88 @@ import (
 // that freed its cache while paused will take it back). VRAM is per card: the freest GPU, less the
 // unclaimed needs of jobs placed on it.
 func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
-	ram = d.snap.RAMAvailGB - d.ramFloor()
+	return d.ramParts().left(), d.vramHeadroom()
+}
+
+// ramHeadroom is how headroom's RAM figure is made, so a job waiting on RAM can say which part
+// holds it: free RAM less the human's reserve, or Windows commit less its reserve when that is
+// smaller, then less what granted and running jobs still have reserved.
+type ramHeadroom struct {
+	avail, floor     float64
+	commit, commitGB float64 // commit left and reserve.commit_free_gb; commit < 0 when not bounding
+	held             []heldRAM
+}
+
+type heldRAM struct {
+	name string
+	gb   float64
+}
+
+func (r ramHeadroom) base() float64 {
+	b := r.avail - r.floor
+	if r.commit >= 0 {
+		b = math.Min(b, r.commit-r.commitGB)
+	}
+	return b
+}
+
+func (r ramHeadroom) left() float64 {
+	b := r.base()
+	for _, h := range r.held {
+		b -= h.gb
+	}
+	return b
+}
+
+// commitBound: Windows commit, not free RAM, is what limits a new job right now.
+func (r ramHeadroom) commitBound() bool {
+	return r.commit >= 0 && r.commit-r.commitGB < r.avail-r.floor
+}
+
+// String spells headroom out: "8.0 GB free - 4.0 kept for the human - 1.1 held for hub-apply batch".
+func (r ramHeadroom) String() string {
+	var b strings.Builder
+	if r.commitBound() {
+		fmt.Fprintf(&b, "Windows commit has %.1f GB left even with the page file at its largest (%.1f GB of RAM free) - %.1f GB kept (reserve.commit_free_gb)", r.commit, r.avail, r.commitGB)
+	} else {
+		fmt.Fprintf(&b, "%.1f GB free - %.1f GB kept for the human", r.avail, r.floor)
+	}
+	for _, h := range r.held {
+		if h.gb >= 0.05 {
+			fmt.Fprintf(&b, " - %.1f GB still reserved for %s", h.gb, h.name)
+		}
+	}
+	return b.String()
+}
+
+func (d *Daemon) ramParts() ramHeadroom {
+	r := ramHeadroom{avail: d.snap.RAMAvailGB, floor: d.ramFloor(), commit: -1}
 	// Windows commit: a job's allocations are promised against RAM + pagefile. Near the limit
 	// Windows grows the pagefile and pages (41.1 of 44.1 GB on 2026-11-20, as the desktop froze), so
 	// the commit left beyond reserve.commit_free_gb bounds what a new job may take too.
-	if cf := d.snap.CommitFreeGB(); cf >= 0 && d.cfg.Reserve.CommitFreeGB > 0 {
-		ram = math.Min(ram, cf-d.cfg.Reserve.CommitFreeGB)
+	// A page file Windows may still grow is room too (CommitRoomGB): only commit that can't be
+	// backed at all is a shortage; physical RAM is guarded by the floor above.
+	if cf := d.snap.CommitRoomGB(); cf >= 0 && d.cfg.Reserve.CommitFreeGB > 0 {
+		r.commit, r.commitGB = cf, d.cfg.Reserve.CommitFreeGB
 	}
-	card, free := d.freestCard()
-	vram = free - d.res.VRAMGB
 	for _, j := range d.jobs {
 		if j.State == "granted" || j.State == "running" {
-			ram -= d.reservedRAM(j)
-			if j.GPU && d.onCard(j, card) {
-				vram -= math.Max(0, j.NeedVRAM-j.vramGB)
-			}
+			r.held = append(r.held, heldRAM{j.Name, d.reservedRAM(j)})
 		}
 	}
-	return
+	sort.Slice(r.held, func(a, b int) bool { return r.held[a].gb > r.held[b].gb })
+	return r
+}
+
+func (d *Daemon) vramHeadroom() float64 {
+	card, free := d.freestCard()
+	vram := free - d.res.VRAMGB
+	for _, j := range d.jobs {
+		if (j.State == "granted" || j.State == "running") && j.GPU && d.onCard(j, card) {
+			vram -= d.reservedVRAM(j)
+		}
+	}
+	return vram
 }
 
 // ramFloor is the free RAM kept for the human: the learned (or configured) reserve, and never less
@@ -42,7 +108,20 @@ func (d *Daemon) headroom(now time.Time) (ram, vram float64) {
 // need, and the RAM ladder acts as soon as free RAM falls under it.
 func (d *Daemon) ramFloor() float64 {
 	total := d.snap.RAMTotalGB
+	if d.basicAuto(d.user) {
+		return math.Max(total*d.res.RAMPct/100, math.Min(d.cfg.Reserve.AutoMinGB, total*0.15))
+	}
 	return math.Max(total*d.res.RAMPct/100, math.Min(d.cfg.Reserve.MinFreeGB, total*0.15))
+}
+
+// admitMargin is the RAM a new job must leave free beyond the reserve and its need: none under
+// reserve.auto outside games (the reserve already holds a margin, and the ladder suspends jobs if
+// the human needs more), reserve.ram_margin_pct otherwise.
+func (d *Daemon) admitMargin() float64 {
+	if d.basicAuto(d.user) {
+		return 0
+	}
+	return d.ramMargin()
 }
 
 // ramMost is the most RAM a job can ever count on: the machine's, less what is always in use
@@ -52,7 +131,7 @@ func (d *Daemon) ramFloor() float64 {
 func (d *Daemon) ramMost() float64 {
 	total := d.snap.RAMTotalGB
 	most := total * (1 - d.cfg.Reserve.Away.RAMPct/100) * 0.9
-	if seen := total*(1-d.cfg.Reserve.Away.RAMPct/100) - d.ramBase - d.ramMargin(); d.ramBase > 0 && seen < most {
+	if seen := total*(1-d.cfg.Reserve.Away.RAMPct/100) - d.ramBase - d.admitMargin(); d.ramBase > 0 && seen < most {
 		most = seen
 	}
 	return math.Max(most, math.Min(1, total/4))
@@ -72,7 +151,30 @@ func (d *Daemon) reservedRAM(j *job) float64 {
 	if seen := j.peakRAM * (1 + usage.SafetyMargin); j.State == "running" && j.workSec > 300 && need > seen {
 		need = seen + (need-seen)*math.Pow(0.5, (j.workSec-300)/600)
 	}
+	if j.State == "running" && (j.pastLease(time.Now()) || (j.Background && j.workSec > 120)) {
+		// Past its lease (an --evict never job that runs on), or a bot's job once it has started:
+		// only the RAM it really holds counts, so it doesn't keep project work out with RAM it
+		// never touches (Josh 11/22). Growing later is what the RAM ladder is for.
+		return 0
+	}
 	return math.Max(0, need-j.ramGB)
+}
+
+// reservedVRAM is the VRAM still held back on its card for a granted or running job beyond what it
+// holds now: its need at first, then, like reservedRAM, closing on its own measured peak + 15%
+// after 5 minutes of work, and nothing past its lease. A declared need kept whole for hours made a
+// 12 GB-free card show 8.1 (Josh 11/22).
+func (d *Daemon) reservedVRAM(j *job) float64 {
+	need := j.NeedVRAM
+	if j.State == "running" {
+		if j.pastLease(time.Now()) {
+			return 0
+		}
+		if seen := j.peakVRAM * (1 + usage.SafetyMargin); j.peakVRAM > 0 && j.workSec > 300 && need > seen {
+			need = seen + (need-seen)*math.Pow(0.5, (j.workSec-300)/600)
+		}
+	}
+	return math.Max(0, need-j.vramGB)
 }
 
 // ---- RAM and disk pressure --------------------------------------------------------------------------

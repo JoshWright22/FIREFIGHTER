@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/JoshWright22/firefighter/internal/client"
 	"github.com/JoshWright22/firefighter/internal/mcp"
@@ -34,6 +35,7 @@ Agents queue their heavy jobs here; they take turns, and you always come first.
   firefighter update [--check]   install the newest release now (the guard also does it by itself: update.auto)
   firefighter extend <id> <min>  lengthen a running job's lease
   firefighter cancel <id>        cancel a waiting or running job
+  firefighter show <id> [--json] one job in full: declared and counted needs, place, why it waits
   firefighter adopt <pid> [--gpu] [--name NAME] [--minutes N]   govern a process already running
   firefighter plan "<what>" --when "<when>" --minutes N [--gpu PCT] [--vram GB] [--ram GB] [--done]
   firefighter doctor             check the install, the guard, agent rules, Docker, disks; prints the fix
@@ -57,6 +59,10 @@ func main() {
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") && cmd != "run" {
+		fmt.Print(commandHelp(cmd))
+		os.Exit(0)
+	}
 	var err error
 	code := 0
 	switch cmd {
@@ -80,6 +86,8 @@ func main() {
 		err = amend(args)
 	case "cancel":
 		err = act(args, "cancel")
+	case "show":
+		err = show(args)
 	case "adopt":
 		err = adopt(args)
 	case "plan":
@@ -121,4 +129,23 @@ func main() {
 		}
 	}
 	os.Exit(code)
+}
+
+// commandHelp is the usage lines for one command (all of them for an unknown one).
+func commandHelp(cmd string) string {
+	var out []string
+	keep := false
+	for _, l := range strings.Split(usage, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "firefighter ") {
+			f := strings.Fields(l)
+			keep = len(f) > 1 && (f[1] == cmd || (cmd == "install" && f[1] == "setup"))
+		}
+		if keep {
+			out = append(out, l)
+		}
+	}
+	if len(out) == 0 {
+		return usage
+	}
+	return strings.Join(out, "\n") + "\n"
 }

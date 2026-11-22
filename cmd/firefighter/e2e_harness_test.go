@@ -78,6 +78,13 @@ func helper(spec string) int {
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		_ = c.Start()
 		return 0
+	case "launch": // start `firefighter run FF_LAUNCH_ARGS` and exit at once, orphaning it (a killed runner)
+		c := exec.Command(os.Getenv("FF_BIN"), strings.Split(os.Getenv("FF_LAUNCH_ARGS"), "\x1f")...)
+		c.Env = append(os.Environ(), "FF_HELPER=exit:0")
+		if err := c.Start(); err != nil {
+			return 98
+		}
+		return 0
 	case "cudaoom": // fail the way PyTorch does when the GPU runs out of memory
 		fmt.Fprintln(os.Stderr, "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB")
 		return 1

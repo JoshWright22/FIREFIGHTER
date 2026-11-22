@@ -168,17 +168,20 @@ func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []
 	d.senseUser(now)
 	d.observeHuman(now, dt)
 	d.adoptRogues(rogues, now)
-	d.res.Update(d.withLearnedReserve(c, now), d.user, d.busyUser, d.snap.CPUs, now)
+	d.res.Update(d.withLearnedReserve(c, now), d.user, d.humanCPULoad(), d.snap.CPUs, now)
 	d.enforceCPU()
 	d.ladder(now)
 	d.reap(now)
 	d.refreshBands(now)
+	d.refreshBackground(now)
 	d.admit(now)
+	d.sampleUtil(now, dt.Seconds())
 	d.harvester(now)
 	if now.Sub(d.saveAt) > 10*time.Second {
 		d.saveAt = now
 		d.prune(now)
 		d.st.Open = d.openJobs(now)
+		d.st.Queued = d.queuedJobs(now)
 		if err := d.st.write(); err != nil {
 			logf("save: %v", err)
 		}

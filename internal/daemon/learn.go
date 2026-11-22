@@ -94,6 +94,34 @@ func (d *Daemon) observeHuman(now time.Time, dt time.Duration) {
 // learnedReserve is a state's reserve as the human's history sizes it (see the top of this file);
 // the configured reserve until that state has a day of history, or with reserve.learn off.
 func (d *Daemon) learnedReserve(state string, now time.Time) config.Reserve {
+	return d.basicReserve(state, d.learnedOnly(state, now))
+}
+
+// basicAuto: reserve.auto is on and the human isn't in a game, so the reserve covers basic use.
+func (d *Daemon) basicAuto(state string) bool { return d.cfg.Reserve.Auto && state != "game" }
+
+// basicReserve caps a state's reserve at basic use (reserve.basic_*) under reserve.auto, outside
+// games: light browsing, chat, music and video, as measured, never what the human's heaviest
+// moments needed. The CPU reserve still follows what the human really uses (ReserveCtl.Update).
+func (d *Daemon) basicReserve(state string, r config.Reserve) config.Reserve {
+	if !d.basicAuto(state) {
+		return r
+	}
+	c, set := d.cfg.Reserve, d.cfg.ReserveFor(state)
+	// Never above what the human configured for this state, nor above basic use; the human's live
+	// load still raises the CPU reserve when they start something heavy (ReserveCtl.Update).
+	r.CPUs = min(r.CPUs, c.BasicCPUs, set.CPUs)
+	r.VRAMGB = math.Min(r.VRAMGB, set.VRAMGB)
+	r.RAMPct = math.Min(r.RAMPct, set.RAMPct)
+	r.VRAMGB = math.Min(r.VRAMGB, c.BasicVRAMGB)
+	if total := d.snap.RAMTotalGB; total > 0 {
+		r.RAMPct = math.Min(r.RAMPct, c.BasicGB/total*100)
+		r.RAMPct = math.Round(math.Max(r.RAMPct, c.AutoMinGB/total*100)*10) / 10
+	}
+	return r
+}
+
+func (d *Daemon) learnedOnly(state string, now time.Time) config.Reserve {
 	base := d.cfg.ReserveFor(state)
 	h := d.st.Human[state]
 	if !d.cfg.Reserve.Learn || h == nil || h.CPU == nil {
@@ -102,6 +130,9 @@ func (d *Daemon) learnedReserve(state string, now time.Time) config.Reserve {
 	r := base
 	days := h.CPU.Days(now, humanEvery)
 	cpus := math.Ceil(h.CPU.LoadPercentile(humanPct)) + 2
+	if d.basicAuto(state) {
+		cpus = math.Ceil(h.CPU.Mean()) + 1 // typical light use, not its peaks (Josh 11/22: 9 CPUs kept while browsing)
+	}
 	r.CPUs = int(math.Round(usage.Reserve(float64(base.CPUs), cpus, days, 0)))
 	if h.RAMRise != nil && d.snap.RAMTotalGB > 0 {
 		pct := h.RAMRise.Percentile(humanPct) / d.snap.RAMTotalGB * 100

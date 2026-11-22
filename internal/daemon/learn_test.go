@@ -250,7 +250,7 @@ func TestNeedIsCappedAtWhatTheMachineCanGiveAndSpotStillRuns(t *testing.T) {
 		t.Fatalf("18 GB free can't hold a %.1f GB need plus the margin", j.NeedRAM)
 	}
 	why := d.blocker(j)
-	for _, want := range []string{"needs 19.8 GB RAM", "its past runs point to", "more than this machine ever has free", "declare --ram", "it still runs whenever there is room"} {
+	for _, want := range []string{"needs 19.8 GB RAM", "its past runs point to", "more than this machine ever has free", "starts when the machine is at its emptiest", "it still runs whenever there is room"} {
 		if !strings.Contains(why, want) {
 			t.Fatalf("status line lacks %q:\n%s", want, why)
 		}

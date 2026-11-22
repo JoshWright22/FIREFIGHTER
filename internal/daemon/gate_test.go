@@ -62,9 +62,9 @@ func TestAdmissionGateAgreesWithBlockerAndETA(t *testing.T) {
 			d.cardUtil[0] = 60
 			d.addRunning("keeps card busy", 1, now.Add(-time.Minute))
 		}},
-		{"predicted packing load", blockGPUPacking, "usual load would exceed the card's remaining capacity", 0, func(d *Daemon, j *job, now time.Time) {
-			d.cfg.GPU.MaxJobs, d.cfg.GPU.PackBelowUtil = 2, 60
-			d.cardUtil[0], j.PredGPU = 40, 71
+		{"predicted packing load", blockGPUPacking, "more than 150% would slow both", 0, func(d *Daemon, j *job, now time.Time) {
+			d.cfg.GPU.MaxJobs, d.cfg.GPU.PackBelowUtil = 2, 90
+			d.cardUtil[0], j.PredGPU = 85, 71
 			d.addRunning("some card load", 1, now.Add(-time.Minute))
 		}},
 		{"outside GPU on a measured card", blockOutsideGPU, "GPU busy outside firefighter: outside 90%", -1, func(d *Daemon, _ *job, _ time.Time) {

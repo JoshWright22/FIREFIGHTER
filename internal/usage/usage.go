@@ -143,6 +143,17 @@ func (h *Hist) Max() float64 {
 	return 0
 }
 
+// Min is the lowest value still remembered (the lower edge of the lowest non-empty bucket).
+func (h *Hist) Min() float64 {
+	if h == nil || len(h.Buckets) == 0 {
+		return 0
+	}
+	if k := h.keys()[0]; k > 0 {
+		return h.edge(k - 1)
+	}
+	return 0
+}
+
 // Mean is the decayed average (Autopilot's S_avg, Eq. 2).
 func (h *Hist) Mean() float64 {
 	if h == nil || h.Weight <= 0 {

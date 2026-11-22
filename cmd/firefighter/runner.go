@@ -40,14 +40,30 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, stopSignals...)
 	defer signal.Stop(interrupt)
-	var cancelled atomic.Bool
+	var cancelled, orphaned atomic.Bool
 	waitDone := make(chan struct{})
 	go func() {
-		select {
-		case <-interrupt:
-			cancelled.Store(true)
-			_, _ = c.Act(t.ID, "cancel", daemon.Act{})
-		case <-waitDone:
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-interrupt:
+				cancelled.Store(true)
+				_, _ = c.Act(t.ID, "cancel", daemon.Act{})
+				return
+			case <-tick.C:
+				if launcher.gone() {
+					// Whoever started this run is gone (a killed Python runner, a closed agent):
+					// nobody will read the result, so the waiting job leaves the line instead of
+					// running for no one (Josh 11/22: a duplicate stayed queued until cancelled by hand).
+					orphaned.Store(true)
+					cancelled.Store(true)
+					_, _ = c.Act(t.ID, "cancel", daemon.Act{})
+					return
+				}
+			case <-waitDone:
+				return
+			}
 		}
 	}()
 
@@ -67,6 +83,9 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 				ui.Note("%s", v.Market)
 				lastMarket = time.Now()
 			}
+		}
+		if orphaned.Load() {
+			return 130, false, errors.New("the process that started this run exited while it waited: job dropped (use --detach to queue work that outlives its launcher)")
 		}
 		if cancelled.Load() {
 			return 130, false, errors.New("cancelled while waiting")
@@ -88,6 +107,9 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 		v = nv
 	}
 	close(waitDone)
+	if orphaned.Load() {
+		return 130, false, errors.New("the process that started this run exited while it waited: job dropped (use --detach to queue work that outlives its launcher)")
+	}
 	if cancelled.Load() {
 		return 130, false, errors.New("cancelled while waiting")
 	}
@@ -337,4 +359,33 @@ func dockerGPU(argv []string, dev *int, vendor string) []string {
 		}
 	}
 	return out
+}
+
+// launcher is the process that started this `firefighter run`, watched while the job waits.
+var launcher launcherProc
+
+type launcherProc struct {
+	pid     int
+	created int64
+}
+
+// watchLauncher starts watching the parent process, unless the run is the --detach child (its
+// parent exits at once by design) or was started under nohup.
+func watchLauncher(detachedChild bool) {
+	if detachedChild || meantToOutlive() {
+		return
+	}
+	ppid := os.Getppid()
+	if ppid <= 1 {
+		return
+	}
+	created := sysinfo.Created(ppid)
+	if created == 0 || created > sysinfo.Created(os.Getpid()) {
+		return // already gone, or a reused pid: nothing to watch
+	}
+	launcher = launcherProc{ppid, created}
+}
+
+func (l launcherProc) gone() bool {
+	return l.pid > 1 && !sysinfo.Same(l.pid, l.created)
 }

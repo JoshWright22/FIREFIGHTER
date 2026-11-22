@@ -111,3 +111,8 @@ func touch(p string) {
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// pastLease: a running job has used its whole lease (declared minutes plus extensions).
+func (j *job) pastLease(now time.Time) bool {
+	return j.Minutes > 0 && !j.Started.IsZero() && j.leaseUsed(now).Minutes() > j.Minutes+j.extended
+}

@@ -90,6 +90,7 @@ func (d *Daemon) Shutdown() {
 	d.mu.Lock()
 	d.release()
 	d.st.Open = d.openJobs(time.Now())
+	d.st.Queued = d.queuedJobs(time.Now())
 	d.saveState()
 	d.mu.Unlock()
 	close(d.stop)

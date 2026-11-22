@@ -49,9 +49,13 @@ func TestRAMPressureSuspendsOrCheckpoints(t *testing.T) {
 		gb, _ := m["ram_now_gb"].(float64)
 		return gb >= 0.4
 	})
-	// 0.3 GB under the floor kept for the human: the present reserve (8%), but never under
-	// reserve.min_free_gb (4 GB, at most 15% of RAM). A shortfall the job's 0.6 GB can cover.
-	floor := math.Max(total*0.08, math.Min(4, total*0.15)) // the present reserve (8%) is the larger one
+	// 0.3 GB under the floor kept for the human, as the guard reports it (reserve.auto sizes it for
+	// basic use). A shortfall the job's 0.6 GB can cover.
+	m, _ := e.status()["machine"].(map[string]any)
+	floor, _ := m["ram_reserve_gb"].(float64)
+	if floor <= 0 {
+		floor = math.Max(total*0.08, math.Min(4, total*0.15))
+	}
 	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "ram_avail_gb": floor - 0.3})
 	if runtime.GOOS == "windows" {
 		eventually(t, "suspended and its RAM freed", 20*time.Second, func() bool { return strings.Contains(e.log(), "suspending it freed") })

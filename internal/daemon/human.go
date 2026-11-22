@@ -129,6 +129,26 @@ func (d *Daemon) steadyUser(raw string, now time.Time) string {
 	return cur
 }
 
+// humanCPULoad is the load the CPU reserve follows. Under reserve.auto outside games it is read on
+// the CPUs kept for the human (jobs are pinned off them, so their threads can't count as the
+// human's): while those have room the human is in light use, and only once they are nearly all
+// busy does the reserve follow everything that isn't a measured job (Josh 11/22: 13 of 16 CPUs
+// held while browsing, because job threads firefighter didn't see counted as the human's).
+func (d *Daemon) humanCPULoad() float64 {
+	keep := int(math.Round(d.res.CPUs))
+	if !d.basicAuto(d.user) || keep < 1 || len(d.snap.CoreBusy) < keep {
+		return d.busyUser
+	}
+	on := 0.0
+	for _, b := range d.snap.CoreBusy[:keep] {
+		on += b
+	}
+	if on < float64(keep)-0.5 {
+		return math.Min(d.busyUser, on) // light: the human's own CPUs have room
+	}
+	return d.busyUser
+}
+
 // gpuHeld: the human's current state reserves the whole GPU (pause_gpu).
 func (d *Daemon) gpuHeld() bool { return d.cfg.ReserveFor(d.user).PauseGPU }
 

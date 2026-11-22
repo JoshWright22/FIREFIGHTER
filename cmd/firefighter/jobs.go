@@ -204,8 +204,64 @@ func act(args []string, verb string) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.Act(args[0], verb, daemon.Act{Project: callerProject(), Force: force})
+	v, err := c.Act(args[0], verb, daemon.Act{Project: callerProject(), Force: force})
+	if err == nil {
+		outcome := v.State
+		if v.Receipt != nil {
+			outcome = v.Receipt.Outcome
+		}
+		ui.Say(ui.Ivory, "%s %s: %s", v.ID, v.Name, outcome)
+	}
 	return err
+}
+
+// show prints one job in full: what it declared, what admission counts, where it stands and why.
+func show(args []string) error {
+	asJSON := hasFlag(args, "--json")
+	args = without(args, "--json")
+	if len(args) != 1 || !validJobID(args[0]) {
+		return errors.New("usage: firefighter show <id> [--json]")
+	}
+	c, err := client.Connect()
+	if err != nil {
+		return err
+	}
+	v, err := c.Get(args[0], "", 0)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		b, _ := json.MarshalIndent(v, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	p := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
+	p("%s %s [%s] %s", v.ID, v.Name, v.Project, v.State)
+	if d := v.Declared; d != nil {
+		p("  declared: %.0f min, bid %d, RAM %.1f GB, VRAM %.1f GB%s", d.Minutes, d.Bid, d.RAMGB, d.VRAMGB, map[bool]string{true: ", spot"}[d.Spot])
+	}
+	p("  counted:  RAM %.1f GB, VRAM %.1f GB, %.0f min predicted%s", v.NeedRAM, v.NeedVRAM, v.Pred, map[bool]string{true: "; background project (waits behind project work)"}[v.Background])
+	if v.LearnedRAM > 0 {
+		p("  learned:  its past runs point to %.1f GB of RAM", v.LearnedRAM)
+	}
+	switch v.State {
+	case "waiting":
+		p("  place:    #%d in the %s line, starts %s", v.Position, map[bool]string{true: "GPU", false: "CPU"}[v.GPU], daemon.Approx(v.ETA))
+	case "running", "granted":
+		p("  running:  until %s, RAM now %.1f GB", daemon.Approx(v.ETA), v.RAMNow)
+	}
+	if v.Why != "" {
+		p("  why:      %s", v.Why)
+	}
+	if v.Market != "" {
+		p("  market:   %s", v.Market)
+	}
+	if v.Receipt != nil {
+		b, _ := json.MarshalIndent(v.Receipt, "  ", "  ")
+		p("  receipt:  %s", b)
+	}
+	p("  log:      %s", client.LogPath(v.ID))
+	return nil
 }
 
 func adopt(args []string) error {

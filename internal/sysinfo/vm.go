@@ -32,6 +32,7 @@ type fake struct {
 	NetMbps    *float64 `json:"net_mbps"`
 	GPUs       []GPU    `json:"gpus"`
 	CommitFree *float64 `json:"commit_free_gb"` // scripted commit headroom
+	CommitGrow *float64 `json:"commit_grow_gb"` // and how far the page file may still grow
 	VMHostGB   *float64 `json:"vm_host_gb"`     // a scripted WSL VM: what the host gave it
 	VMCacheGB  *float64 `json:"vm_cache_gb"`    // and how much of that is cache
 	DiskFreeGB *float64 `json:"disk_free_gb"`   // free space on every drive

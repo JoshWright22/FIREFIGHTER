@@ -80,7 +80,7 @@ func (d *Daemon) freestCard() (int, float64) {
 		left := free
 		for _, j := range d.jobs {
 			if j.GPU && (j.State == "granted" || j.State == "running") && d.onCard(j, i) {
-				left -= math.Max(0, j.NeedVRAM-j.vramGB)
+				left -= d.reservedVRAM(j)
 			}
 		}
 		if best < 0 || left > bestLeft {
@@ -144,7 +144,7 @@ func (d *Daemon) cardFor(t *policy.Ticket) (int, float64) {
 		left := g.VRAMGB - g.UsedGB
 		for _, j := range d.jobs {
 			if j.GPU && (j.State == "granted" || j.State == "running") && d.onCard(j, i) {
-				left -= math.Max(0, j.NeedVRAM-j.vramGB)
+				left -= d.reservedVRAM(j)
 			}
 		}
 		fits, open := d.capFor(i, t) >= need, d.cardOpen(i)
@@ -205,6 +205,18 @@ func (d *Daemon) utilOf(i int) float64 {
 		u = math.Max(u, d.snap.GPUs[i].Util*0.5)
 	}
 	return u
+}
+
+// measuredUtil is card i's utilization smoothed over the last 30 s (its reading now before the
+// first smoothing).
+func (d *Daemon) measuredUtil(i int) float64 {
+	if i < len(d.cardUtil) {
+		return d.cardUtil[i]
+	}
+	if i < len(d.snap.GPUs) {
+		return d.snap.GPUs[i].Util
+	}
+	return 0
 }
 
 // cardOpen says whether card i takes another job now: fewer than gpu.max_jobs on it (heavy outside

@@ -47,12 +47,16 @@ type Ticket struct {
 	Net        bool   `json:"net,omitempty"`
 	Quick      bool   `json:"quick,omitempty"`    // a short look (docker run --rm image ls): the VM's file cache is dropped after      // network-heavy (downloads, uploads, installs)
 	NetAuto    bool   `json:"net_auto,omitempty"` // Net was detected from the command, not declared
+	// Background: its project is a bot (order.background, or learned: unattended recurring CPU work
+	// such as an application or scraping loop). It goes after project work as if it bid BidLow.
+	Background bool `json:"background,omitempty"`
 
 	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: declared, or learned from the command's past runs (usage.PeakNeed)
 	NeedRAM     float64 `json:"need_ram_gb"`
-	WantRAM     float64 `json:"want_ram_gb,omitempty"`  // what its history pointed to, when that was more than the machine can give (NeedRAM is then the cut value)
-	NeedCPU     float64 `json:"need_cpus,omitempty"`    // CPUs it is expected to keep busy (its past runs' mean; 0 unknown)
-	NeedDisk    float64 `json:"need_disk_gb,omitempty"` // GB it is expected to write
+	LearnedRAM  float64 `json:"learned_ram_gb,omitempty"` // what its past runs alone point to (shown when a declaration overrides it)
+	WantRAM     float64 `json:"want_ram_gb,omitempty"`    // what its history pointed to, when that was more than the machine can give (NeedRAM is then the cut value)
+	NeedCPU     float64 `json:"need_cpus,omitempty"`      // CPUs it is expected to keep busy (its past runs' mean; 0 unknown)
+	NeedDisk    float64 `json:"need_disk_gb,omitempty"`   // GB it is expected to write
 	NeedNet     float64 `json:"need_net_mbps,omitempty"`
 	PredGPU     float64 `json:"pred_gpu_pct,omitempty"` // GPU utilization it is expected to cause
 	PredMinutes float64 `json:"pred_minutes"`           // declared minutes corrected by this command's history
@@ -233,10 +237,16 @@ func Order(c config.Config, waiting []*Ticket, accts map[string]*Account, capy C
 		if a.Band != b.Band {
 			return a.Band < b.Band
 		}
+		if a.Background != b.Background { // a bot waits behind project work, even when overdue
+			return b.Background
+		}
 		if oa, ob := overdue(a), overdue(b); oa != ob {
 			return oa
 		} else if oa {
 			return a.Created.Before(b.Created)
+		}
+		if pa, pb := Priority(a), Priority(b); pa != pb { // the bid orders the line (Josh 11/22)
+			return pa > pb
 		}
 		if ka, kb := keys[a.ID], keys[b.ID]; ka != kb {
 			return ka < kb
@@ -249,6 +259,15 @@ func Order(c config.Config, waiting []*Ticket, accts map[string]*Account, capy C
 	return out
 }
 
+// Priority is the bid a ticket waits with: its own, or at most BidLow for a background one that
+// isn't urgent. Within a band it orders the line before fairness (the order policy's key) does.
+func Priority(t *Ticket) int {
+	if t.Background && t.Bid < BidUrgent {
+		return min(t.Bid, BidLow)
+	}
+	return t.Bid
+}
+
 func lottery(c config.Config, ts []*Ticket, now time.Time, rng *rand.Rand, overdue func(*Ticket) bool) []*Ticket {
 	if rng == nil {
 		rng = rand.New(rand.NewSource(now.UnixNano()))
@@ -257,22 +276,25 @@ func lottery(c config.Config, ts []*Ticket, now time.Time, rng *rand.Rand, overd
 		if ts[i].Band != ts[j].Band {
 			return ts[i].Band < ts[j].Band
 		}
+		if ts[i].Background != ts[j].Background {
+			return ts[j].Background
+		}
 		return overdue(ts[i]) && !overdue(ts[j])
 	})
 	var out []*Ticket
 	for len(ts) > 0 {
 		// Draw only within the leading band (and overdue tickets always win their draw).
 		n := 1
-		for n < len(ts) && ts[n].Band == ts[0].Band && overdue(ts[n]) == overdue(ts[0]) {
+		for n < len(ts) && ts[n].Band == ts[0].Band && ts[n].Background == ts[0].Background && overdue(ts[n]) == overdue(ts[0]) {
 			n++
 		}
 		total := 0.0
 		for _, t := range ts[:n] {
-			total += c.Weight(t.Project) * Price(c, t.Bid)
+			total += c.Weight(t.Project) * Price(c, Priority(t))
 		}
 		pick, x := 0, rng.Float64()*total
 		for i, t := range ts[:n] {
-			if x -= c.Weight(t.Project) * Price(c, t.Bid); x <= 0 {
+			if x -= c.Weight(t.Project) * Price(c, Priority(t)); x <= 0 {
 				pick = i
 				break
 			}
@@ -343,7 +365,10 @@ type ReserveCtl struct {
 func (r *ReserveCtl) Update(c config.Config, state string, busyNonJobCPUs float64, ncpu int, now time.Time) {
 	t := c.ReserveFor(state)
 	cpu := float64(t.CPUs)
-	if state == "active" || state == "game" {
+	// Under reserve.auto, light use (browsing, chat, video) keeps the level; only load beyond
+	// reserve.basic_cpus (a build, a game, a big app) makes the reserve follow it (Josh 11/22).
+	light := c.Reserve.Auto && state != "game" && busyNonJobCPUs <= float64(c.Reserve.BasicCPUs)
+	if (state == "active" || state == "game") && !light {
 		follow := math.Ceil(busyNonJobCPUs) + 2
 		if most := math.Floor(float64(ncpu) * c.Reserve.MaxCPUPct / 100); ncpu > 0 && c.Reserve.MaxCPUPct > 0 {
 			follow = math.Min(follow, most)

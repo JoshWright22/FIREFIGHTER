@@ -114,12 +114,45 @@ func hashCmd(argv []string) string {
 			break
 		}
 	}
+	// The config it runs, when it names one: one training script runs models of every size, and a
+	// history mixing them made a 13M run wait for the RAM a large one had needed (Josh 11/22: 17.3 GB
+	// counted for jobs peaking at 6-7).
+	if cfg := configArg(argv[1:]); cfg != "" {
+		parts = append(parts, "config", base(cfg))
+	}
 	key := strings.Join(parts, " ")
 	if base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv[0])), ".exe"); (base == "docker" || base == "podman") && len(argv) > 1 && argv[1] == "run" {
 		key = base + " run " + dockerImage(argv[2:])
 	}
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:6])
+}
+
+// configArg is the config file a command names: --config/--cfg/-c FILE (or =FILE), or else the
+// first argument that is a .yaml, .yml, .toml or .json file.
+func configArg(args []string) string {
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		for _, f := range []string{"--config", "--cfg", "-c", "--config-file", "--config-name"} {
+			if a == f && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return args[i+1]
+			}
+			if strings.HasPrefix(a, f+"=") {
+				return strings.TrimPrefix(a, f+"=")
+			}
+		}
+	}
+	for _, a := range args {
+		switch strings.ToLower(filepath.Ext(a)) {
+		case ".yaml", ".yml", ".toml", ".json":
+			if !strings.HasPrefix(a, "-") {
+				return a
+			}
+		}
+	}
+	return ""
 }
 
 // dockerImage finds the image in `docker run` arguments: the first argument that isn't a flag
@@ -211,6 +244,7 @@ func run(args []string) (int, error) {
 		ui.Note("queued as %s; output in %s; `firefighter wait %s` for the receipt", id, log, id)
 		return 0, nil
 	}
+	watchLauncher(r.log != "") // the internal --log form is the --detach child
 	c, err := client.Connect()
 	if err != nil {
 		return 1, err

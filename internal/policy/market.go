@@ -20,6 +20,7 @@ import (
 // Tier bids: spot runs on leftovers at a third of the price; urgent is for work the human is
 // waiting on and costs double. Bids between are accepted from the CLI for compatibility.
 const (
+	BidLow    = 2 // what a background project's jobs wait with
 	BidNormal = 5
 	BidUrgent = 10
 	SpotPrice = 1.0 / 3

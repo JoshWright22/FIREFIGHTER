@@ -92,6 +92,9 @@ type saved struct {
 	Frozen map[int]int64 `json:"frozen,omitempty"`
 	// Open: running jobs by id, so their clients can re-register them after a restart.
 	Open map[string]OpenJob `json:"open,omitempty"`
+	// Queued: waiting jobs by id, so a job its client re-registers after a restart keeps its age
+	// and so its place in line (Seen is when it was queued).
+	Queued map[string]OpenJob `json:"queued,omitempty"`
 	// Newcomers: the budget never-seen projects draw from, refilled daily (guard.new_project_minutes).
 	Newcomers   float64 `json:"newcomers"`
 	NetLinkMbps float64 `json:"net_link_mbps,omitempty"` // the network link's learned size, kept across restarts
@@ -101,6 +104,10 @@ type saved struct {
 	// Occupancy is how taken the GPU usually is, per hour of the week (0-1), for quotes.
 	Occupancy  []float64 `json:"occupancy"`
 	OccSamples []float64 `json:"occupancy_hours"` // hours of observation behind each slot
+	// Projects: how each project submits work, to tell bots (background) from project work.
+	Projects map[string]*ProjectSeen `json:"projects,omitempty"`
+	// Util: per resource, the minutes it sat idle while a job of its kind waited (status).
+	Util map[string]*UtilLog `json:"util,omitempty"`
 }
 
 func statePath() string { return filepath.Join(config.Home(), "state.json") }

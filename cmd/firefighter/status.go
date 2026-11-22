@@ -27,7 +27,7 @@ func status(args []string) error {
 	}
 	p := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 	p("%s  human: %s %s", ui.Bold(ui.Paint(ui.Hot, "FIREFIGHTER")), ui.UserLabel(s.User), s.UserWhy)
-	p("  reserve for the human: %.0f CPUs, %.0f%% RAM, %.1f GB VRAM", s.Reserve["cpus"], s.Reserve["ram_pct"], s.Reserve["vram_gb"])
+	p("  reserve for the human: %.0f CPUs, %.1f GB RAM, %.1f GB VRAM (firefighter sizes it from measured use; config sets the bounds)", s.Reserve["cpus"], s.Machine["ram_reserve_gb"], s.Reserve["vram_gb"])
 	if s.Forecast != nil {
 		for _, h := range s.Forecast.Human {
 			if h.Now && h.Learned {
@@ -50,6 +50,12 @@ func status(args []string) error {
 		p("  disk %s %.1f/%.1f GB free (%.0f GB kept for the human)", dk.Path, dk.FreeGB, dk.TotalGB, min(s.Reserve["disk_free_gb"], dk.TotalGB/10))
 	}
 	p("  policy: preset %s, order %s, pricing %s, budget %s", s.Policy["preset"], s.Policy["order"], s.Policy["pricing"], s.Policy["budget"])
+	for _, l := range s.Limits {
+		p("  %s", ui.Paint(ui.Ivory, "limit: "+l))
+	}
+	for _, l := range s.Idle {
+		p("  %s", ui.Paint(ui.Hot, "! "+l))
+	}
 	for _, n := range s.Notes {
 		p("  %s", ui.Paint(ui.Hot, "! "+n))
 	}
@@ -71,7 +77,11 @@ func status(args []string) error {
 	}
 	p("\n%s", ui.Paint(ui.Ivory, "in the wings"))
 	for _, v := range s.Waiting {
-		p("  %-8s #%d %-31s %-14s on %s %s", v.ID, v.Position, trunc(v.Name, 31), trunc(v.Project, 14), daemon.Approx(v.ETA), v.Why)
+		when := "starts " + daemon.Approx(v.ETA)
+		if v.ETA == "" || v.ETA == "unknown" {
+			when = "start not forecast"
+		}
+		p("  %-8s #%d %-31s %-14s %s: %s", v.ID, v.Position, trunc(v.Name, 31), trunc(v.Project, 14), when, v.Why)
 	}
 	if len(s.Foreign) > 0 || len(s.Docker) > 0 {
 		p("\n%s", ui.Paint(ui.Coral, "other load (counted as the human's)"))
