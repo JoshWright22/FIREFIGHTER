@@ -252,6 +252,7 @@ func TestUserState(t *testing.T) {
 
 func TestReserveFastAttackSlowDecay(t *testing.T) {
 	c := config.Defaults()
+	c.Reserve.Auto = false // the fixed reserve; under reserve.auto light use returns at once (daemon tests)
 	r := &ReserveCtl{}
 	r.Update(c, "away", 0, 16, t0)
 	if r.CPUs != 2 {

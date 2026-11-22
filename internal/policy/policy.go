@@ -378,7 +378,12 @@ func (r *ReserveCtl) Update(c config.Config, state string, busyNonJobCPUs float6
 	if cpu >= r.CPUs {
 		r.CPUs, r.cpuStep = cpu, now
 	} else if now.Sub(r.cpuStep).Seconds() >= c.Reserve.CPUShrinkSeconds {
-		r.CPUs, r.cpuStep = math.Max(cpu, r.CPUs-1), now
+		if light {
+			r.CPUs = cpu // back to basic use at once: the measured human load is already smoothed
+		} else {
+			r.CPUs = math.Max(cpu, r.CPUs-1)
+		}
+		r.cpuStep = now
 	}
 	if t.RAMPct >= r.RAMPct {
 		r.RAMPct, r.ramHold = t.RAMPct, now

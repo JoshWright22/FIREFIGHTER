@@ -177,3 +177,39 @@ func TestDeclarationBelowEveryRunIsOverruled(t *testing.T) {
 		t.Fatalf("need %.1f: a 1 GB declaration for a 7.6 GB command must not count", tk.NeedRAM)
 	}
 }
+
+// Josh 11/22: "reserve for the human: 13 CPUs" while he browsed: agents' processes and a job's
+// not-yet-attributed children counted as his. The reserve follows his own measured use only,
+// stays at basic use until that passes reserve.basic_cpus, and comes back down at once.
+func TestCPUReserveFollowsOnlyTheHumansOwnUse(t *testing.T) {
+	d := testDaemon(t)
+	d.cfg.Reserve.Auto = true
+	d.cfg.Reserve.MaxCPUPct = 90
+	d.user = "active"
+	now := time.Now()
+	d.res = policy.ReserveCtl{}
+	step := func(at time.Time) { d.res.Update(d.withLearnedReserve(d.cfg, at), d.user, d.humanCPULoad(), 16, at) }
+	d.busyUser = 11                            // everything that isn't a measured job: agents, unattributed job children
+	d.humanCPU.ok, d.humanCPU.ewma = true, 1.5 // the human's own processes
+	step(now)
+	if d.res.CPUs > float64(d.cfg.Reserve.BasicCPUs) {
+		t.Fatalf("agents' load lifted the reserve to %.0f CPUs", d.res.CPUs)
+	}
+	d.humanCPU.ewma = 7 // the human starts a build
+	step(now.Add(time.Second))
+	if d.res.CPUs < 9 {
+		t.Fatalf("the human's own 7-CPU build must raise the reserve: %.0f", d.res.CPUs)
+	}
+	d.humanCPU.ewma = 1
+	step(now.Add(20 * time.Second))
+	if d.res.CPUs > float64(d.cfg.Reserve.BasicCPUs) {
+		t.Fatalf("back to light use, the reserve should drop at once: %.0f", d.res.CPUs)
+	}
+	// A fresh guard (no scan yet) treats the load as light.
+	d.humanCPU.ok = false
+	d.res = policy.ReserveCtl{}
+	step(now.Add(40 * time.Second))
+	if d.res.CPUs > float64(d.cfg.Reserve.BasicCPUs) {
+		t.Fatalf("a restart lifted the reserve to %.0f", d.res.CPUs)
+	}
+}

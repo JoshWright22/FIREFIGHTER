@@ -129,26 +129,22 @@ func (d *Daemon) steadyUser(raw string, now time.Time) string {
 	return cur
 }
 
-// humanCPULoad is the load the CPU reserve follows. Under reserve.auto outside games it is read on
-// the CPUs kept for the human (jobs are pinned off them, so their threads can't count as the
-// human's): while those have room the human is in light use, and only once they are nearly all
-// busy does the reserve follow everything that isn't a measured job (Josh 11/22: 13 of 16 CPUs
-// held while browsing, because job threads firefighter didn't see counted as the human's).
+// humanCPULoad is the load the CPU reserve follows. Under reserve.auto outside games it is the
+// human's own measured use (humancpu.go: a 30 s average of what isn't a job or under an agent
+// CLI), so the reserve stays at basic use unless the human really uses more. Otherwise, and until
+// the first scan, it is everything that isn't a measured job, as before.
 func (d *Daemon) humanCPULoad() float64 {
 	busy := d.busyUser
 	if math.IsNaN(busy) || math.IsInf(busy, 0) {
 		busy = 0
 	}
-	keep := int(math.Round(d.res.CPUs))
-	if !d.basicAuto(d.user) || keep < 1 || len(d.snap.CoreBusy) < keep {
-		return busy
-	}
-	on := 0.0
-	for _, b := range d.snap.CoreBusy[:keep] {
-		on += b
-	}
-	if on < float64(keep)-0.5 {
-		return math.Min(busy, on) // light: the human's own CPUs have room
+	if d.basicAuto(d.user) {
+		if !d.humanCPU.ok {
+			// Before the first scan (a fresh guard: its jobs' CPU not measured yet), light use:
+			// a restart must not lift the reserve for minutes.
+			return math.Min(busy, float64(d.cfg.Reserve.BasicCPUs))
+		}
+		return math.Min(busy, d.humanCPU.ewma)
 	}
 	return busy
 }

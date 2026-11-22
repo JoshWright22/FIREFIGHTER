@@ -109,6 +109,7 @@ func (d *Daemon) Run() {
 			meas[r.id] = measured{m, cpu, ram, written}
 		}
 		rogues := d.findRogues(now, cfg, snap, governed)
+		d.measureHumanCPU(now, cfg, governed)
 		d.refreshDocker(now)
 		d.refreshVM(now, vmWanted)
 		d.refreshDisks(now, folders, sysFolders)
