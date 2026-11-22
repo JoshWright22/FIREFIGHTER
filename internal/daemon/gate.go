@@ -30,6 +30,7 @@ const (
 	blockDisk
 	blockCPU
 	blockRAM
+	blockPriority // a higher-bid waiting job holds what this one would take
 )
 
 type Decision struct {
@@ -72,6 +73,7 @@ type admitCtx struct {
 	vramHeads       map[int]Decision
 	cpuRAMHead      Decision
 	gpuRAMHead      Decision
+	holds           []prioHold // higher-bid jobs waiting on a resource, in this pass
 }
 
 func (d *Daemon) newAdmitCtx(now time.Time) *admitCtx {
@@ -127,9 +129,10 @@ func (d *Daemon) gateOrder(waiting []*policy.Ticket) []*policy.Ticket {
 	return ordered
 }
 
-// gate returns the first hold in admission order. Only a head blocked at a memory gate reserves
-// a backfill window for jobs later in this pass. Budget bands order the pass, not eligibility.
-func (d *Daemon) gate(j *job, ctx *admitCtx) Decision {
+// gateResources returns the first hold in admission order. Only a head blocked at a memory gate
+// reserves a backfill window for jobs later in this pass. Budget bands order the pass, not
+// eligibility. Higher bids' holds are checked before it (gate, priority.go).
+func (d *Daemon) gateResources(j *job, ctx *admitCtx) Decision {
 	if ctx.updating {
 		return blocked(blockUpdating, "waiting for firefighter to restart for an update", false)
 	}

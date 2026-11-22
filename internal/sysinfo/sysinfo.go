@@ -162,6 +162,12 @@ func (r *Reader) Read() Snapshot {
 	s := Snapshot{Time: time.Now(), CPUs: logicalCPUs(), Idle: -1}
 	if p, err := cpu.Percent(0, true); err == nil && len(p) > 0 {
 		for _, v := range p {
+			// A first sample (no interval yet) can be NaN on macOS: a NaN here reached the CPU
+			// reserve and the bill, and no reply could be encoded (CI 2026-11-22).
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				v = 0
+			}
+			v = math.Max(0, math.Min(100, v))
 			s.CoreBusy = append(s.CoreBusy, v/100)
 			s.CPUBusy += v / 100
 		}

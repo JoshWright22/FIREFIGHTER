@@ -491,6 +491,8 @@ func (d *Daemon) limitName(k BlockKind) string {
 		return "backoff"
 	case blockPacing:
 		return "pacing"
+	case blockPriority:
+		return "a higher bid waiting"
 	}
 	return "other"
 }

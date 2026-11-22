@@ -191,6 +191,17 @@ func TestFrozenDownloadSavesUnderRAMPressure(t *testing.T) {
 		r, _ := e.status()["running"].([]any)
 		return len(r) == 1
 	})
+	// Its 600 MB measured before it is frozen (CI 2026-11-22: frozen one second in, at 0.3 GB, no
+	// job's RAM covered the shortfall and nothing was asked to save).
+	eventually(t, "the download's RAM measured", 30*time.Second, func() bool {
+		r, _ := e.status()["running"].([]any)
+		if len(r) != 1 {
+			return false
+		}
+		m, _ := r[0].(map[string]any)
+		gb, _ := m["ram_now_gb"].(float64)
+		return gb >= 0.4
+	})
 	e.setFake(map[string]any{"idle": 0.0, "foreground": "game.exe", "net_mbps": 0.0})
 	eventually(t, "frozen for the game", 20*time.Second, func() bool { out, _ := e.ff("status"); return strings.Contains(out, "gaming") })
 	time.Sleep(3 * time.Second) // past suspend_max_seconds

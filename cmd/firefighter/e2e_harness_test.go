@@ -84,6 +84,7 @@ func helper(spec string) int {
 		if err := c.Start(); err != nil {
 			return 98
 		}
+		time.Sleep(3 * time.Second) // alive while the run starts watching it, as a real launcher is; then gone
 		return 0
 	case "cudaoom": // fail the way PyTorch does when the GPU runs out of memory
 		fmt.Fprintln(os.Stderr, "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB")

@@ -4,6 +4,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,11 @@ func TestOrphanedRunLeavesTheLine(t *testing.T) {
 	e := newEnv(t, map[string]any{"idle": 0.0, "foreground": "game.exe", "gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16}}})
 	self, _ := os.Executable()
 	args := strings.Join([]string{"run", "--gpu", "--minutes", "1", "--name", "orphan", "--", self}, "\x1f")
-	if out, err := e.cmd([]string{"FF_HELPER=launch", "FF_BIN=" + binPath, "FF_LAUNCH_ARGS=" + args}, "run", "--quick", "--name", "launcher", "--", self).CombinedOutput(); err != nil {
+	// The launcher is started directly, not as a job: a job's leftovers are killed when it ends,
+	// and the orphan would go with them before it could drop its own job.
+	launcher := exec.Command(self)
+	launcher.Env = append(append([]string{}, e.vars...), "FF_HELPER=launch", "FF_BIN="+binPath, "FF_LAUNCH_ARGS="+args)
+	if out, err := launcher.CombinedOutput(); err != nil {
 		t.Fatalf("launcher: %v\n%s", err, out)
 	}
 	eventually(t, "the orphaned run's job is dropped", 30*time.Second, func() bool {
