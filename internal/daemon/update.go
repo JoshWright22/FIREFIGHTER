@@ -15,10 +15,12 @@ import (
 // jobs get back in line by themselves), and restarts as the new version. A development build
 // ("dev") never updates itself, and update.auto = false turns it off.
 func (d *Daemon) autoUpdate() {
+	if d.Exe != "" {
+		update.Cleanup(d.Exe) // old copies left by any swap, dev builds' included
+	}
 	if d.Version == "dev" || d.Version == "" || d.Exe == "" {
 		return
 	}
-	update.Cleanup(d.Exe)
 	first, every, poll := 3*time.Minute, 6*time.Hour, 30*time.Second
 	if s, err := strconv.ParseFloat(os.Getenv("FIREFIGHTER_UPDATE_EVERY"), 64); err == nil && s > 0 && !config.IsDefaultHome() {
 		first, every, poll = dur(s), dur(s), dur(s) // tests, in their own home
