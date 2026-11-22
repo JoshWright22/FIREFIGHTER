@@ -5,7 +5,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -76,6 +79,11 @@ func TestGuardUpdatesItself(t *testing.T) {
 	_ = os.RemoveAll(newDir)
 
 	var published atomic.Bool // the release appears only once the test says so
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	sums := func() []byte {
+		sum := sha256.Sum256(archive)
+		return []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), update.AssetName()))
+	}
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -84,13 +92,14 @@ func TestGuardUpdatesItself(t *testing.T) {
 			if published.Load() {
 				tag = "v0.0.2"
 			}
-			fmt.Fprintf(w, `{"tag_name":%q,"assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
-				tag, update.AssetName(), srv.URL+"/archive", srv.URL+"/sums")
+			fmt.Fprintf(w, `{"tag_name":%q,"assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q},{"name":%q,"browser_download_url":%q}]}`,
+				tag, update.AssetName(), srv.URL+"/archive", srv.URL+"/sums", update.SigAsset, srv.URL+"/sig")
 		case "/archive":
 			_, _ = w.Write(archive)
 		case "/sums":
-			sum := sha256.Sum256(archive)
-			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), update.AssetName())
+			_, _ = w.Write(sums())
+		case "/sig":
+			fmt.Fprintln(w, base64.StdEncoding.EncodeToString(ed25519.Sign(priv, sums())))
 		default:
 			http.NotFound(w, r)
 		}
@@ -98,7 +107,8 @@ func TestGuardUpdatesItself(t *testing.T) {
 	defer srv.Close()
 
 	e := newEnv(t, nil)
-	e.vars = append(e.vars, "FIREFIGHTER_UPDATE_API="+srv.URL, "FIREFIGHTER_UPDATE_EVERY=1")
+	e.vars = append(e.vars, "FIREFIGHTER_UPDATE_API="+srv.URL, "FIREFIGHTER_UPDATE_EVERY=1",
+		"FIREFIGHTER_UPDATE_TEST_KEY="+base64.StdEncoding.EncodeToString(pub))
 	run := func(args ...string) string {
 		c := exec.Command(exe, args...)
 		c.Env = e.vars

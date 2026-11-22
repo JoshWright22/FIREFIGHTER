@@ -17,6 +17,7 @@ import (
 //	firefighter harvest                         ledger totals, the guard's verdict now
 //	firefighter harvest earned 3.20 [--through 2026-11-23] [--note "week 1"]
 //	firefighter harvest reset                   allow it again after the guard tripped it off
+//	firefighter harvest approve                 let the configured harvester commands run (the human, once per change)
 func harvestCmd(args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -30,6 +31,24 @@ func harvestCmd(args []string) error {
 		sub, args = args[0], args[1:]
 	}
 	switch sub {
+	case "approve":
+		// The human's own terminal only: approving is what lets these lines run at every logon.
+		if err := agentMayConfigure("harvester.start"); err != nil {
+			return fmt.Errorf("only the human approves harvester commands, from their own terminal")
+		}
+		h := cfg.Harvester
+		cmds := []string{h.Start, h.Stop, h.Running}
+		fmt.Println("approving these harvester commands from firefighter.toml (they run through the shell at logon and when the GPU goes idle):")
+		for i, k := range []string{"start", "stop", "running"} {
+			if strings.TrimSpace(cmds[i]) != "" {
+				fmt.Printf("  %-8s %s\n", k, cmds[i])
+			}
+		}
+		if err := harvest.Approve(home, cmds...); err != nil {
+			return err
+		}
+		fmt.Println("approved; any later change to them needs `firefighter harvest approve` again")
+		return nil
 	case "earned":
 		fs := flag.NewFlagSet("harvest earned", flag.ContinueOnError)
 		through := fs.String("through", "", "last day (YYYY-MM-DD) or moment (YYYY-MM-DD HH:MM) the amount covers; default now")

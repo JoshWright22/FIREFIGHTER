@@ -252,6 +252,8 @@ func updateCmd(args []string) error {
 		ui.Note("firefighter %s is the newest release", version)
 		return nil
 	}
+	build := hasFlag(args, "--build")
+	args = without(args, "--build")
 	if len(args) > 0 && args[0] == "--check" {
 		ui.Note("firefighter %s is out (this is %s): run `firefighter update`, or leave it to the guard", rel.Tag, version)
 		return nil
@@ -263,7 +265,7 @@ func updateCmd(args []string) error {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
-	if err := update.Apply(ctx, rel, exe, func(s string) { ui.Note("%s", s) }); err != nil {
+	if err := update.Apply(ctx, rel, exe, func(s string) { ui.Note("%s", s) }, update.Options{Build: build}); err != nil {
 		return err
 	}
 	_ = stopDaemon()

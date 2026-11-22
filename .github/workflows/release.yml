@@ -18,6 +18,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false # nothing here pushes: no token left in .git/config
+      # The install one-liners install a pinned release, never "latest": the tag must be the one
+      # they name (security audit 2026-11-22, H1).
+      - name: install scripts are pinned to this tag
+        run: |
+          grep -qF "else { '${GITHUB_REF_NAME}' }" scripts/install.ps1
+          grep -qF 'VERSION="${FIREFIGHTER_VERSION:-'"${GITHUB_REF_NAME}"'}"' scripts/install.sh
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod # the toolchain go.mod names, not whatever "stable" is today

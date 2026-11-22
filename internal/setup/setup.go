@@ -5,19 +5,21 @@
 package setup
 
 import (
+	"bytes"
 	"encoding/xml"
-	"regexp"
-
-	"github.com/BurntSushi/toml"
-
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
+	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 const begin, end = "<!-- firefighter:begin -->", "<!-- firefighter:end -->"
@@ -184,8 +186,9 @@ func upsertBlock(path, block string) error {
 	return writeFile(path, []byte(s))
 }
 
-// writeFile replaces a config file safely: a one-time .firefighter.bak of the original, then a
-// temp file renamed over it, so a crash never leaves it truncated.
+// writeFile replaces a config file safely: a one-time .firefighter.bak of the original, a
+// timestamped backup before every write (the newest 3 kept), then a temp file renamed over it, so
+// a crash never leaves it truncated.
 func writeFile(path string, b []byte) error {
 	// A symlinked config (stow, chezmoi, a dotfiles repo) is edited where it lives: renaming over
 	// the link would cut it off from its repo.
@@ -198,6 +201,7 @@ func writeFile(path string, b []byte) error {
 	mode := os.FileMode(0o644)
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
+		backupBeforeWrite(path, mode)
 		bak := path + ".firefighter.bak"
 		if _, err := os.Lstat(bak); os.IsNotExist(err) {
 			if old, err := os.ReadFile(path); err == nil {
@@ -225,6 +229,25 @@ func writeFile(path string, b []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// backupBeforeWrite copies path to path.firefighter.bak-<time> and keeps the newest 3 of those.
+func backupBeforeWrite(path string, mode os.FileMode) {
+	old, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	bak := path + ".firefighter.bak-" + time.Now().Format("20060102-150405.000")
+	if f, err := os.OpenFile(bak, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode); err == nil { // never through a planted link
+		_, _ = f.Write(old)
+		_ = f.Close()
+	}
+	matches, _ := filepath.Glob(path + ".firefighter.bak-*")
+	sort.Strings(matches) // the time stamp sorts oldest first
+	for len(matches) > 3 {
+		_ = os.Remove(matches[0])
+		matches = matches[1:]
+	}
 }
 
 // ---- MCP registration ---------------------------------------------------------------------------
@@ -283,40 +306,59 @@ func jsonServers(path, key, exe string, add bool) error {
 }
 
 // jsonEntry adds (entry) or removes the "firefighter" server under key in a JSON config. A new or
-// empty file starts from fresh (fields some agents require, like Muse's schema_version).
+// empty file starts from fresh (fields some agents require, like Muse's schema_version). Only that
+// entry changes: every other key keeps its place and value (security audit M3), nothing is written
+// when nothing changes, and a file another program rewrote while this one worked is read again.
 func jsonEntry(path, key string, entry map[string]any, add bool, fresh map[string]any) error {
-	m := map[string]any{}
-	b, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if os.IsNotExist(err) && !add {
-		return nil
-	}
-	if len(strings.TrimSpace(string(b))) > 0 {
-		if err := json.Unmarshal(b, &m); err != nil {
-			return fmt.Errorf("%s isn't valid JSON (comments?), left alone: %w", path, err)
+	for try := 0; ; try++ {
+		b, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
 		}
-	} else if add {
-		for k, v := range fresh {
-			m[k] = v
-		}
-	}
-	servers, _ := m[key].(map[string]any)
-	if servers == nil {
-		servers = map[string]any{}
-	}
-	if add {
-		servers["firefighter"] = entry
-	} else {
-		if _, ok := servers["firefighter"]; !ok {
+		if os.IsNotExist(err) && !add {
 			return nil
 		}
-		delete(servers, "firefighter")
+		root := newOmap()
+		if len(strings.TrimSpace(string(b))) > 0 {
+			v, err := parseOrdered(b)
+			m, isObj := v.(*omap)
+			if err == nil && !isObj {
+				err = errors.New("not a JSON object")
+			}
+			if err != nil {
+				return fmt.Errorf("%s isn't valid JSON (comments?), left alone: %w", path, err)
+			}
+			root = m
+		} else if add && fresh != nil {
+			root, _ = toOrdered(fresh).(*omap)
+		}
+		v, _ := root.get(key)
+		servers, _ := v.(*omap)
+		if servers == nil {
+			servers = newOmap()
+		}
+		if add {
+			servers.set("firefighter", toOrdered(entry))
+		} else {
+			if _, ok := servers.get("firefighter"); !ok {
+				return nil
+			}
+			servers.del("firefighter")
+		}
+		root.set(key, servers)
+		out := marshalOrdered(root)
+		if len(b) > 0 {
+			if same, err := parseOrdered(b); err == nil && bytes.Equal(marshalOrdered(same), out) {
+				return nil // already as wanted
+			}
+		}
+		// Another program (a running Claude Code saving ~/.claude.json) may have written it since it
+		// was read: start over from its new content rather than overwrite that.
+		if now, _ := os.ReadFile(path); !bytes.Equal(now, b) && try < 3 {
+			continue
+		}
+		return writeFile(path, out)
 	}
-	m[key] = servers
-	out, _ := json.MarshalIndent(m, "", "  ")
-	return writeFile(path, out)
 }
 
 // The firefighter table and its subtables ([mcp_servers.firefighter.env], ...).
@@ -405,29 +447,38 @@ func withoutFirefighter(m map[string]any) map[string]any {
 
 // ---- start at logon -----------------------------------------------------------------------------
 
+// WindowsAutostart is the Run-key command that starts the guard at logon: firefighterw.exe from
+// the program's folder when it is there, else conhost by its full path.
+func WindowsAutostart(exe string) string {
+	if w := filepath.Join(filepath.Dir(exe), "firefighterw.exe"); fileExists(w) {
+		return `"` + w + `"`
+	}
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return fmt.Sprintf(`"%s" --headless "%s" daemon`, filepath.Join(root, "System32", "conhost.exe"), exe)
+}
+
+func fileExists(p string) bool { fi, err := os.Stat(p); return err == nil && !fi.IsDir() }
+
 func autostart(exe string) error {
 	switch runtime.GOOS {
 	case "windows":
-		// conhost --headless runs the console program with no window at all.
-		// conhost --headless runs the console program with no window at all.
-		tr := fmt.Sprintf(`conhost.exe --headless "%s" daemon`, exe)
-		user := os.Getenv("USERNAME")
-		if dom := os.Getenv("USERDOMAIN"); dom != "" && user != "" {
-			user = dom + `\` + user
+		// The per-user Run key, naming the windowless launcher beside the program by full path
+		// (security audit 2026-11-22: "conhost.exe --headless" hides a window the way malware does,
+		// and a schtasks ONLOGON attempt that fails without admin is a persistence signal; both were
+		// in Defender's Persistence/Bearfoos detections). Without the launcher (a build that didn't
+		// ship it), conhost by its full path.
+		tr := WindowsAutostart(exe)
+		out, err := exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "reg.exe"), "add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
+			"/v", "firefighter", "/t", "REG_SZ", "/d", tr, "/f").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 		}
-		args := []string{"/Create", "/F", "/TN", "firefighter", "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", tr}
-		if user != "" {
-			args = append(args, "/RU", user, "/IT")
-		}
-		out, err := exec.Command("schtasks", args...).CombinedOutput()
-		if err == nil {
-			return nil
-		}
-		// Without rights to create logon tasks: the per-user Run key needs no admin.
-		if rerr := exec.Command("reg", "add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "firefighter", "/t", "REG_SZ", "/d", tr, "/f").Run(); rerr == nil {
-			return nil
-		}
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		// An older setup's logon task would start a second copy: remove it (no-op when absent).
+		_ = exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "schtasks.exe"), "/Delete", "/F", "/TN", "firefighter").Run()
+		return nil
 	case "darwin":
 		dir := filepath.Join(home(), "Library", "LaunchAgents")
 		path := filepath.Join(dir, "dev.firefighter.plist")

@@ -2,10 +2,11 @@
 // the running program. The guard does this on its own (update.auto); `firefighter update` does it
 // on request.
 //
-// What is trusted: the release comes from this project's repository over HTTPS, the archive must
-// match the release's checksums.txt, and when the GitHub CLI is installed and signed in it must
-// also carry signed build provenance from this repository's release workflow (a release without
-// it is refused). The new program is run once before it replaces anything.
+// What is trusted: the release's checksums.txt must carry an ed25519 signature from a key built
+// into this program (sign.go; made offline by the maintainer), and the archive must match it.
+// Without a key, a signature or a match, nothing is installed. When the GitHub CLI is installed and
+// signed in, the archive must also carry signed build provenance from this repository's release
+// workflow. The new program is run once before it replaces anything.
 package update
 
 import (
@@ -176,10 +177,21 @@ func exeName() string {
 	return "firefighter"
 }
 
+// Options: how far Apply may go.
+type Options struct {
+	// Build: when antivirus blocks the downloaded program, build the same tag from source. Only on
+	// the human's request (`firefighter update --build`): working around a block on its own reads
+	// as evasion and hides the block from the human (security audit L3).
+	Build bool
+}
+
 // Apply downloads release rel, checks it, and puts its program at exe (the path of the running
 // one). say gets one line per step. The old program stays beside it as firefighter.exe.old-<time>
 // on Windows (a running program can be renamed, not overwritten) and is removed by Cleanup later.
-func Apply(ctx context.Context, rel Release, exe string, say func(string)) error {
+func Apply(ctx context.Context, rel Release, exe string, say func(string), opt Options) error {
+	if len(trustedKeys()) == 0 {
+		return ErrNoKey // before downloading anything
+	}
 	name := AssetName()
 	url, sums := rel.Assets[name], rel.Assets["checksums.txt"]
 	if url == "" || sums == "" {
@@ -199,6 +211,16 @@ func Apply(ctx context.Context, rel Release, exe string, say func(string)) error
 	if err != nil {
 		return err
 	}
+	var sig []byte
+	if u := rel.Assets[SigAsset]; u != "" {
+		if sig, err = get(ctx, u, 4<<10); err != nil {
+			return err
+		}
+	}
+	if err := verifySums(rel.Tag, sumFile, sig); err != nil {
+		return err
+	}
+	say("release signature verified")
 	got := sha256.Sum256(archive)
 	if want := checksum(string(sumFile), name); want == "" || want != hex.EncodeToString(got[:]) {
 		return fmt.Errorf("checksum mismatch for %s", name)
@@ -212,7 +234,7 @@ func Apply(ctx context.Context, rel Release, exe string, say func(string)) error
 		case "verified":
 			say("signed build provenance verified")
 		case "skipped":
-			say("checksum verified (install and sign in to the GitHub CLI to also check signed build provenance)")
+			say("signed checksums verified (sign in to the GitHub CLI to also check build provenance)")
 		default:
 			return fmt.Errorf("release %s: %s has no valid signed build provenance; not installing it", rel.Tag, name)
 		}
@@ -225,7 +247,10 @@ func Apply(ctx context.Context, rel Release, exe string, say func(string)) error
 	if !runs(ctx, next, want) {
 		// Antivirus blocked or removed it (Microsoft Defender's machine-learning rules do that to
 		// new unsigned programs). The same release built here from its tagged source is left alone.
-		say("the downloaded program was blocked from running (antivirus); building " + rel.Tag + " from source instead")
+		if !opt.Build {
+			return fmt.Errorf("the downloaded firefighter %s was blocked from running (antivirus; a new unsigned program); nothing was changed. Report the false positive, or build it here from its tagged source: firefighter update --build", rel.Tag)
+		}
+		say("the downloaded program was blocked from running (antivirus); building " + rel.Tag + " from source, as asked")
 		if err := build(ctx, rel.Tag, tmp); err != nil {
 			return fmt.Errorf("the downloaded firefighter was blocked, and building it from source failed: %w", err)
 		}
@@ -247,6 +272,20 @@ func Apply(ctx context.Context, rel Release, exe string, say func(string)) error
 			}
 		}
 		return err
+	}
+	// The windowless logon launcher, when the release ships one (Windows): replaced the same way;
+	// an old one still works, so a failure here only says so.
+	if runtime.GOOS == "windows" {
+		launcher := filepath.Join(dir, "firefighterw.exe")
+		nextW := filepath.Join(tmp, "firefighterw.exe")
+		if extractEntry(archive, name, "firefighterw.exe", nextW) == nil {
+			if fileExists(launcher) {
+				_ = os.Rename(launcher, exe+".old-w-"+time.Now().Format("20060102150405"))
+			}
+			if err := os.Rename(nextW, launcher); err != nil {
+				say("couldn't put the new logon launcher in place: " + err.Error())
+			}
+		}
 	}
 	say("installed " + rel.Tag + " at " + exe)
 	return nil
@@ -287,6 +326,12 @@ func provenance(ctx context.Context, archive string) string {
 
 // extract writes the firefighter program inside the archive to dst.
 func extract(archive []byte, name, dst string) error {
+	return extractEntry(archive, name, exeName(), dst)
+}
+
+// extractEntry writes the top-level entry called want (any case) of the archive to dst.
+func extractEntry(archive []byte, name, want, dst string) error {
+	isProgram := func(entry string) bool { return !strings.ContainsAny(entry, `/\`) && strings.EqualFold(entry, want) }
 	write := func(r io.Reader) error {
 		f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 		if err != nil {
@@ -313,7 +358,7 @@ func extract(archive []byte, name, dst string) error {
 				return write(r)
 			}
 		}
-		return fmt.Errorf("%s has no %s", name, exeName())
+		return fmt.Errorf("%s has no %s", name, want)
 	}
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
@@ -323,7 +368,7 @@ func extract(archive []byte, name, dst string) error {
 	for {
 		h, err := tr.Next()
 		if err != nil {
-			return fmt.Errorf("%s has no %s", name, exeName())
+			return fmt.Errorf("%s has no %s", name, want)
 		}
 		if h.Typeflag == tar.TypeReg && isProgram(h.Name) {
 			return write(tr)
@@ -381,3 +426,5 @@ func Cleanup(exe string) {
 		}
 	}
 }
+
+func fileExists(p string) bool { fi, err := os.Stat(p); return err == nil && !fi.IsDir() }

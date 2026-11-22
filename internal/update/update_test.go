@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -42,30 +45,82 @@ func TestTagsAndChecksums(t *testing.T) {
 }
 
 // release serves a fake GitHub with one release whose archive is body, and a checksums.txt that
-// matches it or not.
+// matches it or not, signed with a key the test trusts.
 func release(t *testing.T, tag string, body []byte, goodSum bool) {
 	t.Helper()
+	signedRelease(t, tag, body, goodSum, "good")
+}
+
+// signedRelease: sig is "good" (signed with the trusted key), "none" (no .sig asset) or "other"
+// (signed with a key nobody trusts).
+func signedRelease(t *testing.T, tag string, body []byte, goodSum bool, sig string) {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	sumsOf := func() []byte {
+		sum := sha256.Sum256(body)
+		if !goodSum {
+			sum[0] ^= 0xff
+		}
+		return []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), AssetName()))
+	}
+	sigAsset := ""
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/" + Repo + "/releases/latest":
-			fmt.Fprintf(w, `{"tag_name":%q,"assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
-				tag, AssetName(), srv.URL+"/a", srv.URL+"/sums")
+			fmt.Fprintf(w, `{"tag_name":%q,"assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}%s]}`,
+				tag, AssetName(), srv.URL+"/a", srv.URL+"/sums", sigAsset)
+		case "/sig":
+			key := priv
+			if sig == "other" {
+				key = other
+			}
+			fmt.Fprintln(w, base64.StdEncoding.EncodeToString(ed25519.Sign(key, sumsOf())))
 		case "/a":
 			_, _ = w.Write(body)
 		case "/sums":
-			sum := sha256.Sum256(body)
-			if !goodSum {
-				sum[0] ^= 0xff
-			}
-			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), AssetName())
+			_, _ = w.Write(sumsOf())
 		default:
 			http.NotFound(w, r)
 		}
 	}))
+	if sig != "none" {
+		sigAsset = fmt.Sprintf(`,{"name":%q,"browser_download_url":%q}`, SigAsset, srv.URL+"/sig")
+	}
 	t.Cleanup(srv.Close)
 	t.Setenv("FIREFIGHTER_HOME", t.TempDir()) // the test server is only honored outside the real home
 	t.Setenv("FIREFIGHTER_UPDATE_API", srv.URL)
+	t.Setenv("FIREFIGHTER_UPDATE_TEST_KEY", base64.StdEncoding.EncodeToString(pub))
+}
+
+// A release installs only with a signature from a trusted key: none, or another key's, and
+// nothing changes (security audit H1), whether or not the GitHub CLI is around.
+func TestApplyRefusesAnUnsignedRelease(t *testing.T) {
+	for _, sig := range []string{"none", "other"} {
+		dir := t.TempDir()
+		exe := filepath.Join(dir, exeName())
+		_ = os.WriteFile(exe, []byte("the running program"), 0o755)
+		signedRelease(t, "v9.9.9", []byte("whatever"), true, sig)
+		rel, err := Latest(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = Apply(context.Background(), rel, exe, func(string) {}, Options{})
+		if err == nil || !strings.Contains(err.Error(), SigAsset) {
+			t.Fatalf("%s: an update without a trusted signature must be refused: %v", sig, err)
+		}
+		if b, _ := os.ReadFile(exe); string(b) != "the running program" {
+			t.Fatalf("%s: the program was replaced", sig)
+		}
+	}
+	// And a build that trusts no key installs nothing at all.
+	signedRelease(t, "v9.9.9", []byte("whatever"), true, "good")
+	t.Setenv("FIREFIGHTER_UPDATE_TEST_KEY", "")
+	rel, _ := Latest(context.Background())
+	if err := Apply(context.Background(), rel, filepath.Join(t.TempDir(), exeName()), func(string) {}, Options{}); err != ErrNoKey {
+		t.Fatalf("no trusted key: %v", err)
+	}
 }
 
 // An archive that doesn't match the release's checksum, or holds no program, changes nothing.
@@ -90,14 +145,14 @@ func TestApplyRefusesWhatDoesNotCheckOut(t *testing.T) {
 	if err != nil || rel.Tag != "v9.9.9" || rel.Assets[AssetName()] == "" {
 		t.Fatalf("Latest: %+v, %v", rel, err)
 	}
-	if err := Apply(context.Background(), rel, exe, func(string) {}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if err := Apply(context.Background(), rel, exe, func(string) {}, Options{}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("a wrong checksum must stop the update: %v", err)
 	}
 	untouched("wrong checksum")
 
 	release(t, "v9.9.9", []byte("matches its checksum but is no archive"), true)
 	rel, _ = Latest(context.Background())
-	if err := Apply(context.Background(), rel, exe, func(string) {}); err == nil {
+	if err := Apply(context.Background(), rel, exe, func(string) {}, Options{}); err == nil {
 		t.Fatal("a broken archive must stop the update")
 	}
 	untouched("broken archive")

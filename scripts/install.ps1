@@ -1,5 +1,5 @@
 # firefighter installer for Windows:
-#   irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.ps1 | iex
 # Puts firefighter.exe in %LOCALAPPDATA%\Programs\firefighter, adds it to your PATH, then runs
 # `firefighter setup` (start at logon, MCP for agent CLIs, shared-machine rules in their global
 # instructions). Undo: firefighter uninstall.
@@ -12,6 +12,9 @@ if ($admin -and $env:FIREFIGHTER_ALLOW_ELEVATED -ne '1') {
     return
 }
 $repo = 'JoshWright22/FIREFIGHTER'
+# The release this script installs: pinned, never "latest" (security audit H1: a new tag alone must
+# not reach new installs). release.yml refuses to publish a tag this line doesn't name.
+$version = if ($env:FIREFIGHTER_VERSION) { $env:FIREFIGHTER_VERSION } else { 'v0.3.3' }
 # FIREFIGHTER_INSTALL_DIR and FIREFIGHTER_NO_SETUP=1 are for trying the installer out: another
 # folder, and no PATH change or `firefighter setup` at the end.
 $dir = if ($env:FIREFIGHTER_INSTALL_DIR) { $env:FIREFIGHTER_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\firefighter' }
@@ -30,6 +33,9 @@ function Install-Exe($src) {
         Move-Item $exe "$exe.old-$([DateTime]::Now.ToString('yyyyMMddHHmmss'))" -Force
     }
     Copy-Item $src $exe -Force
+    # The windowless logon launcher the Run key names (release zips from v0.3.4 on carry it).
+    $w = Join-Path (Split-Path $src) 'firefighterw.exe'
+    if (Test-Path $w) { Copy-Item $w (Join-Path $dir 'firefighterw.exe') -Force }
 }
 
 # Runs a native program and returns its exit code and everything it printed. Windows PowerShell 5.1
@@ -72,7 +78,7 @@ function Test-Runs($path) {
 # the user's own program, not a download with no reputation, and antivirus leaves it alone.
 function Build-FromSource($out) {
     if (-not (Get-Command go -ErrorAction SilentlyContinue)) { return $false }
-    $tag = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -UseBasicParsing).tag_name
+    $tag = $version
     if (-not $tag) { return $false }
     Write-Host "building firefighter $tag from source with Go (a minute or two)"
     $oldBin = $env:GOBIN
@@ -91,7 +97,7 @@ if ($env:FIREFIGHTER_LOCAL_BINARY) {
 } else {
     $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
     $name = "firefighter_windows_$arch.zip"
-    $base = "https://github.com/$repo/releases/latest/download"
+    $base = "https://github.com/$repo/releases/download/$version"
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("ff-" + [guid]::NewGuid())
     New-Item -ItemType Directory $tmp | Out-Null
     try {
@@ -118,7 +124,9 @@ if ($env:FIREFIGHTER_LOCAL_BINARY) {
             Write-Host 'Windows security blocked the downloaded firefighter.exe (a false positive on a new unsigned program).'
             $built = Join-Path $tmp 'built'
             New-Item -ItemType Directory $built | Out-Null
-            if (-not (Build-FromSource $built)) {
+            # Ask first: building around a block on its own would hide it (security audit L3).
+            $answer = Read-Host "Build firefighter $version here from its tagged source with Go instead? [y/N]"
+            if ($answer -notmatch '^(y|yes)$' -or -not (Build-FromSource $built)) {
                 throw "firefighter.exe was blocked by antivirus. Install Go (https://go.dev/dl) and run this installer again to build it from source, or report the false positive: https://github.com/$repo/issues"
             }
             $src = Join-Path $built 'firefighter.exe'

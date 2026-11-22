@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -372,9 +373,17 @@ var getConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 // PrepareChild puts the child in its own process group. With no console of our own (a detached
 // run, the MCP server) the child gets none either, so nothing flashes over the user's screen. A
 // `cmd /c <line>` goes to cmd.exe verbatim: Go's C-runtime quoting breaks cmd's own parsing.
-func PrepareChild(cmd *exec.Cmd, argv []string) {
-	// Suspended until Started: it joins the job object before it can start any child of its own.
-	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED)
+func PrepareChild(cmd *exec.Cmd, argv []string) { prepare(cmd, argv, true) }
+
+// prepare: contain puts this process in its kill-on-close Job Object first (once), so the child is
+// born in it and nothing it starts can escape; only when that fails is the child created suspended
+// and assigned before it runs (create-suspended-then-resume is a process-hollowing step antivirus
+// models score heavily: security audit 2026-11-22).
+func prepare(cmd *exec.Cmd, argv []string, contain bool) {
+	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP)
+	if contain && !containSelf() {
+		flags |= windows.CREATE_SUSPENDED // Started resumes it once Contain has assigned it
+	}
 	if w, _, _ := getConsoleWindow.Call(); w == 0 {
 		flags |= 0x08000000 // CREATE_NO_WINDOW
 	}
@@ -405,6 +414,12 @@ func RestoreForeground() {}
 // rest (shared build servers) live on outside it.
 func Contain(pid int) (func(spare func(pid int) bool), error) {
 	none := func(func(int) bool) {}
+	self.Lock()
+	inSelf := self.ok
+	self.Unlock()
+	if inSelf {
+		return releaseSelf, nil // born in this process's job: nothing to assign
+	}
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return none, err
@@ -451,6 +466,78 @@ func Contain(pid int) (func(spare func(pid int) bool), error) {
 	}, nil
 }
 
+// self is this process's own kill-on-close Job Object (a `firefighter run` client), which the job
+// it starts is born into. If the client dies, Windows kills the whole tree; it allows breakaway so
+// a guard the client starts (Detach) still leaves it.
+var self struct {
+	sync.Mutex
+	job  windows.Handle
+	ok   bool
+	info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+}
+
+func containSelf() bool {
+	self.Lock()
+	defer self.Unlock()
+	if self.ok {
+		if self.info.BasicLimitInformation.LimitFlags&windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == 0 {
+			// An earlier attempt spared its build servers: protect this attempt again.
+			self.info.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+			_, _ = windows.SetInformationJobObject(self.job, windows.JobObjectExtendedLimitInformation,
+				uintptr(unsafe.Pointer(&self.info)), uint32(unsafe.Sizeof(self.info)))
+		}
+		return true
+	}
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return false
+	}
+	self.info = windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	self.info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&self.info)), uint32(unsafe.Sizeof(self.info))); err != nil {
+		windows.CloseHandle(job)
+		return false
+	}
+	if err := windows.AssignProcessToJobObject(job, windows.CurrentProcess()); err != nil {
+		windows.CloseHandle(job) // in a job that can't nest (before Windows 8): the suspended path
+		return false
+	}
+	self.job, self.ok = job, true
+	return true
+}
+
+// releaseSelf ends one attempt in this process's own job: every other member is killed, unless
+// spare keeps it (shared build servers), and then the job lets the spared outlive this process.
+// The handle stays open: closing it would kill this process too.
+func releaseSelf(spare func(int) bool) {
+	self.Lock()
+	defer self.Unlock()
+	var list struct {
+		Assigned, InList uint32
+		IDs              [1024]uintptr
+	}
+	if windows.QueryInformationJobObject(self.job, windows.JobObjectBasicProcessIdList,
+		uintptr(unsafe.Pointer(&list)), uint32(unsafe.Sizeof(list)), nil) != nil {
+		return
+	}
+	me, kept := os.Getpid(), false
+	for _, p := range list.IDs[:min(int(list.InList), len(list.IDs))] {
+		switch {
+		case int(p) == me:
+		case spare != nil && spare(int(p)):
+			kept = true
+		default:
+			_ = Kill(int(p))
+		}
+	}
+	if kept {
+		self.info.BasicLimitInformation.LimitFlags &^= windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+		_, _ = windows.SetInformationJobObject(self.job, windows.JobObjectExtendedLimitInformation,
+			uintptr(unsafe.Pointer(&self.info)), uint32(unsafe.Sizeof(self.info)))
+	}
+}
+
 // Detach starts a process with no console and no tie to the caller (for the daemon and detached
 // jobs). breakaway also leaves the caller's Job Object, so closing an agent's shell doesn't kill it;
 // callers retry without it when the job forbids breakaway.
@@ -472,10 +559,9 @@ func ExeName(n string) string {
 // PrepareBackground starts a helper (docker, the harvester) with no window; Windows has no terminal
 // foreground to lose.
 func PrepareBackground(cmd *exec.Cmd) {
-	PrepareChild(cmd, cmd.Args)
-	// Not suspended: nobody calls Started for a helper (created suspended, docker, gh and the
-	// harvester's commands never ran and sat there until their timeout).
-	cmd.SysProcAttr.CreationFlags &^= windows.CREATE_SUSPENDED
+	// Never suspended and never in a job of the caller's: the daemon starts helpers (docker, gh,
+	// the harvester) and its own successor, which must outlive it.
+	prepare(cmd, cmd.Args, false)
 }
 
 var (
@@ -580,5 +666,13 @@ func Packaged() bool {
 	return r != 15700 // APPMODEL_ERROR_NO_PACKAGE
 }
 
-// Started lets a child made by PrepareChild run (it was created suspended).
-func Started(pid int) { _ = Resume(pid) }
+// Started lets a child made by PrepareChild run when it was created suspended (only when this
+// process couldn't join its own job object).
+func Started(pid int) {
+	self.Lock()
+	ok := self.ok
+	self.Unlock()
+	if !ok {
+		_ = Resume(pid)
+	}
+}

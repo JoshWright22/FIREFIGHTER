@@ -1,6 +1,7 @@
 version: 2
 builds:
-  - main: ./cmd/firefighter
+  - id: firefighter
+    main: ./cmd/firefighter
     # Not the project's name (FIREFIGHTER, after the repository): install.sh and the self-updater
     # look for a program called firefighter, and Linux and macOS tell the two apart.
     binary: firefighter
@@ -14,6 +15,16 @@ builds:
     # Microsoft clears. See docs/security.md.
     flags: ["-trimpath"]
     ldflags: ["-w -X main.version={{.Version}}"]
+  # The windowless logon launcher the Run key names (no conhost --headless; security audit
+  # 2026-11-22): a GUI-subsystem program, Windows only, in the same zip as firefighter.exe.
+  - id: firefighterw
+    main: ./cmd/firefighterw
+    binary: firefighterw
+    env: [CGO_ENABLED=0]
+    goos: [windows]
+    goarch: [amd64, arm64]
+    flags: ["-trimpath"]
+    ldflags: ["-w -H windowsgui"]
 archives:
   - name_template: "firefighter_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]

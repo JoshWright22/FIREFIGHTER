@@ -31,8 +31,10 @@ Agents queue their heavy jobs here; they take turns, and you always come first.
   firefighter wait <id>          block until a job ends; prints its receipt and log tail
   firefighter status [--json]    the human's reserve, what's running until when, the queue, budgets
   firefighter forecast [--json]  what the human and each known command are expected to use, as learned
-  firefighter harvest [earned <usd> | reset]  the idle harvester's power bill, earnings and profit guard
-  firefighter update [--check]   install the newest release now (the guard also does it by itself: update.auto)
+  firefighter harvest [earned <usd> | reset | approve]  the idle harvester's books and profit guard;
+                                 approve: let its configured commands run (the human, from their own terminal)
+  firefighter update [--check] [--build]  install the newest signed release now (the guard also does it by itself:
+                                 update.auto); --build: build it from source if antivirus blocks the download
   firefighter extend <id> <min>  lengthen a running job's lease
   firefighter cancel <id>        cancel a waiting or running job
   firefighter show <id> [--json] one job in full: declared and counted needs, place, why it waits

@@ -11,10 +11,10 @@ Run the one-liner for the user's OS. It checks the release checksum, puts the bi
 runs `firefighter setup` (start at logon, rules and MCP entries for the agent CLIs it finds).
 
 - Windows (PowerShell):
-  `irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.ps1 | iex`
+  `irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.ps1 | iex`
   Binary: `%LOCALAPPDATA%\Programs\firefighter\firefighter.exe`
 - macOS / Linux:
-  `curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh`
+  `curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.sh | sh`
   Binary: `~/.local/bin/firefighter`
 - With Go 1.25+ instead:
   `go install github.com/JoshWright22/firefighter/cmd/firefighter@latest`

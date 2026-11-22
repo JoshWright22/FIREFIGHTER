@@ -44,13 +44,13 @@ which agent is using what.
 **Windows** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.ps1 | iex
 ```
 
 **macOS / Linux**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.sh | sh
 ```
 
 **With Go 1.25 or newer** (Go's bin folder must be on your PATH):

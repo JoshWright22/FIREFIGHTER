@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/config"
@@ -138,6 +139,10 @@ func (d *Daemon) harvestSelfStarted(now time.Time) {
 	d.harvest.runAt = now
 	go func() {
 		defer d.harvest.probing.Store(false)
+		if !harvest.Approved(config.Home(), h.Running) {
+			d.notApproved(h.Running)
+			return
+		}
 		if shellOK(h.Running, 30*time.Second) {
 			logf("harvester: it started on its own while off; stopping it")
 			d.harvestDo(h.Stop) // in order with the loop's starts and stops
@@ -195,6 +200,13 @@ func (d *Daemon) harvestBooks(now time.Time) {
 	}
 }
 
+// notApproved logs, once per command, a harvester command that isn't approved (and isn't run).
+func (d *Daemon) notApproved(cmd string) {
+	d.harvestRefused.Do(cmd, func() {
+		logf("harvester: not running %q: it isn't approved. Check it, then run `firefighter harvest approve` from your own terminal", cmd)
+	})
+}
+
 // shellOK runs cmd and says whether it exited 0 within limit.
 func shellOK(cmd string, limit time.Duration) bool {
 	argv := []string{"sh", "-c", cmd}
@@ -250,4 +262,23 @@ func shell(cmd string) {
 		return
 	}
 	go c.Wait()
+}
+
+// onceSet runs f once per key (for log lines that would repeat every tick).
+type onceSet struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func (o *onceSet) Do(key string, f func()) {
+	o.mu.Lock()
+	if o.seen == nil {
+		o.seen = map[string]bool{}
+	}
+	first := !o.seen[key]
+	o.seen[key] = true
+	o.mu.Unlock()
+	if first {
+		f()
+	}
 }

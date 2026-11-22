@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"net"
@@ -131,7 +132,8 @@ func (d *Daemon) routes() http.Handler {
 			http.Error(w, "bad host", http.StatusForbidden)
 			return
 		}
-		if d.Token == "" || r.Header.Get("X-Firefighter-Token") != d.Token { // no token set: nobody, not everybody
+		// Constant time (security audit L2): no local timing side channel on the token.
+		if d.Token == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Firefighter-Token")), []byte(d.Token)) != 1 { // no token set: nobody, not everybody
 			http.Error(w, "bad token", http.StatusForbidden)
 			return
 		}

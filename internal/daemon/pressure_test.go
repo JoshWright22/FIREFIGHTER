@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/config"
+	"github.com/JoshWright22/firefighter/internal/harvest"
 	"github.com/JoshWright22/firefighter/internal/policy"
 	"github.com/JoshWright22/firefighter/internal/storage"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
@@ -747,6 +748,9 @@ func TestHarvesterCommandsRunInOrder(t *testing.T) {
 	d.harvestQ = make(chan harvestCmd, 16)
 	go func() {
 		for c := range d.harvestQ {
+			if !harvest.Approved(config.Home(), c.cmd) {
+				t.Errorf("not approved: %s", c.cmd)
+			}
 			shellWait(c.cmd, 90*time.Second) // as the guard's worker does
 			if c.done != nil {
 				close(c.done)
@@ -754,6 +758,9 @@ func TestHarvesterCommandsRunInOrder(t *testing.T) {
 		}
 	}()
 	f := filepath.Join(t.TempDir(), "order.txt")
+	if err := harvest.Approve(config.Home(), "echo start>>"+f, "echo stop>>"+f); err != nil {
+		t.Fatal(err)
+	}
 	for _, w := range []string{"start", "stop", "start"} {
 		d.harvestDo("echo " + w + ">>" + f)
 	}

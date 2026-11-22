@@ -1,6 +1,6 @@
 #!/bin/sh
 # firefighter installer for macOS and Linux:
-#   curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.sh | sh
 # Puts the binary in ~/.local/bin, then runs `firefighter setup` (start at logon, MCP for agent
 # CLIs, shared-machine rules in their global instructions). Undo: firefighter uninstall.
 set -eu
@@ -10,6 +10,9 @@ if [ "$(id -u)" = "0" ] && [ "${FIREFIGHTER_ALLOW_ELEVATED:-}" != "1" ]; then
   exit 1
 fi
 REPO="JoshWright22/FIREFIGHTER"
+# The release this script installs: pinned, never "latest" (security audit H1). release.yml refuses to
+# publish a tag this line doesn't name.
+VERSION="${FIREFIGHTER_VERSION:-v0.3.3}"
 BIN_DIR="${FIREFIGHTER_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN_DIR"
 
@@ -31,7 +34,7 @@ else
     *) echo "unsupported CPU: $(uname -m)" >&2; exit 1 ;;
   esac
   name="firefighter_${os}_${arch}.tar.gz"
-  base="https://github.com/$REPO/releases/latest/download"
+  base="https://github.com/$REPO/releases/download/$VERSION"
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
   echo "downloading $name"

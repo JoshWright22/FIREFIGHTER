@@ -39,20 +39,48 @@ cooperative agents, not a sandbox.
   Every release the installers can fetch (v0.2.0 on) is signed, so with the CLI signed in a
   missing or failing attestation stops the install (a replaced archive and checksums.txt look
   exactly like an unsigned release). Without the GitHub CLI only the checksum is checked.
-- The guard updates itself (`update.auto`, on by default). It only ever asks this repository's
-  GitHub releases over HTTPS, never installs an older version, and refuses an archive that doesn't
-  match the release's `checksums.txt`. With the GitHub CLI installed and signed in it also requires
-  the archive's signed build provenance (`gh attestation verify --repo JoshWright22/FIREFIGHTER`):
-  that is what a tampered release can't forge, so sign in to `gh` if you want that guarantee, or
-  set `update.auto false` and update by hand. The test-only override of the release address is
-  ignored in your real state folder (compared as a folder, so a relative path, a link or a changed
-  `LOCALAPPDATA` still counts as the real one), and even in a test folder it only accepts a server on this
-  machine (`localhost`, `127.0.0.1` or `::1`).
+- **Release signing (since 2026-11-22).** A release installs itself only when its `checksums.txt`
+  carries an ed25519 signature (`checksums.txt.sig`) from a key built into the program
+  (`internal/update/sign.go`), and the archive matches those checksums. No trusted key, no signature
+  or a bad one, and nothing is installed, with or without the GitHub CLI. This is what stops someone,
+  or an agent, who can push a `v*` tag: GitHub's build provenance only proves "built by our
+  workflow from some tag", and the release's own checksums only catch corruption. The key is made
+  and used offline by the maintainer, and its private half is encrypted with a passphrase no agent
+  knows:
+  `go run ./scripts/releasekey gen <key file>` (prints the public key for `sign.go`) and, for each
+  release, `go run ./scripts/releasekey sign <key file> checksums.txt`, then upload
+  `checksums.txt.sig` to the release. Until a key is embedded, the guard installs no update at all.
+  With the GitHub CLI signed in, build provenance is checked as well. The guard never installs an
+  older version and only asks this repository's releases over HTTPS. The test-only override of the
+  release address is ignored in your real state folder and only accepts a server on this machine.
+  A blocked download is never worked around automatically: the guard leaves it, and
+  `firefighter update --build` builds the tagged source only when you ask.
+- The install one-liners are pinned to a tag (`.../FIREFIGHTER/v0.3.3/scripts/install.ps1`), and
+  each script installs the release it names, never "latest". `release.yml` refuses to publish a
+  tag the scripts don't name. Recommended on GitHub: a tag ruleset that lets only the maintainer
+  create `v*` tags (Settings > Rules > Rulesets).
 - Windows binaries aren't code-signed yet, and Microsoft Defender's machine-learning rules have
-  flagged a published build (`Behavior:Win32/Persistence.A!ml` and similar names: an unsigned,
-  rarely seen program that registers itself to start at logon). When the downloaded program is
-  blocked, the Windows installer builds the same release from its tagged source if Go is installed,
-  and never asks for an antivirus exclusion.
+  quarantined builds (`Behavior:Win32/Persistence.A!ml`, `Trojan:Win32/Bearfoos.A!ml` and `.B!ml`:
+  an unsigned, rarely seen program that registers itself to start at logon). What they keyed on is
+  gone or reduced: the logon entry is the per-user Run key naming `firefighterw.exe`, a small
+  windowless launcher, by full path (no more `conhost.exe --headless`, and no failing `schtasks
+  /SC ONLOGON` attempt). Job processes are no longer created suspended (the `run` client joins its
+  own job object first, so the job is born in it). Both programs carry version information with
+  their maker's name. Report a false positive at https://www.microsoft.com/wdsi/filesubmission; an
+  antivirus exclusion for the user-writable install folder is never recommended. Code signing
+  (an OV certificate, or Microsoft's cloud signing service for individuals) is the lasting fix: it
+  ties reputation to the certificate instead of each build.
+- **Harvester commands need the human's approval.** The idle harvester's `start`, `stop` and
+  `running` commands in `firefighter.toml` are shell lines the guard runs at logon and whenever the
+  GPU goes idle. They run only if their SHA-256 is in `harvester-approved` in the state folder,
+  which only `firefighter harvest approve` writes, from your own terminal, after showing the exact
+  commands. A program that edits `firefighter.toml` can't plant one that runs at every logon.
+  `firefighter status` says when configured commands aren't approved.
+- Setup edits other tools' JSON configs one entry at a time: every other key keeps its place and
+  value, an unchanged file isn't rewritten, a file another program saved meanwhile is read again,
+  and each write leaves a timestamped backup beside the file (the newest 3, plus the original
+  `.firefighter.bak`).
+- The local API compares its token in constant time.
 - To free RAM, the guard runs two fixed commands as root inside an already running WSL distro
   (`cat /proc/meminfo`, and writes to `/proc/sys/vm/drop_caches` and `compact_memory`) through the
   system's own `wsl.exe`. It never starts a distro and passes nothing an agent supplies.

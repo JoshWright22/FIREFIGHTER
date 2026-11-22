@@ -99,6 +99,16 @@ func (d *Daemon) waiting() []*policy.Ticket {
 }
 
 func (d *Daemon) admit(now time.Time) {
+	// Just after a restart, jobs the previous guard was running re-register within seconds: no
+	// grant until they have (or 15 s have passed), so a waiting job can't take a slot one of them
+	// holds (2026-11-22: three GPU jobs on a card with gpu.max_jobs 2 after the restart).
+	if now.Sub(d.started) < 15*time.Second {
+		for id := range d.prevOpen {
+			if _, back := d.jobs[id]; !back {
+				return
+			}
+		}
+	}
 	ctx := d.newAdmitCtx(now)
 	var waiting []*policy.Ticket
 	if ctx.updating {

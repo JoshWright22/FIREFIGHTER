@@ -42,6 +42,13 @@ func (d *Daemon) autoUpdate() {
 		if err != nil || !update.Newer(rel.Tag, d.Version) {
 			continue // offline, rate-limited or current: look again next time
 		}
+		if !update.Trusts() {
+			if said != "nokey" {
+				said = "nokey"
+				logf("update: %s is out, but %v", rel.Tag, update.ErrNoKey)
+			}
+			continue
+		}
 		if said != rel.Tag {
 			said = rel.Tag
 			logf("update: %s is out (this is %s); it installs when no job is running", rel.Tag, d.Version)
@@ -55,7 +62,7 @@ func (d *Daemon) autoUpdate() {
 			}
 		}
 		ctx, cancel = context.WithTimeout(context.Background(), 20*time.Minute)
-		err = update.Apply(ctx, rel, d.Exe, func(s string) { logf("update: %s", s) })
+		err = update.Apply(ctx, rel, d.Exe, func(s string) { logf("update: %s", s) }, update.Options{})
 		cancel()
 		if err != nil {
 			logf("update to %s failed: %v (trying again in %s)", rel.Tag, err, every)

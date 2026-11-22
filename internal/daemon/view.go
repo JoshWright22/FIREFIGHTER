@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/config"
+	"github.com/JoshWright22/firefighter/internal/harvest"
 	"github.com/JoshWright22/firefighter/internal/policy"
 	"github.com/JoshWright22/firefighter/internal/storage"
 	"github.com/JoshWright22/firefighter/internal/sysinfo"
@@ -272,6 +273,9 @@ func (d *Daemon) notes(now time.Time) []string {
 			// failed while this guard still answered.
 			out = append(out, fmt.Sprintf("this guard's program %s is gone from disk (antivirus quarantine? see Windows Security > Protection history); new firefighter commands fail until it is restored or rebuilt", exe))
 		}
+	}
+	if h := d.cfg.Harvester; h.Start != "" && !harvest.Approved(config.Home(), h.Start) {
+		out = append(out, "harvester: its commands in firefighter.toml aren't approved, so they don't run; check them, then run `firefighter harvest approve` from your own terminal")
 	}
 	if busy == 0 && waiting > 0 {
 		out = append(out, fmt.Sprintf("GPU idle with %d GPU job(s) waiting. Next in line, %s: %s", waiting, first.Name, d.blocker(first)))
