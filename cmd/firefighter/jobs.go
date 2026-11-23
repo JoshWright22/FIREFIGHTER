@@ -47,12 +47,31 @@ func wait(args []string) (int, error) {
 	}
 	deadline := time.Now().Add(time.Duration(*timeout * float64(time.Second)))
 	v, err := c.GetSoon(id)
+	// A guard restarting (an update, a new build) is not the job's end: reconnect and keep waiting.
+	rejoin := func() bool {
+		if !errors.Is(err, client.ErrUnreachable) {
+			return false
+		}
+		ui.Note("%s: the guard is restarting; reconnecting", id)
+		nc, nv, rerr := client.Rejoin(id, 3*time.Minute)
+		if rerr != nil {
+			err = rerr
+			return false
+		}
+		c, v, err = nc, nv, nil
+		return true
+	}
+	if err != nil {
+		rejoin()
+	}
 	last, shownMarket := "", false
 	// An evicted job requeues under the same id: keep waiting for the attempt that finishes.
 	for err == nil && (v.State != "done" || (v.Receipt != nil && v.Receipt.Requeue)) {
 		if v.State == "done" {
 			time.Sleep(500 * time.Millisecond)
-			v, err = c.GetSoon(id)
+			if v, err = c.GetSoon(id); err != nil {
+				rejoin()
+			}
 			if v.State == "done" && v.Receipt != nil && v.Receipt.Requeue && time.Since(v.Receipt.Ended) > 30*time.Second {
 				break // the requeued attempt never came back (its client died)
 			}
@@ -75,6 +94,9 @@ func wait(args []string) (int, error) {
 			poll = int(math.Max(1, math.Min(25, math.Ceil(left))))
 		}
 		v, err = c.Get(id, v.State, poll)
+		if err != nil {
+			rejoin()
+		}
 	}
 	if err != nil {
 		return 1, err

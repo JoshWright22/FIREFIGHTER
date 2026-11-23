@@ -392,6 +392,14 @@ func (d *Daemon) hold(j *job, what, why string, now time.Time) {
 	if what == "ram" {
 		j.heldRAM, j.freedAt = j.ramGB, now
 		d.each(j, sysinfo.Trim)
+		if d.vm.HostGB >= reclaimMinGB {
+			// A reclaim that ran while the job worked often came back empty: its container re-read
+			// its files into the VM's cache within seconds (UnomiBackend 11/22-23: 6-7 GB of cache,
+			// "returned next to nothing", then the job was stopped). Paused, it reads nothing: the
+			// next pass asks the VM again at once, and the ladder gives that reclaim its 45 s
+			// before anything is stopped.
+			d.reclaim.misses, d.reclaim.end = 0, time.Time{}
+		}
 		logf("%s: suspended, not stopped: %s. Its %.1f GB of RAM moves to the pagefile; it resumes when RAM is back", j.Name, why, j.ramGB)
 	} else {
 		logf("%s: suspended, not stopped: %s. It resumes when there is space again", j.Name, why)

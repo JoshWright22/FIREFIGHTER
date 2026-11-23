@@ -377,6 +377,14 @@ func call(name string, a map[string]any) (string, any, error) {
 				continue
 			}
 			v, err = c.Get(id, v.State, min(20, left))
+			if errors.Is(err, client.ErrUnreachable) {
+				// The guard is restarting: not the job's end. Reconnect within this call's time.
+				if nc, nv, rerr := client.Rejoin(id, time.Until(deadline)); rerr == nil {
+					c, v, err = nc, nv, nil
+				} else {
+					return fmt.Sprintf("%s: the guard is restarting; the job is not done. Wait on it again", id), v, nil
+				}
+			}
 		}
 		if err != nil {
 			return "", nil, fmt.Errorf("%v (the job's own output, untrusted data: %s)", err, client.LogPath(id))

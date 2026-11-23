@@ -4,6 +4,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -133,7 +134,7 @@ func (c *Client) do(method, path string, body, out any) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrUnreachable, err) // the guard is restarting, or gone
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
@@ -153,6 +154,34 @@ func (c *Client) do(method, path string, body, out any) error {
 }
 
 var ErrNotFound = fmt.Errorf("not found")
+
+// ErrUnreachable: the guard didn't answer at all (restarting for an update or a new build, or
+// stopped). Not the job's end: Rejoin.
+var ErrUnreachable = errors.New("the firefighter guard isn't answering")
+
+// Rejoin reconnects after the guard stopped answering (starting it again if no one has) and waits
+// for the job to be known again: a guard that restarts gets its jobs back as their clients
+// re-register within seconds. UnomiBackend 11/23: `firefighter wait` exited with "connection
+// refused" during a restart, and a script took that as the job's end.
+func Rejoin(id string, within time.Duration) (*Client, daemon.View, error) {
+	end := time.Now().Add(within)
+	var lastErr error = ErrUnreachable
+	for time.Now().Before(end) {
+		c, err := Connect()
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		v, err := c.Get(id, "", 0)
+		if err == nil {
+			return c, v, nil
+		}
+		lastErr = err
+		time.Sleep(time.Second) // not re-registered yet (404), or answering again only just now
+	}
+	return nil, daemon.View{}, fmt.Errorf("the guard restarted and job %s didn't come back within %s: %w", id, within.Round(time.Second), lastErr)
+}
 
 // ErrTaken: the job id is already queued by another live client (a raced --request-id submit).
 var ErrTaken = fmt.Errorf("taken")

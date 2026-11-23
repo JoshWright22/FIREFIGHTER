@@ -272,3 +272,18 @@ func TestDoLineNamesTheAmendThatStartsIt(t *testing.T) {
 		t.Fatalf("do: %+v", v.Quote)
 	}
 }
+
+// UnomiBackend 11/22-23: reclaims that ran while the job's container kept reading files came back
+// empty, and their backoff kept the VM from being asked again once the job was suspended. A
+// suspension for RAM asks the VM again at once.
+func TestSuspendingForRAMAsksTheVMAgain(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addRunning("t4sim", 6, now.Add(-time.Minute))
+	d.vm = sysinfo.VM{Name: "docker-desktop", HostGB: 13.4, UsedGB: 6.8, CacheGB: 6.6, Guest: true}
+	d.reclaim.misses, d.reclaim.end = 3, now.Add(-10*time.Second)
+	d.hold(j, "ram", "RAM: 1.7 GB free", now)
+	if d.reclaim.misses != 0 || !d.reclaim.end.IsZero() {
+		t.Fatalf("the reclaim backoff wasn't reset: misses %d end %v", d.reclaim.misses, d.reclaim.end)
+	}
+}

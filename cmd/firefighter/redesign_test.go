@@ -71,3 +71,32 @@ func TestAgentConfigRuleSaysWhy(t *testing.T) {
 		t.Fatalf("on, reserve.*: %v", err)
 	}
 }
+
+// UnomiBackend 11/23: `firefighter wait` exited with "connection refused" while the guard
+// restarted, and a script took that as the job's end. wait reconnects and keeps waiting: it
+// returns the job's real receipt.
+func TestWaitSurvivesAGuardRestart(t *testing.T) {
+	gpus := []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16}}
+	e := newEnv(t, map[string]any{"idle": 0.0, "foreground": "game.exe", "gpus": gpus})
+	id := e.detach("exit:0", "--gpu", "--minutes", "1", "--name", "survivor")
+	time.Sleep(time.Second)
+	done := make(chan string, 1)
+	go func() {
+		out, _ := e.cmd(nil, "wait", id, "--timeout", "120").CombinedOutput()
+		done <- string(out)
+	}()
+	time.Sleep(2 * time.Second)
+	if out, code := e.ff("daemon", "--stop"); code != 0 {
+		t.Fatalf("stop: %s", out)
+	}
+	time.Sleep(2 * time.Second)
+	e.setFake(map[string]any{"idle": 9999.0, "foreground": "", "gpus": gpus}) // the game ends: it may run
+	select {
+	case out := <-done:
+		if !strings.Contains(out, `"outcome": "ok"`) {
+			t.Fatalf("wait didn't follow the job through the restart:\n%s\n%s", out, e.log())
+		}
+	case <-time.After(150 * time.Second):
+		t.Fatalf("wait never returned:\n%s", e.log())
+	}
+}
