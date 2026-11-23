@@ -60,6 +60,18 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 		if j.container != "" && outcome != "ok" && outcome != "failed" {
 			d.docker(j.engine, "kill", j.container)
 		}
+		// One only guessed to be the job's (timing) isn't stopped, but it is never counted as the
+		// human's load either: status shows it as this job's leftover.
+		if j.ctrSeen != "" {
+			if d.leftover == nil {
+				d.leftover = map[string]string{}
+			}
+			for _, c := range d.others {
+				if strings.HasPrefix(j.ctrSeen, c.ID) {
+					d.leftover[c.ID] = j.Name
+				}
+			}
+		}
 	}
 	for _, f := range []string{PauseFile(id), PausedFile(id), CheckpointFile(id)} {
 		_ = os.Remove(f)

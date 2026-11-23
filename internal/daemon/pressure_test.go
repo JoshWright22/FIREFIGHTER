@@ -464,21 +464,17 @@ func TestJobStartedContainerIsTheJobs(t *testing.T) {
 		t.Fatalf("a guessed container was acted on: %v", args)
 	default:
 	}
-	// Named by the job's own CLI: still only a hint (review round 5: name and timing can match the
-	// human's container). Its RAM counts; control needs the firefighter.job label.
+	// Named by the job's own live CLI and created after it started: the job's (Docker names are
+	// unique; had the human's container taken the name first, this docker run would have failed
+	// and left the process list). UnomiBackend 11/22: such a container outlived every stop.
 	j.ctrSeen, d.seenCtr = "", nil
 	lines = map[string][]string{j.ID: {"docker run --rm --gpus all --cpus=4 --memory=16g --name keen_grothendieck img python stage.py"}}
 	d.adoptContainers(cs, lines, since)
-	if j.container != "" || j.ctrSeen != "1a9a7107362a" {
+	if j.container != "1a9a7107362a" || j.ctrSeen != "" {
 		t.Fatalf("named container: container %q seen %q", j.container, j.ctrSeen)
 	}
-	select {
-	case args := <-d.dockerQ:
-		t.Fatalf("a name-matched container was acted on: %v", args)
-	default:
-	}
 	// Labeled for the job (its script set firefighter.job from FIREFIGHTER_JOB_ID): proven.
-	j.ctrSeen, d.seenCtr = "", nil
+	j.container, j.ctrSeen, d.seenCtr = "", "", nil
 	j.RAMGB = 6
 	labeled := []sysinfo.Container{{ID: "1a9a7107362a", Name: "keen_grothendieck", MemGB: 1.3, Created: now.Add(-50 * time.Second), Job: j.ID}}
 	d.adoptContainers(labeled, nil, nil)

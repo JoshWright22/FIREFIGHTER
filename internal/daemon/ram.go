@@ -313,6 +313,11 @@ func (d *Daemon) vmNote() string {
 	if d.vm.HostGB < 2 {
 		return ""
 	}
+	if d.vm.Guest && d.reclaim.misses > 0 {
+		// Asked first and it didn't come back (UnomiBackend 11/22: a running container re-read its
+		// files into the cache within seconds): say so, rather than imply it is free for the taking.
+		return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache that the last reclaim didn't free (something in the VM keeps reading files)", d.vm.HostGB, d.vm.CacheGB)
+	}
 	if d.vm.Guest {
 		return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache", d.vm.HostGB, d.vm.CacheGB)
 	}

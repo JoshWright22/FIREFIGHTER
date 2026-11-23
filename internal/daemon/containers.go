@@ -200,16 +200,28 @@ func (d *Daemon) adoptContainers(cs []sysinfo.Container, lines map[string][]stri
 		if owner.container != "" || owner.ctrSeen != "" {
 			continue // a job's container is never replaced by another one
 		}
-		// Only the firefighter.job label (checked above) proves a container is the job's. A --name match
-		// or the timing is a hint: the container's RAM counts toward the job's, but it is never paused,
-		// capped or stopped with it (it could be the human's; review round 5, both reviewers).
+		if byName {
+			// The job's own process ran `docker run --name X`, and X was created after that docker
+			// run started: Docker names are unique, so no one else's container can be X. It is the
+			// job's: paused, held to its need and stopped with it, like a labeled one (UnomiBackend
+			// 11/22: a script's `docker run --rm --name t4sim-...` outlived every stop of its job,
+			// its 6-13 GB counted as the human's, and the requeued job was stopped 4-5 times).
+			owner.container, owner.engine, owner.ctrSeen = c.ID, "docker", ""
+			logf("%s: container %s (%s) was started by this job's docker run --name %s; it is the job's: paused, held and stopped with it", owner.Name, c.Name, c.ID, c.Name)
+			if owner.NeedRAM > 0 && owner.RAMGB > 0 {
+				lim := math.Max(owner.NeedRAM, c.MemGB*1.2+0.5)
+				m := fmt.Sprintf("%dm", int(lim*1024))
+				d.docker("docker", "update", "--memory", m, "--memory-swap", m, c.ID)
+				logf("%s: container %s limited to %.1f GB (the job declared %.1f GB)", owner.Name, c.Name, lim, owner.RAMGB)
+			}
+			continue
+		}
+		// The label, or the job's own --name (above), proves a container is the job's. Timing alone is
+		// a hint: the container's RAM counts toward the job's, but it is never paused, capped or
+		// stopped with it (it could be the human's; review round 5, both reviewers).
 		{
 			owner.ctrSeen = c.ID
-			how := "appeared while this job's docker run was live"
-			if byName {
-				how = "has the --name this job's docker run used"
-			}
-			logf("%s: container %s (%s) %s; its RAM counts toward the job's, but it is not paused, capped or stopped with it without the firefighter.job=%s label", owner.Name, c.Name, c.ID, how, owner.ID)
+			logf("%s: container %s (%s) appeared while this job's docker run was live; its RAM counts toward the job's, but it is not paused, capped or stopped with it without the firefighter.job=%s label or a --name in its docker run", owner.Name, c.Name, c.ID, owner.ID)
 			continue
 		}
 	}
@@ -341,7 +353,8 @@ func memSize(v string) float64 {
 	return n * mult
 }
 
-// outsideContainers are the containers no job owns: the human's (or an agent's run outside firefighter).
+// outsideContainers are the containers no job owns: the human's (or an agent's run outside
+// firefighter). A container a finished job left behind is not among them (leftoverContainers).
 func (d *Daemon) outsideContainers() []sysinfo.Container {
 	var out []sysinfo.Container
 	for _, c := range d.others {
@@ -351,8 +364,29 @@ func (d *Daemon) outsideContainers() []sysinfo.Container {
 				mine = true
 			}
 		}
-		if !mine {
+		if _, left := d.leftover[c.ID]; !mine && !left {
 			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// leftoverContainers are containers still running that a finished job was seen to start (by
+// timing only, so they weren't stopped with it), with the job's name.
+func (d *Daemon) leftoverContainers() map[string]string {
+	out := map[string]string{}
+	for _, c := range d.others {
+		if name, ok := d.leftover[c.ID]; ok {
+			out[c.Name] = name
+		}
+	}
+	for id := range d.leftover {
+		alive := false
+		for _, c := range d.others {
+			alive = alive || c.ID == id
+		}
+		if !alive {
+			delete(d.leftover, id)
 		}
 	}
 	return out

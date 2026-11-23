@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/JoshWright22/firefighter/internal/policy"
+	"github.com/JoshWright22/firefighter/internal/sysinfo"
 	"github.com/JoshWright22/firefighter/internal/usage"
 )
 
@@ -211,5 +212,63 @@ func TestCPUReserveFollowsOnlyTheHumansOwnUse(t *testing.T) {
 	step(now.Add(40 * time.Second))
 	if d.res.CPUs > float64(d.cfg.Reserve.BasicCPUs) {
 		t.Fatalf("a restart lifted the reserve to %.0f", d.res.CPUs)
+	}
+}
+
+// UnomiBackend 11/22: a job's script ran `docker run --rm --name t4sim-...`; when the job was
+// stopped for RAM, its python and docker CLI died but the container ran on in the VM, counted as
+// the human's load, and the requeued job was stopped again and again. A container the job's own
+// docker run named is the job's: it is killed with the job. One only guessed by timing isn't, but
+// it is shown as the job's leftover, never as the human's load.
+func TestStoppedJobsContainerGoesWithIt(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addRunning("T4 fixes: image defaults only", 1, now.Add(-time.Minute))
+	cs := []sysinfo.Container{{ID: "11c91cf30bda", Name: "t4sim-1795415112", MemGB: 6.3, Created: now.Add(-50 * time.Second)}}
+	lines := map[string][]string{j.ID: {"docker run --rm --name t4sim-1795415112 --gpus all img python t4sim.py"}}
+	d.adoptContainers(cs, lines, map[string]time.Time{j.ID: now.Add(-55 * time.Second)})
+	if j.container != "11c91cf30bda" {
+		t.Fatalf("the job's named container wasn't taken as its own: %q", j.container)
+	}
+	j.reason = "RAM critically low"
+	d.killJob(j, now)
+	d.finish(j.ID, -1, "killed", "")
+	killed := false
+	for len(d.dockerQ) > 0 {
+		if args := strings.Join(<-d.dockerQ, " "); args == "docker kill 11c91cf30bda" {
+			killed = true
+		}
+	}
+	if !killed {
+		t.Fatal("the stopped job's container wasn't killed")
+	}
+
+	// Guessed by timing only: not killed, but not the human's either.
+	g := d.addRunning("guessed", 1, now.Add(-time.Minute))
+	g.ctrSeen = "aaaaaaaaaaaa"
+	d.others = []sysinfo.Container{{ID: "aaaaaaaaaaaa", Name: "busy_turing", MemGB: 4}}
+	d.finish(g.ID, -1, "killed", "")
+	if out := d.outsideContainers(); len(out) != 0 {
+		t.Fatalf("a finished job's leftover counted as the human's load: %v", out)
+	}
+	if n := strings.Join(d.notes(now), "\n"); !strings.Contains(n, "busy_turing is still running after its job (guessed)") {
+		t.Fatalf("notes: %s", n)
+	}
+	d.others = nil // gone
+	if left := d.leftoverContainers(); len(left) != 0 || len(d.leftover) != 0 {
+		t.Fatalf("a gone container is forgotten: %v", left)
+	}
+}
+
+// The do: line names the amend that would start a job whose declaration is just over what fits.
+func TestDoLineNamesTheAmendThatStartsIt(t *testing.T) {
+	d := testDaemon(t)
+	d.snap.RAMAvailGB = 2.56 + 11.0 // 11.0 GB for jobs
+	d.cfg.Reserve.RAMMarginPct = 0
+	j := d.addWaiting("t4 fixes", 12, 30, time.Minute)
+	j.RAMGB = 12
+	v := d.view(j)
+	if v.Quote == nil || !strings.Contains(v.Quote.Do, "firefighter amend "+j.ID+" --ram 11") {
+		t.Fatalf("do: %+v", v.Quote)
 	}
 }

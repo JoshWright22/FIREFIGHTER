@@ -161,6 +161,18 @@ func (d *Daemon) viewWithDecision(j *job, now time.Time, decision Decision) View
 			// no market line with a start in it, and the advice says what it waits for (review 11/20).
 			q.Do = "keep working meanwhile; it starts when this clears: " + v.Why
 		}
+		if i := strings.Index(v.Why, "firefighter amend "); i >= 0 {
+			// The declaration is just over what fits: the do: line names the one command that starts
+			// it now (UnomiBackend 11/22: --ram 12 waited at 11.0 GB free; only the why said so).
+			cmd := v.Why[i:]
+			if k := strings.IndexAny(cmd, ";("); k > 0 {
+				cmd = cmd[:k]
+			}
+			q.Do = "run `" + strings.TrimSpace(cmd) + "` to start it now, if it really needs no more; else " + q.Do
+			if v.Market != "" {
+				v.Market = q.Line()
+			}
+		}
 	case "running":
 		v.RAMNow = round1(j.ramGB)
 		left := policy.Remaining(j.PredMinutes+j.extended, j.leaseUsed(now).Minutes())
@@ -231,6 +243,8 @@ func (d *Daemon) vmWaitNote(now time.Time) string {
 	switch cache := d.reclaimable(now); {
 	case d.reclaim.on:
 		return "; the WSL/Docker VM is giving its file cache back now"
+	case cache >= reclaimMinGB && d.reclaim.misses > 0:
+		return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache that the last reclaim didn't free (something in the VM, often a running container, keeps reading files)", d.vm.HostGB, cache)
 	case cache >= reclaimMinGB:
 		return fmt.Sprintf("; the WSL/Docker VM holds %.1f GB, %.1f GB of it file cache that is reclaimed next", d.vm.HostGB, cache)
 	case d.vm.HostGB >= 4:
@@ -276,6 +290,9 @@ func (d *Daemon) notes(now time.Time) []string {
 	}
 	if h := d.cfg.Harvester; h.Start != "" && !harvest.Approved(config.Home(), h.Start) {
 		out = append(out, "harvester: its commands in firefighter.toml aren't approved, so they don't run; check them, then run `firefighter harvest approve` from your own terminal")
+	}
+	for name, job := range d.leftoverContainers() {
+		out = append(out, fmt.Sprintf("container %s is still running after its job (%s) ended; it wasn't stopped with it (no firefighter.job label or --name tied it to the job): `docker kill %s` if it is done. It isn't counted as the human's load", name, job, name))
 	}
 	if busy == 0 && waiting > 0 {
 		out = append(out, fmt.Sprintf("GPU idle with %d GPU job(s) waiting. Next in line, %s: %s", waiting, first.Name, d.blocker(first)))

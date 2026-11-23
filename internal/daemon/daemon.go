@@ -82,6 +82,7 @@ type Daemon struct {
 	netQuietFrom   time.Time          // when the last network job ended, or the daemon started (the human's traffic is measured after)
 	netWasBusy     bool               // a network job ran last tick
 	prevOpen       map[string]OpenJob // running jobs the previous daemon granted, until re-registered
+	leftover       map[string]string  // container id -> the finished job it was guessed to belong to
 	humanCPU       humanCPUState      // the human's own CPU use (not jobs, not agents), for the CPU reserve
 	harvestRefused onceSet            // harvester commands not approved, logged once each
 	prevQueued     map[string]OpenJob // waiting jobs of the previous daemon (Seen = when queued), until re-registered
