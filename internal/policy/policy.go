@@ -51,12 +51,15 @@ type Ticket struct {
 	// such as an application or scraping loop). It goes after project work as if it bid BidLow.
 	Background bool `json:"background,omitempty"`
 
-	NeedVRAM    float64 `json:"need_vram_gb"` // admission need: declared, or learned from the command's past runs (usage.PeakNeed)
-	NeedRAM     float64 `json:"need_ram_gb"`
-	LearnedRAM  float64 `json:"learned_ram_gb,omitempty"` // what its past runs alone point to (shown when a declaration overrides it)
-	WantRAM     float64 `json:"want_ram_gb,omitempty"`    // what its history pointed to, when that was more than the machine can give (NeedRAM is then the cut value)
-	NeedCPU     float64 `json:"need_cpus,omitempty"`      // CPUs it is expected to keep busy (its past runs' mean; 0 unknown)
-	NeedDisk    float64 `json:"need_disk_gb,omitempty"`   // GB it is expected to write
+	NeedVRAM   float64 `json:"need_vram_gb"` // admission need: declared, or learned from the command's past runs (usage.PeakNeed)
+	NeedRAM    float64 `json:"need_ram_gb"`
+	LearnedRAM float64 `json:"learned_ram_gb,omitempty"` // what its past runs alone point to (shown when a declaration overrides it)
+	// LearnedVRAM: what its past runs point to, when a lower --vram was believed: it runs at its
+	// declaration only with the card to itself; beside other GPU jobs this counts (review gate 11/23).
+	LearnedVRAM float64 `json:"learned_vram_gb,omitempty"`
+	WantRAM     float64 `json:"want_ram_gb,omitempty"`  // what its history pointed to, when that was more than the machine can give (NeedRAM is then the cut value)
+	NeedCPU     float64 `json:"need_cpus,omitempty"`    // CPUs it is expected to keep busy (its past runs' mean; 0 unknown)
+	NeedDisk    float64 `json:"need_disk_gb,omitempty"` // GB it is expected to write
 	NeedNet     float64 `json:"need_net_mbps,omitempty"`
 	PredGPU     float64 `json:"pred_gpu_pct,omitempty"` // GPU utilization it is expected to cause
 	PredMinutes float64 `json:"pred_minutes"`           // declared minutes corrected by this command's history

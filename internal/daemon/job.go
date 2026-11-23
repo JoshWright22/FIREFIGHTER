@@ -73,6 +73,7 @@ type job struct {
 	measured                bool
 	oom                     bool // stopped for lack of RAM: its need is above the peak it reached
 	vramOOM                 bool // it failed on its own with the GPU out of memory: its VRAM need is above what it reached
+	endedOK                 bool // set at finish: it ended on its own with exit 0
 	failure                 *policy.Failure
 }
 

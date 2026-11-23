@@ -231,6 +231,10 @@ func (d *Daemon) gpuGate(j *job, ctx *admitCtx, ramHead Decision) Decision {
 	}
 	left -= d.res.VRAMGB
 	need := d.needOn(j.Ticket, card)
+	if j.LearnedVRAM > need && card >= 0 && d.cardJobs(card) > 0 {
+		// Its lower --vram holds only on a card of its own: beside another job, what it really took.
+		need = math.Max(need, math.Min(j.LearnedVRAM, d.capFor(card, j.Ticket)))
+	}
 	if d.waitsForAwayOn(j.Ticket, card, need) {
 		return blocked(blockHuman, "needs more VRAM than the card frees beside the human's reserve: starts while the human is away", false)
 	}

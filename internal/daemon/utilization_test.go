@@ -316,3 +316,62 @@ func TestDeclarationsBeatInflatedMeasurements(t *testing.T) {
 		t.Fatalf("history after a new-way run: measure %d, n %.0f, max %.1f", h.RAMMeasure, h.RAM.N, h.RAM.Max())
 	}
 }
+
+// Review gate 11/23 on f30ba831: (1) a believed low --vram holds only with the card to itself;
+// beside another GPU job, and in what it reserves against others, the learned figure counts;
+// (2) VRAMOOM only from a real out-of-VRAM end, cleared by a clean run; (3) old-way RAM peaks are
+// discounted, not ignored: --ram 1 for a command measured at 7.6 GB is still overruled.
+func TestLowDeclarationsAreBoundedByWhatTheyCanHurt(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	h := &History{VRAM: usage.NewHist(0.05), RAM: usage.NewHist(0.05)}
+	usage.AddRun(h.VRAM, 12, 10, now)
+	usage.AddRun(h.RAM, 7.6, 10, now)
+	tk := &policy.Ticket{ID: NewID(), Project: "p", CmdHash: "train", Name: "train", GPU: true, VRAMGB: 7, RAMGB: 1,
+		Minutes: 30, Bid: 5, Band: policy.BandBatch, State: "waiting", Created: now}
+	d.st.History[histKey(tk)] = h
+	d.fillNeeds(tk)
+	if tk.NeedVRAM != 7 || tk.LearnedVRAM < 12 {
+		t.Fatalf("VRAM need %.1f learned %.1f: want 7 and >= 12", tk.NeedVRAM, tk.LearnedVRAM)
+	}
+	if tk.NeedRAM < 7.6 {
+		t.Fatalf("--ram 1 for a command measured at 7.6 GB (old way) must not count: %.1f", tk.NeedRAM)
+	}
+	j := newJob(tk)
+	d.jobs[tk.ID] = j
+	// Alone on the card (16 GB, 1 used, 1 reserved: 14 free): its 7 GB, and the learned 12, both fit.
+	// Beside a running job holding 5 GB (9 free): 7 fits, its learned 12 doesn't, so it waits.
+	other := d.addRunning("other", 2, now.Add(-time.Minute))
+	other.vramGB, other.NeedVRAM = 5, 5
+	d.snap.GPUs[0].UsedGB = 6
+	d.cfg.GPU.MaxJobs = 2
+	if dec := d.waitingDecision(j, now); dec.Kind != blockVRAM {
+		t.Fatalf("beside another GPU job its learned VRAM must count: %v %s", dec.Kind, dec.Text)
+	}
+	delete(d.jobs, other.ID)
+	d.snap.GPUs[0].UsedGB = 1
+	if dec := d.waitingDecision(j, now); dec.Kind == blockVRAM {
+		t.Fatalf("alone on the card its --vram 7 counts: %s", dec.Text)
+	}
+	// What a running believed-low job reserves against others is its learned figure.
+	j.State, j.Started, j.vramGB = "running", now, 3
+	if r := d.reservedVRAM(j); r < 8.9 {
+		t.Fatalf("reserved %.1f GB, want its learned 12 less the 3 it holds", r)
+	}
+	// VRAMOOM: an OOM line far under its need doesn't set it; a real one does; a clean run clears it.
+	j.NeedVRAM, j.vramOOM, j.peakVRAM = 7, true, 2
+	d.learnRun(h, j, now)
+	if h.VRAMOOM {
+		t.Fatal("an out-of-VRAM line at 2 of 7 GB set the flag")
+	}
+	j.peakVRAM = 6.9
+	d.learnRun(h, j, now)
+	if !h.VRAMOOM {
+		t.Fatal("a real out-of-VRAM end didn't set the flag")
+	}
+	j.vramOOM, j.endedOK = false, true
+	d.learnRun(h, j, now)
+	if h.VRAMOOM {
+		t.Fatal("a clean run didn't clear the flag")
+	}
+}

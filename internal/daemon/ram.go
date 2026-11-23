@@ -165,7 +165,7 @@ func (d *Daemon) reservedRAM(j *job) float64 {
 // after 5 minutes of work, and nothing past its lease. A declared need kept whole for hours made a
 // 12 GB-free card show 8.1 (Josh 11/22).
 func (d *Daemon) reservedVRAM(j *job) float64 {
-	need := j.NeedVRAM
+	need := math.Max(j.NeedVRAM, j.LearnedVRAM) // a believed low --vram doesn't shrink what others must leave it
 	if j.State == "running" {
 		if j.pastLease(time.Now()) {
 			return 0

@@ -25,6 +25,7 @@ func (d *Daemon) finish(id string, exit int, outcome, log string) {
 	}
 	// Learn from any run that was measured. Not "still has pids": the process scan can drop an exited
 	// job's pids before its client reports done, and the run was then thrown away (CI, 11/20).
+	j.endedOK = outcome == "ok"
 	if j.State == "running" && outcome != "lost" && (j.measured || len(j.pids) > 0) {
 		h := d.st.History[histKey(j.Ticket)]
 		if h == nil {
@@ -156,8 +157,12 @@ func (d *Daemon) learnRun(h *History, j *job, now time.Time) {
 		// Out of GPU memory: its need is above what it reached. Only from the measured peak, and only
 		// when that peak was near what it was admitted with (a log line alone, or an OOM the job
 		// recovered from, raises nothing), and never past the card (review 11/20).
-		if j.vramOOM {
+		// Out of VRAM near what it was admitted with: a lower --vram is no longer believed for this
+		// command (a log line alone, or an OOM it recovered from, doesn't count). A clean run clears it.
+		if j.vramOOM && j.NeedVRAM > 0 && j.peakVRAM >= 0.8*j.NeedVRAM {
 			h.VRAMOOM = true
+		} else if j.endedOK {
+			h.VRAMOOM = false
 		}
 		if j.vramOOM && j.NeedVRAM > 0 && j.peakVRAM >= 0.8*j.NeedVRAM {
 			vram = usage.OOMBump(j.peakVRAM)

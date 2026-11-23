@@ -291,6 +291,11 @@ func histKey(t *policy.Ticket) string { return t.Project + "|" + t.CmdHash }
 // ramMeasureShared marks RAM peaks measured with shared pages counted once (History.RAMMeasure).
 const ramMeasureShared = 2
 
+// oldMeasureFloor: peaks measured the old way overcounted shared memory, so a declaration down to
+// this share of the smallest of them is believed; one far below (11/13: --ram 1 for a job that used
+// 7.6 GB) still isn't (review gate 11/23).
+const oldMeasureFloor = 0.4
+
 // fillNeeds sets admission needs and the predicted runtime from declarations and learned history.
 func (d *Daemon) fillNeeds(t *policy.Ticket) {
 	h := d.st.History[histKey(t)]
@@ -311,7 +316,8 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 		t.NeedRAM = math.Max(0.1, usage.PeakNeed(h.RAM, t.RAMGB, 0)) // a known command: its history, not the default below
 		t.LearnedRAM = round1(usage.PeakNeed(h.RAM, 0, 0))
 	}
-	if t.RAMGB > 0 && t.NeedRAM > t.RAMGB && (h.RAM == nil || h.RAM.Min() <= t.RAMGB || h.RAMMeasure < ramMeasureShared) {
+	if t.RAMGB > 0 && t.NeedRAM > t.RAMGB && (h.RAM == nil || h.RAM.Min() <= t.RAMGB ||
+		(h.RAMMeasure < ramMeasureShared && t.RAMGB >= oldMeasureFloor*h.RAM.Min())) {
 		// A declaration below what was learned is believed when some past run fit within it (Josh
 		// 11/22: the GPU sat idle 15 min behind a 17.3 GB estimate for jobs peaking at 6-7 GB; one
 		// history mixed runs of other configs). One below every run ever measured is not (the
@@ -358,12 +364,15 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 		if h.VRAM != nil && h.VRAM.N > 0 {
 			t.NeedVRAM = usage.PeakNeed(h.VRAM, t.VRAMGB, 0)
 		}
+		t.LearnedVRAM = 0
 		if t.VRAMGB > 0 && t.NeedVRAM > t.VRAMGB && !h.VRAMOOM {
-			// A lower --vram is believed unless a run of this command ran out of GPU memory (nanoTSFM
-			// 11/23: --vram 7 counted as the whole 16.4 GB card). What is measured on a card is
-			// mostly a framework's cache (PyTorch keeps freed blocks), not need; a run that does
-			// run out fails at once, is told so, and teaches the real need (VRAMOOM, OOMBump).
-			t.NeedVRAM = t.VRAMGB
+			// A lower --vram is believed, unless a run of this command ran out of GPU memory, but only
+			// while the job has its card to itself (nanoTSFM 11/23: --vram 7 counted as the whole
+			// 16.4 GB card). Its framework's cache (PyTorch keeps freed blocks) is held from every
+			// other process, so beside another GPU job the learned figure counts: for its own
+			// admission (gpuGate) and in what it reserves against others (reservedVRAM). Review gate
+			// 11/23: otherwise a co-tenant runs out of memory and loses its run.
+			t.LearnedVRAM, t.NeedVRAM = t.NeedVRAM, t.VRAMGB
 		}
 		if prior && t.VRAMGB == 0 && priorVRAM > 0 {
 			t.NeedVRAM = priorVRAM
