@@ -169,7 +169,7 @@ func TestPositionsAreDistinct(t *testing.T) {
 // A declaration below every run ever measured is not believed (the 11/13 job: declared 1, used 7.6).
 func TestDeclarationBelowEveryRunIsOverruled(t *testing.T) {
 	d := testDaemon(t)
-	h := &History{RAM: usage.NewHist(0.05)}
+	h := &History{RAM: usage.NewHist(0.05), RAMMeasure: ramMeasureShared}
 	usage.AddRun(h.RAM, 7.6, 10, time.Now())
 	tk := &policy.Ticket{Project: "p", CmdHash: "train", GPU: true, RAMGB: 1}
 	d.st.History[histKey(tk)] = h
@@ -285,5 +285,34 @@ func TestSuspendingForRAMAsksTheVMAgain(t *testing.T) {
 	d.hold(j, "ram", "RAM: 1.7 GB free", now)
 	if d.reclaim.misses != 0 || !d.reclaim.end.IsZero() {
 		t.Fatalf("the reclaim backoff wasn't reset: misses %d end %v", d.reclaim.misses, d.reclaim.end)
+	}
+}
+
+// nanoTSFM 11/23 (bug f30ba831): --ram 12 --vram 7 counted as 13.9 GB RAM and the whole 16.4 GB card,
+// from one earlier run measured at 20 GB RAM (its DataLoader workers' shared memory-mapped dataset
+// counted once per worker) and 13.5 GB VRAM (PyTorch's cache).
+func TestDeclarationsBeatInflatedMeasurements(t *testing.T) {
+	d := testDaemon(t)
+	h := &History{RAM: usage.NewHist(0.05), VRAM: usage.NewHist(0.05)} // measured the old way
+	usage.AddRun(h.RAM, 20, 10, time.Now())
+	usage.AddRun(h.VRAM, 13.5, 10, time.Now())
+	tk := &policy.Ticket{Project: "nanoTSFM", CmdHash: "clean_single", GPU: true, RAMGB: 12, VRAMGB: 7}
+	d.st.History[histKey(tk)] = h
+	d.fillNeeds(tk)
+	if tk.NeedRAM != 12 || tk.NeedVRAM != 7 {
+		t.Fatalf("counted RAM %.1f VRAM %.1f, want the declared 12 and 7", tk.NeedRAM, tk.NeedVRAM)
+	}
+	// A run that ran out of VRAM: a lower --vram is no longer believed.
+	h.VRAMOOM = true
+	d.fillNeeds(tk)
+	if tk.NeedVRAM < 13.5 {
+		t.Fatalf("after an out-of-VRAM run, a lower declaration must not count: %.1f", tk.NeedVRAM)
+	}
+	// The next finished run replaces the old-way peaks and is marked measured the new way.
+	j := newJob(tk)
+	j.peakRAM, j.GPU = 4.2, true
+	d.learnRun(h, j, time.Now())
+	if h.RAMMeasure != ramMeasureShared || h.RAM.N != 1 || h.RAM.Max() > 5 {
+		t.Fatalf("history after a new-way run: measure %d, n %.0f, max %.1f", h.RAMMeasure, h.RAM.N, h.RAM.Max())
 	}
 }

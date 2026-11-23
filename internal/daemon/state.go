@@ -23,6 +23,12 @@ type History struct {
 	Last     time.Time `json:"last,omitempty"`    // last run, for pruning
 	Name     string    `json:"name,omitempty"`    // the job's name at its last run, for `firefighter forecast`
 	GPUJob   bool      `json:"gpu_job,omitempty"` // it ran as a GPU job
+	// RAMMeasure: how its RAM peaks were measured. 2: shared pages once (sysinfo.Usage, 11/23);
+	// before that each process's whole working set was added, and a memory-mapped dataset counted
+	// once per worker. Older peaks never overrule a declaration.
+	RAMMeasure int `json:"ram_measure,omitempty"`
+	// VRAMOOM: a run of it failed with the GPU out of memory: a lower --vram is not believed.
+	VRAMOOM bool `json:"vram_oom,omitempty"`
 	// One sample per finished run, older runs fading (usage.AddRun): peaks for what a job must not
 	// run out of, means for what it can be throttled on.
 	RAM  *usage.Hist `json:"ram,omitempty"`      // peak RAM, GB

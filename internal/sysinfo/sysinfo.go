@@ -7,6 +7,7 @@ package sysinfo
 import (
 	"context"
 	"encoding/csv"
+	"fmt"
 	psnet "github.com/shirou/gopsutil/v4/net"
 	"math"
 	"os"
@@ -536,6 +537,7 @@ func Alive(pid int) bool {
 // read as the whole job going idle), their resident RAM, and the bytes they have written.
 func Usage(pids []int) (cpuSeconds map[int]float64, ramGB, writtenGB float64) {
 	cpuSeconds = make(map[int]float64, len(pids))
+	var parts []ramPart
 	for _, pid := range pids {
 		p, err := process.NewProcess(int32(pid))
 		if err != nil {
@@ -545,13 +547,60 @@ func Usage(pids []int) (cpuSeconds map[int]float64, ramGB, writtenGB float64) {
 			cpuSeconds[pid] = t.User + t.System
 		}
 		if m, err := p.MemoryInfo(); err == nil {
-			ramGB += gb(m.RSS)
+			parts = append(parts, splitRAM(pid, m.RSS, m.VMS))
 		}
 		if io, err := p.IOCounters(); err == nil {
 			writtenGB += gb(io.WriteBytes)
 		}
 	}
-	return
+	return cpuSeconds, treeRAM(parts), writtenGB
+}
+
+// ramPart is one process's resident memory: what is its own, and what it may share with the rest
+// of the tree (memory-mapped files, a forked parent's pages).
+type ramPart struct{ own, shared float64 }
+
+// treeRAM is a process tree's RAM with shared pages counted once: every process's own part, plus
+// the largest shared part. Adding up working sets counted a memory-mapped dataset once per
+// DataLoader worker (nanoTSFM 11/23: "24.2 GB" for a run that used about 2 GB + 0.55 GB a worker).
+func treeRAM(parts []ramPart) float64 {
+	sum, shared := 0.0, 0.0
+	for _, p := range parts {
+		sum += p.own
+		shared = math.Max(shared, p.shared)
+	}
+	return sum + shared
+}
+
+// splitRAM: on Linux, the proportional set size (shared pages split among their sharers: exact);
+// on Windows, the working set less what isn't private (private bytes bound what is the process's
+// own; the rest of its working set is shared or file-backed); elsewhere, the resident set.
+func splitRAM(pid int, rss, vms uint64) ramPart {
+	if runtime.GOOS == "linux" {
+		if pss, ok := linuxPSS(pid); ok {
+			return ramPart{own: pss}
+		}
+	}
+	if runtime.GOOS == "windows" && vms > 0 { // gopsutil: VMS is PagefileUsage, the private bytes
+		own := math.Min(float64(rss), float64(vms))
+		return ramPart{own: gb(uint64(own)), shared: gb(rss - uint64(own))}
+	}
+	return ramPart{own: gb(rss)}
+}
+
+// linuxPSS reads a process's proportional set size (GB) from /proc/<pid>/smaps_rollup.
+func linuxPSS(pid int) (float64, bool) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps_rollup", pid))
+	if err != nil {
+		return 0, false
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(l); len(f) >= 2 && f[0] == "Pss:" {
+			kb, err := strconv.ParseFloat(f[1], 64)
+			return kb / (1 << 20), err == nil
+		}
+	}
+	return 0, false
 }
 
 // Names returns lowercase process names currently running (for exclusive apps).

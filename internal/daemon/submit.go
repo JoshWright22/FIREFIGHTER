@@ -288,6 +288,9 @@ const (
 
 func histKey(t *policy.Ticket) string { return t.Project + "|" + t.CmdHash }
 
+// ramMeasureShared marks RAM peaks measured with shared pages counted once (History.RAMMeasure).
+const ramMeasureShared = 2
+
 // fillNeeds sets admission needs and the predicted runtime from declarations and learned history.
 func (d *Daemon) fillNeeds(t *policy.Ticket) {
 	h := d.st.History[histKey(t)]
@@ -308,7 +311,7 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 		t.NeedRAM = math.Max(0.1, usage.PeakNeed(h.RAM, t.RAMGB, 0)) // a known command: its history, not the default below
 		t.LearnedRAM = round1(usage.PeakNeed(h.RAM, 0, 0))
 	}
-	if t.RAMGB > 0 && t.NeedRAM > t.RAMGB && (h.RAM == nil || h.RAM.Min() <= t.RAMGB) {
+	if t.RAMGB > 0 && t.NeedRAM > t.RAMGB && (h.RAM == nil || h.RAM.Min() <= t.RAMGB || h.RAMMeasure < ramMeasureShared) {
 		// A declaration below what was learned is believed when some past run fit within it (Josh
 		// 11/22: the GPU sat idle 15 min behind a 17.3 GB estimate for jobs peaking at 6-7 GB; one
 		// history mixed runs of other configs). One below every run ever measured is not (the
@@ -354,6 +357,13 @@ func (d *Daemon) fillNeeds(t *policy.Ticket) {
 		t.NeedVRAM = math.Max(t.VRAMGB, h.PeakVRAM*d.cfg.GPU.VRAMMargin)
 		if h.VRAM != nil && h.VRAM.N > 0 {
 			t.NeedVRAM = usage.PeakNeed(h.VRAM, t.VRAMGB, 0)
+		}
+		if t.VRAMGB > 0 && t.NeedVRAM > t.VRAMGB && !h.VRAMOOM {
+			// A lower --vram is believed unless a run of this command ran out of GPU memory (nanoTSFM
+			// 11/23: --vram 7 counted as the whole 16.4 GB card). What is measured on a card is
+			// mostly a framework's cache (PyTorch keeps freed blocks), not need; a run that does
+			// run out fails at once, is told so, and teaches the real need (VRAMOOM, OOMBump).
+			t.NeedVRAM = t.VRAMGB
 		}
 		if prior && t.VRAMGB == 0 && priorVRAM > 0 {
 			t.NeedVRAM = priorVRAM

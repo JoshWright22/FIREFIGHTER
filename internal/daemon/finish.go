@@ -146,12 +146,19 @@ func (d *Daemon) learnRun(h *History, j *job, now time.Time) {
 	if j.oom {
 		ram = usage.OOMBump(ram)
 	}
+	if h.RAMMeasure < ramMeasureShared && h.RAM != nil {
+		h.RAM = nil // peaks measured the old way (shared memory once per process) aren't kept
+	}
 	add(&h.RAM, 0.05, ram, usage.RunHalfLifePeak)
+	h.RAMMeasure = ramMeasureShared
 	if j.GPU {
 		vram := j.peakVRAM
 		// Out of GPU memory: its need is above what it reached. Only from the measured peak, and only
 		// when that peak was near what it was admitted with (a log line alone, or an OOM the job
 		// recovered from, raises nothing), and never past the card (review 11/20).
+		if j.vramOOM {
+			h.VRAMOOM = true
+		}
 		if j.vramOOM && j.NeedVRAM > 0 && j.peakVRAM >= 0.8*j.NeedVRAM {
 			vram = usage.OOMBump(j.peakVRAM)
 			if t, _ := d.snap.VRAMTotal(); t > 0 {
