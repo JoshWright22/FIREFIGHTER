@@ -175,6 +175,12 @@ func turn(c *client.Client, t *policy.Ticket, argv []string, container string, q
 		"FIREFIGHTER_CHECKPOINT_FILE="+daemon.CheckpointFile(t.ID))
 	// Multi-GPU: the daemon admitted the job against one card's free VRAM; run it there.
 	cmd.Env = append(cmd.Env, pinGPU(v.Device, v.Vendor)...)
+	// Its VRAM share: a GPU framework's cache grows to what the card has, past the human's reserve,
+	// and the job is stopped for it; one line in the job caps it (firefighter protocol).
+	if v.VRAMCapGB > 0 && v.VRAMTotalGB > 0 {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("FIREFIGHTER_VRAM_GB=%.1f", v.VRAMCapGB),
+			fmt.Sprintf("FIREFIGHTER_VRAM_FRACTION=%.3f", math.Min(1, v.VRAMCapGB/v.VRAMTotalGB)))
+	}
 	sysinfo.PrepareChild(cmd, argv)
 	defer sysinfo.RestoreForeground()
 	start := time.Now()

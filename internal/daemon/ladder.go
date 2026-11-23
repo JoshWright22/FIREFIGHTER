@@ -151,7 +151,14 @@ func (d *Daemon) ladder(now time.Time) {
 		// (never is not an exemption from the human's reserve; review round 6).
 		critical := now.Sub(d.vramLow) > 3*dur(c.Ladder.PressureSeconds)
 		if v := d.victim(func(j *job) bool { return j.GPU && d.onCard(j, card) }, true, critical, short, func(j *job) float64 { return j.vramGB }); v != nil {
-			d.requestCheckpoint(v, now, fmt.Sprintf("VRAM below the human's %.1f GB reserve", d.res.VRAMGB))
+			why := fmt.Sprintf("VRAM below the human's %.1f GB reserve", d.res.VRAMGB)
+			if capGB, total := d.vramCap(v); capGB > 0 && v.vramGB > capGB {
+				// Say how to stay under it: a framework's cache grows to what the card has, and
+				// the job is stopped again each run until it caps itself (fdf58d99).
+				why += fmt.Sprintf("; it holds %.1f GB and may hold %.1f GB here: cap it, e.g. torch.cuda.set_per_process_memory_fraction(float(os.environ['FIREFIGHTER_VRAM_FRACTION'])) (%.2f of the %.1f GB card)",
+					v.vramGB, capGB, capGB/total, total)
+			}
+			d.requestCheckpoint(v, now, why)
 		}
 	}
 

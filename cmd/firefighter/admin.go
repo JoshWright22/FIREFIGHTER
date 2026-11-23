@@ -279,6 +279,14 @@ const protocol = `# firefighter pause/checkpoint protocol for long GPU loops (Py
 # suspended or killed mid-step; exit 75 after checkpointing and firefighter requeues the job.
 import os, sys, time
 
+# Its VRAM share on the card: cap the framework's cache to it at start, or the cache grows past the
+# human's reserve and the job is stopped for it (FIREFIGHTER_VRAM_GB / FIREFIGHTER_VRAM_FRACTION).
+if os.environ.get("FIREFIGHTER_VRAM_FRACTION"):
+    try:
+        import torch; torch.cuda.set_per_process_memory_fraction(float(os.environ["FIREFIGHTER_VRAM_FRACTION"]))
+    except Exception:
+        pass
+
 def firefighter_step(save_checkpoint=None):
     """Call once per training step."""
     pause = os.environ.get("FIREFIGHTER_PAUSE_FILE")

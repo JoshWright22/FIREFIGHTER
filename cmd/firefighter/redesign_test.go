@@ -122,3 +122,17 @@ func TestRequeueAfterAGuardRestart(t *testing.T) {
 		t.Fatalf("the job didn't run again after its guard restarted: %d\n%s\n%s", code, out, e.log())
 	}
 }
+
+// fdf58d99: a GPU job is told its VRAM share (the card less the human's reserve less what else is
+// on it), so it can cap its framework's cache instead of being stopped for growing into the reserve.
+func TestGPUJobIsToldItsVRAMShare(t *testing.T) {
+	e := newEnv(t, map[string]any{"gpus": []map[string]any{{"index": 0, "name": "Fake", "vram_gb": 16, "used_gb": 2}}})
+	file := filepath.Join(e.home, "env.txt")
+	if out, code := e.job("env:FIREFIGHTER_VRAM_GB,FIREFIGHTER_VRAM_FRACTION:"+file, "--gpu", "--minutes", "1", "--vram", "4"); code != 0 {
+		t.Fatalf("job: %d\n%s", code, out)
+	}
+	got := readFile(file)
+	if !strings.Contains(got, "FIREFIGHTER_VRAM_GB=1") || !strings.Contains(got, "FIREFIGHTER_VRAM_FRACTION=0.") {
+		t.Fatalf("the job's environment lacks its VRAM share:\n%s", got)
+	}
+}

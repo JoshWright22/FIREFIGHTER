@@ -93,6 +93,13 @@ type View struct {
 	// LearnedRAM: what its past runs alone point to, when that is more than what is counted.
 	LearnedRAM float64 `json:"learned_ram_gb,omitempty"`
 	Background bool    `json:"background,omitempty"` // its project is a bot: it waits behind project work
+	// VRAMCapGB (a granted or running GPU job): the most it may hold on its card and leave the human
+	// their reserve: the card's size less the human's VRAM reserve less what everything else on the
+	// card uses now. The client passes it to the job (FIREFIGHTER_VRAM_GB, FIREFIGHTER_VRAM_FRACTION)
+	// so it can cap its framework's cache (fdf58d99: a PyTorch cache grew to 13.8 GB of a 16.3 GB
+	// card with 1.7 GB in use by the human's apps, and the job was stopped 13 times in a row).
+	VRAMCapGB   float64 `json:"vram_cap_gb,omitempty"`
+	VRAMTotalGB float64 `json:"vram_total_gb,omitempty"`
 	// Declared: the job's declarations now (after any amend or re-bid). A client that has to
 	// register its job again (the guard restarted) sends these, not the ones it started with.
 	Declared *Declared     `json:"declared,omitempty"`
@@ -179,6 +186,9 @@ func (d *Daemon) viewWithDecision(j *job, now time.Time, decision Decision) View
 		v.ETA = clock(now.Add(time.Duration(left * float64(time.Minute))))
 	case "granted":
 		v.ETA = clock(now.Add(time.Duration(math.Max(1, j.PredMinutes+j.extended) * float64(time.Minute))))
+	}
+	if j.GPU && (j.State == "granted" || j.State == "running") {
+		v.VRAMCapGB, v.VRAMTotalGB = d.vramCap(j)
 	}
 	return v
 }
@@ -556,4 +566,19 @@ func (d *Daemon) position(j *job, now time.Time) int {
 		}
 	}
 	return n + 1
+}
+
+// vramCap is the VRAM a GPU job may hold on its card while leaving the human their reserve: the
+// card's size less the reserve less what everything else on it uses now (never under 0.5 GB).
+func (d *Daemon) vramCap(j *job) (capGB, totalGB float64) {
+	card := j.device
+	if card < 0 || card >= len(d.snap.GPUs) {
+		card, _ = d.freestCard()
+	}
+	if card < 0 || card >= len(d.snap.GPUs) {
+		return 0, 0
+	}
+	g := d.snap.GPUs[card]
+	others := math.Max(0, g.UsedGB-j.vramGB)
+	return round1(math.Max(0.5, g.VRAMGB-d.res.VRAMGB-others)), round1(g.VRAMGB)
 }
