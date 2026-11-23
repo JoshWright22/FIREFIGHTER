@@ -28,6 +28,17 @@ import (
 // turn is one wait-run-receipt cycle. requeue is true when the guard evicted the job gracefully.
 func turn(c *client.Client, t *policy.Ticket, argv []string, container string, quiet bool) (int, bool, error) {
 	v, err := c.Create(daemon.Request{Ticket: *t})
+	// The guard restarting (an update, a new build) is not the end of the job: connect to the new
+	// one and queue again, for up to 3 minutes (bug 81417522, 11/23: two evicted nanoTSFM jobs
+	// printed "back in line automatically", then exited on "connection refused" to a guard that
+	// had restarted while they ran).
+	for end := time.Now().Add(3 * time.Minute); errors.Is(err, client.ErrUnreachable) && time.Now().Before(end); {
+		time.Sleep(2 * time.Second)
+		if c2, cerr := client.Connect(); cerr == nil {
+			c = c2
+			v, err = c.Create(daemon.Request{Ticket: *t})
+		}
+	}
 	if errors.Is(err, client.ErrTaken) { // the same --request-id raced in from another client: never a second copy
 		ui.Note("job %s is already queued by another client: waiting on it", t.ID)
 		code, werr := wait([]string{t.ID})
@@ -285,8 +296,18 @@ loop:
 		code = 1
 	}
 	v, err = c.Act(t.ID, "done", daemon.Act{Exit: code, Project: t.Project, Tail: tail.String()})
+	if errors.Is(err, client.ErrUnreachable) || errors.Is(err, client.ErrNotFound) {
+		// The guard restarted while it ran (and it ended before its keepalive re-registered it):
+		// report to the guard running now.
+		if c2, cerr := client.Connect(); cerr == nil {
+			c = c2
+			v, err = c.Act(t.ID, "done", daemon.Act{Exit: code, Project: t.Project, Tail: tail.String()})
+		}
+	}
 	if err != nil {
-		return code, false, nil
+		// No guard took the report. A job that checkpointed (75) or was asked to stop still goes
+		// back in line rather than ending here (bug 81417522: evicted jobs ended after a restart).
+		return code, code == 75 || !askedAt.IsZero(), nil
 	}
 	if cfg, err := config.Load(); err == nil {
 		spare = func(p int) bool { return daemon.KeepAlive(cfg.Guard.KeepAlive, sysinfo.Name(p)) }

@@ -273,6 +273,11 @@ func run(args []string) (int, error) {
 			return code, err
 		}
 		ui.Say(ui.Coral, "stopped to give the human the machine back; back in line automatically (attempt %d). Nothing to do: it restarts when there's room", attempt+1)
+		// The guard may have restarted while the job ran (turn reconnected only its own copy of the
+		// client): the next attempt talks to the guard running now.
+		if c2, cerr := client.Connect(); cerr == nil {
+			c = c2
+		}
 	}
 }
 

@@ -110,6 +110,16 @@ func helper(spec string) int {
 		}
 		fmt.Println("second run")
 		return 0
+	case "once75slow": // once75slow:MS:marker: the first run works MS ms, then checkpoints and exits 75
+		ms, _ := strconv.Atoi(f[1])
+		marker := strings.Join(f[2:], ":")
+		if !exists(marker) {
+			_ = os.WriteFile(marker, nil, 0o644)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+			return 75
+		}
+		fmt.Println("second run")
+		return 0
 	case "burn": // spin CPU for N seconds
 		secs, _ := strconv.Atoi(f[1])
 		end := time.Now().Add(time.Duration(secs) * time.Second)

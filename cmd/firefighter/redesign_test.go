@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -98,5 +99,26 @@ func TestWaitSurvivesAGuardRestart(t *testing.T) {
 		}
 	case <-time.After(150 * time.Second):
 		t.Fatalf("wait never returned:\n%s", e.log())
+	}
+}
+
+// Bug 81417522 (11/23): the guard restarted while a job ran; when the job was later sent back in
+// line (evicted, or checkpointed with exit 75), its client re-queued it to the old guard's address,
+// got "connection refused" and exited, so the job ended instead of running again. The client now
+// re-queues with whichever guard is running.
+func TestRequeueAfterAGuardRestart(t *testing.T) {
+	e := newEnv(t, nil)
+	marker := filepath.Join(e.home, "first-run-done")
+	id := e.detach("once75slow:8000:"+marker, "--minutes", "1", "--name", "restarted under it")
+	eventually(t, "first run started", 20*time.Second, func() bool { return exists(marker) })
+	if out, code := e.ff("daemon", "--stop"); code != 0 {
+		t.Fatalf("stop: %s", out)
+	}
+	if out, code := e.ff("status"); code != 0 { // a new guard, on a new port
+		t.Fatalf("status: %s", out)
+	}
+	out, code := e.ff("wait", id, "--timeout", "90")
+	if code != 0 || !strings.Contains(out, `"outcome": "ok"`) || !strings.Contains(out, "second run") {
+		t.Fatalf("the job didn't run again after its guard restarted: %d\n%s\n%s", code, out, e.log())
 	}
 }

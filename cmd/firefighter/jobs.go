@@ -49,7 +49,10 @@ func wait(args []string) (int, error) {
 	v, err := c.GetSoon(id)
 	// A guard restarting (an update, a new build) is not the job's end: reconnect and keep waiting.
 	rejoin := func() bool {
-		if !errors.Is(err, client.ErrUnreachable) {
+		// Unreachable: the guard is restarting. Not found, for a job that was submitted here (its
+		// log exists): a guard that just restarted, whose clients haven't re-registered it yet.
+		_, logErr := os.Stat(client.LogPath(id))
+		if !errors.Is(err, client.ErrUnreachable) && !(errors.Is(err, client.ErrNotFound) && logErr == nil) {
 			return false
 		}
 		ui.Note("%s: the guard is restarting; reconnecting", id)
