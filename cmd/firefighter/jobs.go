@@ -235,6 +235,9 @@ func act(args []string, verb string) error {
 		if v.Receipt != nil {
 			outcome = v.Receipt.Outcome
 		}
+		if verb == "retry" {
+			outcome = fmt.Sprintf("back-off ended; #%d, %s", v.Position, v.Why)
+		}
 		ui.Say(ui.Ivory, "%s %s: %s", v.ID, v.Name, outcome)
 	}
 	return err

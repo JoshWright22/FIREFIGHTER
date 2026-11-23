@@ -31,3 +31,28 @@ func TestVRAMShareAndTheStopSayHowToCap(t *testing.T) {
 		t.Fatalf("stop reason: %q", j.reason)
 	}
 }
+
+// 5658b8b4: a job stopped for VRAM waited out a doubling back-off (up to 30 min) with no way to
+// try again after its owner capped it; cancel and resubmit was the only way out. retry ends the
+// wait now and keeps the count.
+func TestRetryEndsTheBackOff(t *testing.T) {
+	d := testDaemon(t)
+	now := time.Now()
+	j := d.addWaiting("FINAL", 1, 60, time.Minute)
+	if d.backoff == nil {
+		d.backoff = map[string]backoff{}
+	}
+	d.backoff[j.ID] = backoff{n: 5, at: now.Add(-time.Minute), why: "VRAM below the human's 1.0 GB reserve"}
+	if d.backoffLeft(j.ID, now) <= 0 {
+		t.Fatal("setup: it should be backing off")
+	}
+	b := d.backoff[j.ID]
+	b.at = time.Time{}
+	d.backoff[j.ID] = b
+	if d.backoffLeft(j.ID, now) != 0 || d.backoff[j.ID].n != 5 {
+		t.Fatalf("after retry: left %v, count %d", d.backoffLeft(j.ID, now), d.backoff[j.ID].n)
+	}
+	if dec := d.waitingDecision(j, now); dec.Kind == blockBackoff {
+		t.Fatalf("still held by the back-off: %s", dec.Text)
+	}
+}

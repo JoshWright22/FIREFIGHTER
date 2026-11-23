@@ -136,3 +136,24 @@ func TestGPUJobIsToldItsVRAMShare(t *testing.T) {
 		t.Fatalf("the job's environment lacks its VRAM share:\n%s", got)
 	}
 }
+
+// 5658b8b4: a stopped job waited out its back-off with no way to try again; cancel and resubmit was
+// the only way out. `firefighter retry` ends the wait now: a job that checkpointed (exit 75, a
+// one-minute back-off) runs again within seconds.
+func TestRetryEndsAStoppedJobsBackOff(t *testing.T) {
+	e := newEnv(t, nil)
+	marker := filepath.Join(e.home, "first-run-done")
+	id := e.detach("once75:"+marker, "--minutes", "1", "--name", "retried")
+	eventually(t, "stopped and backing off", 30*time.Second, func() bool { return strings.Contains(e.mustWaitState(id), "tries again in") })
+	start := time.Now()
+	if out, code := e.ff("retry", id); code != 0 || !strings.Contains(out, "back-off ended") {
+		t.Fatalf("retry: %d\n%s", code, out)
+	}
+	out, code := e.ff("wait", id, "--timeout", "40")
+	if code != 0 || !strings.Contains(out, "second run") || time.Since(start) > 30*time.Second {
+		t.Fatalf("the retried job didn't run again at once (%s): %d\n%s", time.Since(start).Round(time.Second), code, out)
+	}
+	if out, code := e.ff("retry", id); code == 0 || !strings.Contains(out, "is done") {
+		t.Fatalf("retrying a finished job must be refused: %d\n%s", code, out)
+	}
+}

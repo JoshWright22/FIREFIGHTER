@@ -37,6 +37,7 @@ Agents queue their heavy jobs here; they take turns, and you always come first.
                                  update.auto); --build: build it from source if antivirus blocks the download
   firefighter extend <id> <min>  lengthen a running job's lease
   firefighter cancel <id>        cancel a waiting or running job
+  firefighter retry <id>         a stopped job's back-off ends now (after you fixed why it was stopped)
   firefighter show <id> [--json] one job in full: declared and counted needs, place, why it waits
   firefighter adopt <pid> [--gpu] [--name NAME] [--minutes N]   govern a process already running
   firefighter plan "<what>" --when "<when>" --minutes N [--gpu PCT] [--vram GB] [--ram GB] [--done]
@@ -88,6 +89,8 @@ func main() {
 		err = amend(args)
 	case "cancel":
 		err = act(args, "cancel")
+	case "retry":
+		err = act(args, "retry")
 	case "show":
 		err = show(args)
 	case "adopt":

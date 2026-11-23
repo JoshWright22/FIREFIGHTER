@@ -68,7 +68,7 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 	// Who may change a job: the human (no agent above the caller: a terminal, the VS Code button),
 	// the agent session that submitted it, or an agent in the same project. Other agents need
 	// --force. A guard against agents touching each other's work by accident, not a sandbox.
-	if verb == "cancel" || verb == "bid" || verb == "amend" || verb == "extend" || verb == "done" {
+	if verb == "cancel" || verb == "bid" || verb == "amend" || verb == "extend" || verb == "done" || verb == "retry" {
 		sameSession := callerAgent != 0 && (callerAgent == j.ownerAgent && callerAgentAt == j.ownerCreated ||
 			caller == j.ClientPID) // the job's own client always may (an unknown agent's own job)
 		if !callerHuman && j.human && !sameSession && !a.Force {
@@ -279,6 +279,21 @@ func (d *Daemon) act(w http.ResponseWriter, r *http.Request) {
 		}
 		// Shown to other agents in status: one short, printable line, like every text an agent sends.
 		d.finish(id, a.Exit, outcome, cleanText(a.Log, 500))
+	case "retry": // after a stop: try again now instead of waiting out the back-off (5658b8b4)
+		if j.State != "waiting" {
+			fail(w, http.StatusConflict, "job "+id+" is "+j.State+"; retry only ends a waiting job's back-off")
+			return
+		}
+		b, ok := d.backoff[id]
+		if !ok || d.backoffLeft(id, now) <= 0 {
+			fail(w, http.StatusConflict, "job "+id+" isn't backing off; it starts when there is room")
+			return
+		}
+		// The wait ends now; the count stays, so a job stopped again at once backs off longer.
+		b.at = time.Time{}
+		d.backoff[id] = b
+		logf("%s: retry asked: back-off ended (stopped %d time(s) in a row)", j.Name, b.n)
+		d.admit(now)
 	case "cancel":
 		if j.State == "running" {
 			j.reason = "cancelled"
