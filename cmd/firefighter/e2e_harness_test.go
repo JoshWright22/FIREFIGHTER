@@ -218,6 +218,17 @@ func (e *env) cleanup() {
 	time.Sleep(500 * time.Millisecond)
 	_ = e.cmd(nil, "daemon", "--stop").Run()
 	time.Sleep(300 * time.Millisecond)
+	// A guard that restarts itself (an update) can still be coming up as the old one stops, and
+	// take the lock after the stop above: stop until the lock file is free, so the test's TempDir
+	// can be removed (CI 11/23, windows-11-arm: "daemon.lock ... being used by another process").
+	lock := filepath.Join(e.home, "daemon.lock")
+	for i := 0; i < 40; i++ {
+		if err := os.Remove(lock); err == nil || os.IsNotExist(err) {
+			break
+		}
+		_ = e.cmd(nil, "daemon", "--stop").Run()
+		time.Sleep(250 * time.Millisecond)
+	}
 	// A cancelled job's runner can still hold its log open for a moment, and Windows can't delete an
 	// open file: retry before the test's TempDir cleanup fails the test over it.
 	logs := filepath.Join(e.home, "logs")

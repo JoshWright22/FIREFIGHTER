@@ -18,7 +18,7 @@ type Storm struct {
 	Name    string
 	Cmdline string
 	PIDs    []int
-	Created []int64 // each pid's start time, for killing only the same processes later
+	Created []int64 // each pid's start time as Created reports it, for killing only the same processes later
 	RAMGB   float64
 }
 
@@ -64,7 +64,16 @@ func Storms(p StormParams, skip map[int]bool) []Storm {
 				return 0
 			}})
 	}
-	return findStorms(infos, p, skip, time.Now())
+	storms := findStorms(infos, p, skip, time.Now())
+	// Identity for the kill (Same) is Created's own clock: kernel ticks on Linux, not gopsutil's
+	// milliseconds. Comparing the two never matched, so no storm process was ever killed off
+	// Windows x64 (CI 11/23, bug 566fd1a7).
+	for _, s := range storms {
+		for i, pid := range s.PIDs {
+			s.Created[i] = Created(pid)
+		}
+	}
+	return storms
 }
 
 // findStorms groups by name first (cheap), then, only for names with enough copies, by exact
