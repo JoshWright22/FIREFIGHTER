@@ -291,6 +291,7 @@ func (d *Daemon) notes(now time.Time) []string {
 	if h := d.cfg.Harvester; h.Start != "" && !harvest.Approved(config.Home(), h.Start) {
 		out = append(out, "harvester: its commands in firefighter.toml aren't approved, so they don't run; check them, then run `firefighter harvest approve` from your own terminal")
 	}
+	out = append(out, d.stormNotes...)
 	for name, job := range d.leftoverContainers() {
 		out = append(out, fmt.Sprintf("container %s is still running after its job (%s) ended; it wasn't stopped with it (no firefighter.job label or --name tied it to the job): `docker kill %s` if it is done. It isn't counted as the human's load", name, job, name))
 	}

@@ -123,6 +123,7 @@ func (d *Daemon) Run() {
 		}
 		scan("rogues", func() { rogues = d.findRogues(now, cfg, snap, governed) })
 		scan("human CPU", func() { d.measureHumanCPU(now, cfg, governed) })
+		scan("process storms", func() { d.scanStorms(now, cfg, governed) })
 		scan("docker", func() { d.refreshDocker(now) })
 		scan("vm", func() { d.refreshVM(now, vmWanted) })
 		scan("disks", func() { d.refreshDisks(now, folders, sysFolders) })
@@ -184,6 +185,7 @@ func (d *Daemon) step(snap sysinfo.Snapshot, meas map[string]measured, rogues []
 	d.adoptRogues(rogues, now)
 	d.res.Update(d.withLearnedReserve(c, now), d.user, d.humanCPULoad(), d.snap.CPUs, now)
 	d.enforceCPU()
+	d.handleStorms(now)
 	d.ladder(now)
 	d.reap(now)
 	d.refreshBands(now)

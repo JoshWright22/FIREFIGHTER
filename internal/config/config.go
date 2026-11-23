@@ -115,8 +115,12 @@ type Config struct {
 		AutoAdopt    bool     `toml:"auto_adopt"`    // govern heavy processes agents started outside firefighter
 		AgentParents []string `toml:"agent_parents"` // process names whose descendants count as agent work
 		HeavyCPUs    float64  `toml:"heavy_cpus"`    // sustained CPU use that counts as heavy
-		HeavyRAMGB   float64  `toml:"heavy_ram_gb"`
-		HeavySeconds float64  `toml:"heavy_seconds"` // how long before it's adopted
+		// StormProcesses: this many copies of one command line, started within minutes and
+		// holding 2 GB together, are a process storm (a fork bomb, a hook calling itself): stopped
+		// when RAM runs under the human's reserve or they reach 1000. 0 turns the guard off.
+		StormProcesses int     `toml:"storm_processes"`
+		HeavyRAMGB     float64 `toml:"heavy_ram_gb"`
+		HeavySeconds   float64 `toml:"heavy_seconds"` // how long before it's adopted
 		// AgentsCanConfigure lets the firefighter_config MCP tool change settings. Off: agents can
 		// read the policy but only the human (CLI) changes it.
 		AgentsCanConfigure bool `toml:"agents_can_configure"`
@@ -233,6 +237,7 @@ func Defaults() Config {
 	c.Guard.AgentParents = []string{"claude", "codex", "gemini", "aider", "goose", "opencode", "cline", "grok", "kimi",
 		"kiro-cli", "devin", "copilot", "amp", "qwen", "crush", "droid", "agy", "muse-bin", "fx", "pi", "cursor-agent"}
 	c.Guard.HeavyCPUs = 2
+	c.Guard.StormProcesses = 200
 	c.Guard.HeavyRAMGB = 4
 	c.Guard.HeavySeconds = 60
 	c.Guard.KeepAlive = []string{"vbcscompiler", "msbuild", "sccache", "adb", "gradle", "kotlin-daemon", "bazel", "buildkitd", "dotnet-build-server", "ccache"}
@@ -464,6 +469,9 @@ func (c Config) Validate() error {
 	}
 	if c.Reserve.AutoMinGB < 0.5 || c.Reserve.BasicGB < c.Reserve.AutoMinGB || c.Reserve.BasicVRAMGB < 0 || c.Reserve.BasicCPUs < 1 {
 		return fmt.Errorf("reserve.auto_min_gb must be at least 0.5 and reserve.basic_gb at least that; reserve.basic_vram_gb 0 or more, reserve.basic_cpus 1 or more")
+	}
+	if c.Guard.StormProcesses != 0 && c.Guard.StormProcesses < 50 {
+		return fmt.Errorf("guard.storm_processes must be 0 (off) or at least 50")
 	}
 	if c.Reserve.RAMMarginPct < 0 || c.Reserve.RAMMarginPct > 50 {
 		return fmt.Errorf("reserve.ram_margin_pct must be 0-50")
