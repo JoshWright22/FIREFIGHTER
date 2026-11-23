@@ -78,9 +78,12 @@ type Config struct {
 		GameCoolSeconds   float64  `toml:"game_cool_seconds"`   // game state holds this long after it ends
 		ExclusiveApps     []string `toml:"exclusive_apps"`      // process names that count as a game
 		IgnoreGPUApps     []string `toml:"ignore_gpu_apps"`     // compositors and harvesters: GPU use that isn't the human
-		MaxCPUPct         float64  `toml:"max_cpu_pct"`         // the CPU reserve follows other programs' load up to this share of the CPUs; jobs keep the rest
-		RAMMarginPct      float64  `toml:"ram_margin_pct"`      // a job starts only if this share of RAM stays free beyond the reserve and its need
-		DiskFreeGB        float64  `toml:"disk_free_gb"`
+		// NotGames: apps whose 3D-engine use in front is never a game in a window: terminals and code
+		// editors render text on the GPU (45734113: Windows Terminal at 20% paused a CUDA job).
+		NotGames     []string `toml:"not_games"`
+		MaxCPUPct    float64  `toml:"max_cpu_pct"`    // the CPU reserve follows other programs' load up to this share of the CPUs; jobs keep the rest
+		RAMMarginPct float64  `toml:"ram_margin_pct"` // a job starts only if this share of RAM stays free beyond the reserve and its need
+		DiskFreeGB   float64  `toml:"disk_free_gb"`
 		// MinFreeGB: free RAM kept for the human whatever the learned reserve says (at most 15% of
 		// RAM): under it Windows starts paging and the desktop stalls (2026-11-20: 0.5 GB free froze it).
 		MinFreeGB float64 `toml:"min_free_gb"`
@@ -216,6 +219,8 @@ func Defaults() Config {
 	c.Reserve.ReclaimVMCache = true
 	c.Reserve.Learn = true
 	c.Reserve.ExclusiveApps = []string{"gamescope"} // Steam's game compositor on Linux
+	c.Reserve.NotGames = []string{"windowsterminal.exe", "openconsole.exe", "conhost.exe", "wezterm-gui.exe", "alacritty.exe",
+		"kitty", "alacritty", "wezterm-gui", "code.exe", "code", "cursor.exe", "cursor"}
 	c.Reserve.IgnoreGPUApps = []string{"dwm.exe", "csrss.exe", "explorer.exe", "windowserver", "xorg", "gnome-shell", "kwin_wayland", "kwin_x11", "firefighter.exe", "firefighter"}
 	c.Ladder.PauseAckSeconds = 10
 	c.Ladder.SuspendMaxSeconds = 60

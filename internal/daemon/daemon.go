@@ -85,17 +85,18 @@ type Daemon struct {
 	storms         []sysinfo.Storm    // found by the last off-lock scan, handled in the step
 	stormAt        time.Time
 	stormNotes     []string
-	leftover       map[string]string  // container id -> the finished job it was guessed to belong to
-	humanCPU       humanCPUState      // the human's own CPU use (not jobs, not agents), for the CPU reserve
-	harvestRefused onceSet            // harvester commands not approved, logged once each
-	prevQueued     map[string]OpenJob // waiting jobs of the previous daemon (Seen = when queued), until re-registered
-	backoff        map[string]backoff // job id -> evictions in a row: a requeued job waits longer each time
-	agentOf        map[int]agentSeen  // heavy processes an agent started, remembered past their parents' exit
-	gpuMax         int                // most GPUs seen in one reading
-	gpuShortSince  time.Time          // since when readings show fewer
-	gpuDegraded    bool               // this reading is partial: no GPU grants
-	dockerQ        chan []string      // docker CLI calls, run in order (a late pause must not follow its unpause)
-	graphics       map[string]float64 // non-job 3D-engine users -> % (games, video)
+	leftover       map[string]string    // container id -> the finished job it was guessed to belong to
+	humanCPU       humanCPUState        // the human's own CPU use (not jobs, not agents), for the CPU reserve
+	harvestRefused onceSet              // harvester commands not approved, logged once each
+	prevQueued     map[string]OpenJob   // waiting jobs of the previous daemon (Seen = when queued), until re-registered
+	backoff        map[string]backoff   // job id -> evictions in a row: a requeued job waits longer each time
+	agentOf        map[int]agentSeen    // heavy processes an agent started, remembered past their parents' exit
+	gpuMax         int                  // most GPUs seen in one reading
+	gpuShortSince  time.Time            // since when readings show fewer
+	gpuDegraded    bool                 // this reading is partial: no GPU grants
+	dockerQ        chan []string        // docker CLI calls, run in order (a late pause must not follow its unpause)
+	graphics       map[string]float64   // non-job 3D-engine users -> % (games, video)
+	heavy3D        map[string]time.Time // app in front -> since when its 3D use has been heavy
 	others         []sysinfo.Container
 	seenCtr        map[string]bool // containers already looked at for an owner job
 	notify         chan struct{}

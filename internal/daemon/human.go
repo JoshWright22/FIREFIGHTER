@@ -36,6 +36,10 @@ func (d *Daemon) nobodyAtKeyboard() bool {
 
 // ---- the human ---------------------------------------------------------------------------------
 
+// windowedGameAfter: how long the app in front must keep the 3D engine busy to count as a game in a
+// window (a game holds it; text rendering in a terminal or editor comes in bursts).
+const windowedGameAfter = 20 * time.Second
+
 func (d *Daemon) senseUser(now time.Time) {
 	c := d.cfg
 	if now.Sub(d.namesAt) > 5*time.Second {
@@ -50,11 +54,30 @@ func (d *Daemon) senseUser(now time.Time) {
 			why = a
 		}
 	}
-	// Heavy 3D-engine use by the app in front is play (a game in a window); 3D use by background
-	// processes, and CUDA compute anywhere outside firefighter, is load, not the human.
+	// Heavy 3D-engine use by the app in front, held for windowedGameAfter, is play (a game in a
+	// window); 3D use by background processes, and CUDA compute anywhere outside firefighter, is load,
+	// not the human. A burst (a terminal rendering a flood of output) is not a game, and terminals and
+	// editors (reserve.not_games) never are (45734113: Windows Terminal at 20% paused a CUDA job).
+	heavy := map[string]bool{}
 	for n, u := range d.graphics {
-		if u >= c.Reserve.ForeignGPUPct && (d.snap.ForegroundApp == "" || strings.EqualFold(n, d.snap.ForegroundApp)) && d.snap.ProcUtilKnown {
+		if u < c.Reserve.ForeignGPUPct || !d.snap.ProcUtilKnown || contains(c.Reserve.NotGames, n) ||
+			(d.snap.ForegroundApp != "" && !strings.EqualFold(n, d.snap.ForegroundApp)) {
+			continue
+		}
+		heavy[n] = true
+		if d.heavy3D == nil {
+			d.heavy3D = map[string]time.Time{}
+		}
+		if _, ok := d.heavy3D[n]; !ok {
+			d.heavy3D[n] = now
+		}
+		if now.Sub(d.heavy3D[n]) >= windowedGameAfter {
 			why = fmt.Sprintf("%s using %.0f%% of the 3D engine", n, u)
+		}
+	}
+	for n := range d.heavy3D {
+		if !heavy[n] {
+			delete(d.heavy3D, n)
 		}
 	}
 	// A fullscreen game that drops out of fullscreen for a moment (a menu, a loading screen, a
