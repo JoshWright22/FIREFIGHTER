@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-141216" alt="Windows, macOS, Linux">
   <img src="https://img.shields.io/badge/MCP-server-d4147a" alt="MCP server">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-141216" alt="MIT"></a>
+  <a href="https://glama.ai/mcp/servers/JoshWright22/FIREFIGHTER"><img src="https://glama.ai/mcp/servers/JoshWright22/FIREFIGHTER/badges/score.svg" alt="JoshWright22/FIREFIGHTER MCP server"></a>
 </p>
 
 <h3 align="center">Run several AI coding agents on one computer. They take turns, and you always come first.</h3>
