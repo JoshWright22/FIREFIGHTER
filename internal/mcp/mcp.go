@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -296,7 +297,7 @@ func call(name string, a map[string]any) (string, any, error) {
 				text += "\nquote: " + q.Line()
 			}
 		}
-		return text, st, nil
+		return text, slimStatus(st), nil
 	case "firefighter_submit":
 		if s(a, "command") == "" || f(a, "minutes") <= 0 {
 			return "", nil, fmt.Errorf("command and minutes are required")
@@ -658,4 +659,20 @@ func storageCall(a map[string]any) (string, any, error) {
 		return fmt.Sprintf("%s: %s %.2f GB: %s", project, verb, freed, strings.Join(names, ", ")), chosen, nil
 	}
 	return "", nil, fmt.Errorf("action must be show, claim, label, items, free or release")
+}
+
+// slimStatus is the status as the firefighter_status tool returns it: what an agent acts on, kept
+// small. The forecast (every learned command's expected use: 89 KB on 11/27) and the full list of
+// recent receipts made the reply too big for MCP clients ("result exceeds maximum allowed tokens",
+// bug ea42b3cb), so the agent never saw do:. The forecast is `firefighter forecast`; the last
+// three receipts stay.
+func slimStatus(st daemon.Status) daemon.Status {
+	st.Forecast = nil
+	recent := append([]*daemon.Receipt(nil), st.Recent...)
+	sort.Slice(recent, func(a, b int) bool { return recent[a].Ended.After(recent[b].Ended) })
+	if len(recent) > 3 {
+		recent = recent[:3]
+	}
+	st.Recent = recent
+	return st
 }

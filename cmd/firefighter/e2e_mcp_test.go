@@ -45,6 +45,10 @@ func TestMCPServer(t *testing.T) {
 	if st["result"].(map[string]any)["isError"] == true {
 		t.Fatalf("status tool: %v", st)
 	}
+	// ea42b3cb: the forecast made this reply 97 KB, over MCP clients' limit; it's `firefighter forecast`.
+	if raw, _ := json.Marshal(st["result"]); strings.Contains(string(raw), `"forecast"`) {
+		t.Fatalf("the status tool's result carries the forecast:\n%.300s", raw)
+	}
 	cwd, _ := os.Getwd()
 	cmdline := "echo mcp-job"
 	sub := call(4, "tools/call", map[string]any{"name": "firefighter_submit", "arguments": map[string]any{"command": cmdline, "cwd": cwd, "minutes": 1}})
