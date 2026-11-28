@@ -47,7 +47,7 @@ Agents queue their heavy jobs here; they take turns, and you always come first.
   firefighter protocol           the pause/checkpoint helper for long GPU loops
   firefighter statusline [--json]  one line for a status bar (Claude Code, VS Code, tmux, T3 Code)
   firefighter events             NDJSON stream of status changes, for editor plugins
-  firefighter setup              start at logon + teach every agent CLI (MCP + global rules)
+  firefighter setup              start the guard and configure agent MCP and rules
   firefighter uninstall          undo setup
   firefighter daemon [--stop]    the guard itself (setup and the CLI start it for you)
   firefighter mcp                MCP server on stdio (setup registers it)

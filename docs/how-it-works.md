@@ -59,8 +59,9 @@ code, with the numbers the code actually uses. If this page and the code disagre
   card it was admitted on, in that vendor's own numbering. On mixed machines a job goes to the
   NVIDIA cards unless it says otherwise (`--gpu-vendor amd|intel|any`). Every PC runs its own
   FIREFIGHTER; nothing goes over the network.
-- **Set and forget.** `setup` starts the guard at logon and, for every agent it finds installed,
-  registers the MCP server and adds a short rule block to its global instructions, so every new
+- **Set and forget.** The Windows installer sets up logon startup. On macOS and Linux, `setup`
+  enables it. On all platforms, `setup` registers the MCP server and adds a short rule block to
+  the global instructions of every agent it finds installed, so every new
   session (including T3 Code threads) already knows the protocol: Claude Code, Codex, Gemini CLI,
   Antigravity, Cursor, Grok Build, OpenCode, Kimi CLI and Kimi Code, Pi, Muse Code, fx, Kiro,
   Windsurf/Devin, Copilot CLI, Amp, Qwen Code, Crush, Cline, Goose and Droid. Each in its own

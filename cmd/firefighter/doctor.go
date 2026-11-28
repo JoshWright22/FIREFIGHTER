@@ -54,7 +54,7 @@ func doctor(args []string) (int, error) {
 	// The guard.
 	c, err := client.Connect0() // look only: never start, stop or replace the guard while diagnosing it
 	if err != nil {
-		fix("guard", "not running ("+err.Error()+")", "any firefighter command starts it (setup also starts it at logon)")
+		fix("guard", "not running ("+err.Error()+")", "run firefighter status to start it on demand")
 	} else if st, err := c.Status(); err != nil {
 		fix("guard", "not answering: "+err.Error(), "firefighter daemon --stop, then any firefighter command starts it again")
 	} else {

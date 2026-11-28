@@ -26,6 +26,8 @@ reading, the guard counts you as "present".
 **Verify:** open a new shell on macOS or Linux to pick up any PATH change, then run `firefighter status`.
 `go install` puts the binary in Go's bin directory and reports version `dev`, which does not self-update.
 On Windows, the PowerShell installer creates the shortcut and removes legacy logon entries.
+To migrate an older Windows install, rerun the PowerShell installer from a release that includes
+the Startup shortcut.
 The CLI can start the guard on demand with or without the shortcut.
 
 **Remove:** `firefighter uninstall` removes autostart, the rule blocks and the MCP entries, and stops
