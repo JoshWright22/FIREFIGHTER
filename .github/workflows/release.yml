@@ -10,6 +10,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
+      actions: read         # read the unsigned artifact for SignPath
       contents: write       # create the release and upload assets
       id-token: write       # sign build provenance (Sigstore)
       attestations: write
@@ -27,12 +28,58 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod # the toolchain go.mod names, not whatever "stable" is today
+      - name: build artifacts for Windows code signing
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: "v2.19.0"
+          args: build --clean
+      - name: stage Windows executables
+        if: vars.SIGNPATH_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for arch in amd64 arm64; do
+            mkdir -p "$RUNNER_TEMP/ff-unsigned/$arch" "$RUNNER_TEMP/ff-unsigned-hashes/$arch"
+            for binary in firefighter firefighterw; do
+              files=(dist/"${binary}_windows_${arch}"*/"$binary.exe")
+              if [ "${#files[@]}" -ne 1 ]; then
+                echo "Expected one $binary Windows $arch build, found ${#files[@]}" >&2
+                exit 1
+              fi
+              cp -- "${files[0]}" "$RUNNER_TEMP/ff-unsigned/$arch/$binary.exe"
+              sha256sum < "${files[0]}" | cut -d ' ' -f 1 > "$RUNNER_TEMP/ff-unsigned-hashes/$arch/$binary.exe.sha256"
+            done
+          done
+      - name: upload unsigned Windows executables
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned-windows
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-windows
+          path: ${{ runner.temp }}/ff-unsigned
+          if-no-files-found: error
+      - name: sign Windows executables with maintainer approval
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: SignPath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-windows.outputs.artifact-id }}
+          output-artifact-directory: ${{ runner.temp }}/ff-signed
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: "v2.19.0" # exact: this job can publish and sign
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FF_SIGNED_WINDOWS_DIR: ${{ vars.SIGNPATH_ENABLED == 'true' && format('{0}/ff-signed', runner.temp) || '' }}
+          FF_UNSIGNED_WINDOWS_HASHES: ${{ runner.temp }}/ff-unsigned-hashes
       # Signed provenance for every archive: `gh attestation verify <file> --repo JoshWright22/FIREFIGHTER`
       # proves it was built by this workflow from this repo, independent of checksums.txt.
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2

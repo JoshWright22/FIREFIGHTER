@@ -8,15 +8,11 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [windows, linux, darwin]
     goarch: [amd64, arm64]
-    # Keep the symbol table (-w only drops DWARF): fully stripped Go binaries (-s -w) look more
-    # like packed malware to Windows Defender's machine-learning rules. That alone doesn't settle
-    # it: v0.1.0 is flagged by its file's cloud reputation (Bearfoos.A!ml, Colorexe.B,
-    # Behavior:Win32/Persistence.A!ml), which only code signing or a false-positive report to
-    # Microsoft clears. See docs/security.md.
     flags: ["-trimpath"]
     ldflags: ["-w -X main.version={{.Version}}"]
-  # The windowless logon launcher the Run key names (no conhost --headless; security audit
-  # 2026-11-22): a GUI-subsystem program, Windows only, in the same zip as firefighter.exe.
+    hooks:
+      post: bash scripts/use-signed-windows-build.sh "{{ .Path }}" "{{ .Target }}"
+  # The Windows Startup shortcut uses this GUI-subsystem launcher when it ships in the archive.
   - id: firefighterw
     main: ./cmd/firefighterw
     binary: firefighterw
@@ -25,6 +21,8 @@ builds:
     goarch: [amd64, arm64]
     flags: ["-trimpath"]
     ldflags: ["-w -H windowsgui"]
+    hooks:
+      post: bash scripts/use-signed-windows-build.sh "{{ .Path }}" "{{ .Target }}"
 archives:
   - name_template: "firefighter_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
