@@ -62,15 +62,16 @@ go install github.com/JoshWright22/firefighter/cmd/firefighter@latest && firefig
 
 The installers check that the download is genuine (its checksum, and its signature when the GitHub
 CLI is signed in), install the program and run `firefighter setup`. You don't need admin rights.
-Setup starts FIREFIGHTER when you log in and teaches every AI agent it finds on your computer to use
-it. On macOS and Linux, open a new terminal afterwards so it's on your PATH. A copy built with
-`go install` shows version `dev` and doesn't update itself.
+Setup teaches every AI agent it finds on your computer to use FIREFIGHTER. On Windows the PowerShell
+installer adds a shortcut to your Startup folder. On macOS and Linux setup enables logon startup,
+and a new terminal picks up the installer's PATH change. A copy built with `go install` shows
+version `dev` and doesn't update itself. The CLI starts the guard on demand.
 
 Then run `firefighter doctor`: it checks each part and tells you how to fix anything that's off.
 `firefighter status` shows what's happening right now.
 
-To remove it, run `firefighter uninstall`. That stops it and removes what setup added (the start at
-login, the agents' settings and instructions). It leaves the program, any PATH entry and its data
+To remove it, run `firefighter uninstall`. That stops it and removes logon startup, agent settings
+and instructions. It leaves the program, any PATH entry and its data
 folder; delete those yourself if you want them gone. Where they are:
 [install details](docs/reference.md#install-details).
 

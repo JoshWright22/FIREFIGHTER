@@ -33,8 +33,8 @@ Agents queue their heavy jobs here; they take turns, and you always come first.
   firefighter forecast [--json]  what the human and each known command are expected to use, as learned
   firefighter harvest [earned <usd> | reset | approve]  the idle harvester's books and profit guard;
                                  approve: let its configured commands run (the human, from their own terminal)
-  firefighter update [--check] [--build]  install the newest signed release now (the guard also does it by itself:
-                                 update.auto); --build: build it from source if antivirus blocks the download
+  firefighter update [--check]  install the newest signed release now (the guard also does it by itself:
+                                 update.auto); --check: report whether an update is available
   firefighter extend <id> <min>  lengthen a running job's lease
   firefighter cancel <id>        cancel a waiting or running job
   firefighter retry <id>         a stopped job's back-off ends now (after you fixed why it was stopped)

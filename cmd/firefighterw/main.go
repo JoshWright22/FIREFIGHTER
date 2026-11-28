@@ -1,10 +1,8 @@
 //go:build windows
 
 // Command firefighterw starts the firefighter guard at logon without a window. It is built as a
-// Windows GUI program (-H windowsgui), so it has no console of its own, and the per-user Run key
-// names it directly: no conhost --headless, which hides a window the way malware does (MITRE
-// T1564.003) and is what Defender's Persistence/Bearfoos models flagged (security audit
-// 2026-11-22). It starts firefighter.exe from its own folder by full path and exits.
+// Windows GUI program (-H windowsgui) and the installer's Startup shortcut names it directly.
+// It starts firefighter.exe from its own folder by full path and exits.
 package main
 
 import (

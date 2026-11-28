@@ -106,7 +106,7 @@ func TestApplyRefusesAnUnsignedRelease(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = Apply(context.Background(), rel, exe, func(string) {}, Options{})
+		err = Apply(context.Background(), rel, exe, func(string) {})
 		if err == nil || !strings.Contains(err.Error(), SigAsset) {
 			t.Fatalf("%s: an update without a trusted signature must be refused: %v", sig, err)
 		}
@@ -118,7 +118,7 @@ func TestApplyRefusesAnUnsignedRelease(t *testing.T) {
 	signedRelease(t, "v9.9.9", []byte("whatever"), true, "good")
 	t.Setenv("FIREFIGHTER_UPDATE_TEST_KEY", "")
 	rel, _ := Latest(context.Background())
-	if err := Apply(context.Background(), rel, filepath.Join(t.TempDir(), exeName()), func(string) {}, Options{}); err != ErrNoKey {
+	if err := Apply(context.Background(), rel, filepath.Join(t.TempDir(), exeName()), func(string) {}); err != ErrNoKey {
 		t.Fatalf("no trusted key: %v", err)
 	}
 }
@@ -145,17 +145,50 @@ func TestApplyRefusesWhatDoesNotCheckOut(t *testing.T) {
 	if err != nil || rel.Tag != "v9.9.9" || rel.Assets[AssetName()] == "" {
 		t.Fatalf("Latest: %+v, %v", rel, err)
 	}
-	if err := Apply(context.Background(), rel, exe, func(string) {}, Options{}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if err := Apply(context.Background(), rel, exe, func(string) {}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("a wrong checksum must stop the update: %v", err)
 	}
 	untouched("wrong checksum")
 
 	release(t, "v9.9.9", []byte("matches its checksum but is no archive"), true)
 	rel, _ = Latest(context.Background())
-	if err := Apply(context.Background(), rel, exe, func(string) {}, Options{}); err == nil {
+	if err := Apply(context.Background(), rel, exe, func(string) {}); err == nil {
 		t.Fatal("a broken archive must stop the update")
 	}
 	untouched("broken archive")
+
+	var archive bytes.Buffer
+	if strings.HasSuffix(AssetName(), ".zip") {
+		zw := zip.NewWriter(&archive)
+		f, err := zw.Create(exeName())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = f.Write([]byte("not an executable"))
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		gz := gzip.NewWriter(&archive)
+		tw := tar.NewWriter(gz)
+		body := []byte("not an executable")
+		if err := tw.WriteHeader(&tar.Header{Name: exeName(), Mode: 0o755, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = tw.Write(body)
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release(t, "v9.9.9", archive.Bytes(), true)
+	rel, _ = Latest(context.Background())
+	if err := Apply(context.Background(), rel, exe, func(string) {}); err == nil || !strings.Contains(err.Error(), "did not pass the launch check") {
+		t.Fatalf("an unlaunchable program must stop the update: %v", err)
+	}
+	untouched("unlaunchable program")
 }
 
 // Outside tests the release list always comes from GitHub: the override is ignored in the real home.

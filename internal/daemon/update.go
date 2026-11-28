@@ -64,7 +64,7 @@ func (d *Daemon) autoUpdate() {
 			}
 		}
 		ctx, cancel = context.WithTimeout(context.Background(), 20*time.Minute)
-		err = update.Apply(ctx, rel, d.Exe, func(s string) { logf("update: %s", s) }, update.Options{})
+		err = update.Apply(ctx, rel, d.Exe, func(s string) { logf("update: %s", s) })
 		cancel()
 		if err != nil {
 			logf("update to %s failed: %v (trying again in %s)", rel.Tag, err, every)

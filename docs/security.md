@@ -53,23 +53,16 @@ cooperative agents, not a sandbox.
   With the GitHub CLI signed in, build provenance is checked as well. The guard never installs an
   older version and only asks this repository's releases over HTTPS. The test-only override of the
   release address is ignored in your real state folder and only accepts a server on this machine.
-  A blocked download is never worked around automatically: the guard leaves it, and
-  `firefighter update --build` builds the tagged source only when you ask.
+  The installer and updater reject a release that fails its launch check and retain the current copy.
 - The install one-liners are pinned to a tag (`.../FIREFIGHTER/v0.3.3/scripts/install.ps1`), and
   each script installs the release it names, never "latest". `release.yml` refuses to publish a
   tag the scripts don't name. Recommended on GitHub: a tag ruleset that lets only the maintainer
   create `v*` tags (Settings > Rules > Rulesets).
-- Windows binaries aren't code-signed yet, and Microsoft Defender's machine-learning rules have
-  quarantined builds (`Behavior:Win32/Persistence.A!ml`, `Trojan:Win32/Bearfoos.A!ml` and `.B!ml`:
-  an unsigned, rarely seen program that registers itself to start at logon). What they keyed on is
-  gone or reduced: the logon entry is the per-user Run key naming `firefighterw.exe`, a small
-  windowless launcher, by full path (no more `conhost.exe --headless`, and no failing `schtasks
-  /SC ONLOGON` attempt). Job processes are no longer created suspended (the `run` client joins its
-  own job object first, so the job is born in it). Both programs carry version information with
-  their maker's name. Report a false positive at https://www.microsoft.com/wdsi/filesubmission; an
-  antivirus exclusion for the user-writable install folder is never recommended. Code signing
-  (an OV certificate, or Microsoft's cloud signing service for individuals) is the lasting fix: it
-  ties reputation to the certificate instead of each build.
+- Microsoft Defender has quarantined unsigned Windows builds with `Behavior:Win32/Persistence.A!ml`
+  and `Trojan:Win32/Bearfoos` verdicts. The Windows installer registers logon startup through a
+  per-user Startup shortcut and retires earlier logon entries. The CLI starts the guard on demand.
+  Authenticode adds publisher identity and integrity. Report any false positives for the exact
+  affected file to Microsoft. [Microsoft Security Intelligence](https://www.microsoft.com/wdsi/filesubmission)
 - **Harvester commands need the human's approval.** The idle harvester's `start`, `stop` and
   `running` commands in `firefighter.toml` are shell lines the guard runs at logon and whenever the
   GPU goes idle. They run only if their SHA-256 is in `harvester-approved` in the state folder,

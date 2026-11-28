@@ -18,7 +18,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,8 +36,6 @@ import (
 
 // Repo is the only place updates come from.
 const Repo = "JoshWright22/FIREFIGHTER"
-
-const module = "github.com/JoshWright22/firefighter/cmd/firefighter"
 
 // Release is one published version.
 type Release struct {
@@ -121,7 +118,7 @@ func Latest(ctx context.Context) (Release, error) {
 	return rel, nil
 }
 
-// validTag: v1.2.3, digits and dots only (the tag ends up in a command line).
+// validTag: v1.2.3, digits and dots only.
 func validTag(t string) bool {
 	if !strings.HasPrefix(t, "v") || len(t) < 2 || len(t) > 32 {
 		return false
@@ -177,18 +174,10 @@ func exeName() string {
 	return "firefighter"
 }
 
-// Options: how far Apply may go.
-type Options struct {
-	// Build: when antivirus blocks the downloaded program, build the same tag from source. Only on
-	// the human's request (`firefighter update --build`): working around a block on its own reads
-	// as evasion and hides the block from the human (security audit L3).
-	Build bool
-}
-
 // Apply downloads release rel, checks it, and puts its program at exe (the path of the running
 // one). say gets one line per step. The old program stays beside it as firefighter.exe.old-<time>
 // on Windows (a running program can be renamed, not overwritten) and is removed by Cleanup later.
-func Apply(ctx context.Context, rel Release, exe string, say func(string), opt Options) error {
+func Apply(ctx context.Context, rel Release, exe string, say func(string)) error {
 	if len(trustedKeys()) == 0 {
 		return ErrNoKey // before downloading anything
 	}
@@ -245,18 +234,7 @@ func Apply(ctx context.Context, rel Release, exe string, say func(string), opt O
 	}
 	want := strings.TrimPrefix(rel.Tag, "v")
 	if !runs(ctx, next, want) {
-		// Antivirus blocked or removed it (Microsoft Defender's machine-learning rules do that to
-		// new unsigned programs). The same release built here from its tagged source is left alone.
-		if !opt.Build {
-			return fmt.Errorf("the downloaded firefighter %s was blocked from running (antivirus; a new unsigned program); nothing was changed. Report the false positive, or build it here from its tagged source: firefighter update --build", rel.Tag)
-		}
-		say("the downloaded program was blocked from running (antivirus); building " + rel.Tag + " from source, as asked")
-		if err := build(ctx, rel.Tag, tmp); err != nil {
-			return fmt.Errorf("the downloaded firefighter was blocked, and building it from source failed: %w", err)
-		}
-		if !runs(ctx, next, want) {
-			return errors.New("the firefighter built from source doesn't run either")
-		}
+		return fmt.Errorf("firefighter %s did not pass the launch check. The installed program was kept. If antivirus blocked it, report the detection at https://github.com/%s/issues", rel.Tag, Repo)
 	}
 	old := ""
 	if runtime.GOOS == "windows" {
@@ -390,23 +368,6 @@ func runs(ctx context.Context, path, version string) bool {
 	sysinfo.PrepareBackground(cmd)
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) == "firefighter "+version
-}
-
-// build makes the release from its tagged source into dir, with the Go toolchain if there is one.
-func build(ctx context.Context, tag, dir string) error {
-	goExe, err := exec.LookPath("go")
-	if err != nil {
-		return errors.New("go isn't installed (https://go.dev/dl)")
-	}
-	c, cancel := context.WithTimeout(ctx, 15*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(c, goExe, "install", "-ldflags", "-X main.version="+strings.TrimPrefix(tag, "v"), module+"@"+tag)
-	cmd.Env = append(os.Environ(), "GOBIN="+dir, "GOFLAGS=")
-	sysinfo.PrepareBackground(cmd)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 // Cleanup removes what earlier updates left beside the program: old copies nothing runs any more

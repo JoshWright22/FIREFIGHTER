@@ -53,7 +53,11 @@ jobs:
           go-version: stable
       - name: build (same flags as the release)
         shell: bash
-        run: go build -trimpath -ldflags "-w -X main.version=0.0.0-ci" -o "$RUNNER_TEMP/firefighter$([ "$RUNNER_OS" = Windows ] && echo .exe)" ./cmd/firefighter
+        run: |
+          go build -trimpath -ldflags "-w -X main.version=0.0.0-ci" -o "$RUNNER_TEMP/firefighter$([ "$RUNNER_OS" = Windows ] && echo .exe)" ./cmd/firefighter
+          if [ "$RUNNER_OS" = Windows ]; then
+            go build -trimpath -ldflags "-w -H windowsgui" -o "$RUNNER_TEMP/firefighterw.exe" ./cmd/firefighterw
+          fi
       - name: Windows Defender finds nothing (a flagged binary is an install-time popup for users)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -82,13 +86,31 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force "$HOME\.claude","$HOME\.codex" | Out-Null
           $env:FIREFIGHTER_LOCAL_BINARY = "$env:RUNNER_TEMP\firefighter.exe"
+          $startup = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup, [Environment+SpecialFolderOption]::Create)
+          $link = Join-Path $startup 'firefighter.lnk'
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          New-ItemProperty -LiteralPath $runKey -Name 'firefighter' -Value 'legacy entry' -Force | Out-Null
           ./scripts/install.ps1
           $env:Path = "$env:LOCALAPPDATA\Programs\firefighter;$env:Path"
+          if (-not (Test-Path -LiteralPath $link)) { throw 'Startup shortcut missing' }
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $shell.CreateShortcut($link)
+          if ($shortcut.TargetPath -ne "$env:LOCALAPPDATA\Programs\firefighter\firefighterw.exe" -or $shortcut.Arguments) {
+            throw 'Startup shortcut points to the wrong command'
+          }
+          if (Get-ItemProperty -LiteralPath $runKey -Name 'firefighter' -ErrorAction SilentlyContinue) {
+            throw 'Legacy Run entry was not migrated'
+          }
           firefighter version
           firefighter status
           firefighter run --minutes 1 -- cmd /c echo installed-and-running
           if (-not (Select-String -Quiet "firefighter run" "$HOME\.claude\CLAUDE.md")) { throw "rules missing" }
-          schtasks /Query /TN firefighter
+          firefighter uninstall
+          if (Test-Path -LiteralPath $link) { throw 'Startup shortcut was not removed' }
+          firefighter setup
+          if ((Test-Path -LiteralPath $link) -or (Get-ItemProperty -LiteralPath $runKey -Name 'firefighter' -ErrorAction SilentlyContinue)) {
+            throw 'CLI setup registered logon startup'
+          }
           firefighter uninstall
 
   vscode:

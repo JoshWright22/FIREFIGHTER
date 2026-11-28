@@ -113,7 +113,7 @@ func install(args []string) error {
 		return errors.New("run setup from a normal (not administrator/root) terminal: it edits your own agent configs, and an elevated setup would write them as admin. Containers/CI: FIREFIGHTER_ALLOW_ELEVATED=1")
 	}
 	if len(args) > 0 {
-		return fmt.Errorf("setup takes no arguments (got %q); it installs autostart, MCP and agent rules", args[0])
+		return fmt.Errorf("setup takes no arguments (got %q); it configures MCP and agent rules", args[0])
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -239,6 +239,10 @@ func daemonCmd(args []string) error {
 
 // updateCmd installs the newest release over this program and restarts the guard.
 func updateCmd(args []string) error {
+	check := len(args) == 1 && args[0] == "--check"
+	if !check && len(args) != 0 {
+		return errors.New("usage: firefighter update [--check]")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	rel, err := update.Latest(ctx)
@@ -252,9 +256,7 @@ func updateCmd(args []string) error {
 		ui.Note("firefighter %s is the newest release", version)
 		return nil
 	}
-	build := hasFlag(args, "--build")
-	args = without(args, "--build")
-	if len(args) > 0 && args[0] == "--check" {
+	if check {
 		ui.Note("firefighter %s is out (this is %s): run `firefighter update`, or leave it to the guard", rel.Tag, version)
 		return nil
 	}
@@ -265,7 +267,7 @@ func updateCmd(args []string) error {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
-	if err := update.Apply(ctx, rel, exe, func(s string) { ui.Note("%s", s) }, update.Options{Build: build}); err != nil {
+	if err := update.Apply(ctx, rel, exe, func(s string) { ui.Note("%s", s) }); err != nil {
 		return err
 	}
 	_ = stopDaemon()

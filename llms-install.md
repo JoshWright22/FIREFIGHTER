@@ -8,11 +8,11 @@ no admin rights, no network service. Windows 10/11, macOS 12+ or Linux, x64 or a
 If `firefighter` is already installed (`firefighter version` prints a version), skip to step 2.
 
 Run the one-liner for the user's OS. It checks the release checksum, puts the binary on the PATH and
-runs `firefighter setup` (start at logon, rules and MCP entries for the agent CLIs it finds).
+runs `firefighter setup` to register agent rules and MCP entries.
 
 - Windows (PowerShell):
   `irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.ps1 | iex`
-  Binary: `%LOCALAPPDATA%\Programs\firefighter\firefighter.exe`
+  Binary: `%LOCALAPPDATA%\Programs\firefighter\firefighter.exe`. The installer adds a Startup shortcut.
 - macOS / Linux:
   `curl -fsSL https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.sh | sh`
   Binary: `~/.local/bin/firefighter`

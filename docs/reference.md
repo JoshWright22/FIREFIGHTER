@@ -18,13 +18,15 @@ reading, the guard counts you as "present".
 | What | Where |
 |---|---|
 | Binary | `%LOCALAPPDATA%\Programs\firefighter` (user PATH) or `~/.local/bin` (the Unix installer adds it to existing `.bashrc`, `.zshrc` or `.profile` files when needed) |
-| Autostart | Task Scheduler task `firefighter` (falls back to the HKCU Run key) · `~/Library/LaunchAgents/dev.firefighter.plist` · `~/.config/systemd/user/firefighter.service` on Linux when user systemd is available, otherwise `~/.config/autostart/firefighter.desktop` (needs a desktop that honors XDG autostart) |
+| Autostart | Windows installer's `firefighter.lnk` in the current user's Startup folder (`shell:startup`) · `~/Library/LaunchAgents/dev.firefighter.plist` · `~/.config/systemd/user/firefighter.service` on Linux when user systemd is available, otherwise `~/.config/autostart/firefighter.desktop` (needs a desktop that honors XDG autostart) |
 | Agent rules | a marked block in supported instruction files, such as `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` or `~/.gemini/GEMINI.md` |
 | MCP server | `claude mcp add` (or a direct config edit), `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.cursor/mcp.json` and other supported agent configs |
 | State | `%LOCALAPPDATA%\firefighter`, `~/Library/Application Support/firefighter`, `~/.local/state/firefighter` (or `FIREFIGHTER_HOME`) |
 
 **Verify:** open a new shell on macOS or Linux to pick up any PATH change, then run `firefighter status`.
 `go install` puts the binary in Go's bin directory and reports version `dev`, which does not self-update.
+On Windows, the PowerShell installer creates the shortcut and removes legacy logon entries.
+The CLI can start the guard on demand with or without the shortcut.
 
 **Remove:** `firefighter uninstall` removes autostart, the rule blocks and the MCP entries, and stops
 the guard. It leaves the binary, PATH and state folder alone. Delete the installed binary. If you no

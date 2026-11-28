@@ -1,4 +1,4 @@
-// Package setup makes firefighter set-and-forget: it starts the guard at logon, registers the MCP
+// Package setup configures logon startup on macOS and Linux, registers the MCP
 // server with every agent CLI it finds, and adds the shared-machine rules to each agent's global
 // instructions so every new session (Claude Code, Codex, Gemini, Cursor, and the threads of apps
 // built on them) knows to queue heavy work and say how long it will be busy.
@@ -49,7 +49,7 @@ type Step struct {
 func Install(exe string) []Step {
 	var steps []Step
 	add := func(what string, err error) { steps = append(steps, Step{what, err}) }
-	if os.Getenv("FIREFIGHTER_NO_AUTOSTART") == "" {
+	if !installerManagesAutostart && os.Getenv("FIREFIGHTER_NO_AUTOSTART") == "" {
 		add("start the guard at logon", autostart(exe))
 	}
 	for _, f := range instructionFiles() {
@@ -447,38 +447,8 @@ func withoutFirefighter(m map[string]any) map[string]any {
 
 // ---- start at logon -----------------------------------------------------------------------------
 
-// WindowsAutostart is the Run-key command that starts the guard at logon: firefighterw.exe from
-// the program's folder when it is there, else conhost by its full path.
-func WindowsAutostart(exe string) string {
-	if w := filepath.Join(filepath.Dir(exe), "firefighterw.exe"); fileExists(w) {
-		return `"` + w + `"`
-	}
-	root := os.Getenv("SystemRoot")
-	if root == "" {
-		root = `C:\Windows`
-	}
-	return fmt.Sprintf(`"%s" --headless "%s" daemon`, filepath.Join(root, "System32", "conhost.exe"), exe)
-}
-
-func fileExists(p string) bool { fi, err := os.Stat(p); return err == nil && !fi.IsDir() }
-
 func autostart(exe string) error {
 	switch runtime.GOOS {
-	case "windows":
-		// The per-user Run key, naming the windowless launcher beside the program by full path
-		// (security audit 2026-11-22: "conhost.exe --headless" hides a window the way malware does,
-		// and a schtasks ONLOGON attempt that fails without admin is a persistence signal; both were
-		// in Defender's Persistence/Bearfoos detections). Without the launcher (a build that didn't
-		// ship it), conhost by its full path.
-		tr := WindowsAutostart(exe)
-		out, err := exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "reg.exe"), "add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-			"/v", "firefighter", "/t", "REG_SZ", "/d", tr, "/f").CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-		}
-		// An older setup's logon task would start a second copy: remove it (no-op when absent).
-		_ = exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "schtasks.exe"), "/Delete", "/F", "/TN", "firefighter").Run()
-		return nil
 	case "darwin":
 		dir := filepath.Join(home(), "Library", "LaunchAgents")
 		path := filepath.Join(dir, "dev.firefighter.plist")
@@ -531,8 +501,7 @@ func autostart(exe string) error {
 func removeAutostart() error {
 	switch runtime.GOOS {
 	case "windows":
-		_ = exec.Command("schtasks", "/Delete", "/F", "/TN", "firefighter").Run()
-		_ = exec.Command("reg", "delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "firefighter", "/f").Run()
+		return removeStartupShortcut()
 	case "darwin":
 		path := filepath.Join(home(), "Library", "LaunchAgents", "dev.firefighter.plist")
 		_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", os.Getuid()), path).Run()

@@ -1,8 +1,7 @@
 # firefighter installer for Windows:
 #   irm https://raw.githubusercontent.com/JoshWright22/FIREFIGHTER/v0.3.3/scripts/install.ps1 | iex
-# Puts firefighter.exe in %LOCALAPPDATA%\Programs\firefighter, adds it to your PATH, then runs
-# `firefighter setup` (start at logon, MCP for agent CLIs, shared-machine rules in their global
-# instructions). Undo: firefighter uninstall.
+# Installs firefighter.exe in %LOCALAPPDATA%\Programs\firefighter, adds it to PATH and creates a
+# per-user Startup shortcut. Then it runs setup for MCP and agent rules. Undo: firefighter uninstall.
 $ErrorActionPreference = 'Stop'
 # Not from an admin shell: the old binary it stops is user-writable, and setup edits your own
 # configs. firefighter runs as you.
@@ -33,7 +32,7 @@ function Install-Exe($src) {
         Move-Item $exe "$exe.old-$([DateTime]::Now.ToString('yyyyMMddHHmmss'))" -Force
     }
     Copy-Item $src $exe -Force
-    # The windowless logon launcher the Run key names (release zips from v0.3.4 on carry it).
+    # The logon launcher shipped alongside the CLI in current Windows releases.
     $w = Join-Path (Split-Path $src) 'firefighterw.exe'
     if (Test-Path $w) { Copy-Item $w (Join-Path $dir 'firefighterw.exe') -Force }
 }
@@ -67,29 +66,32 @@ function Test-Provenance($file) {
     return 'failed'
 }
 
-# Whether Windows lets the downloaded program run at all. Antivirus (Microsoft Defender's
-# machine-learning rules) sometimes blocks or deletes a new unsigned release.
-function Test-Runs($path) {
-    if (-not (Test-Path $path)) { return $false }
-    return (Invoke-Native $path @('version')).Code -eq 0
-}
-
-# The same release built on this PC from its tagged source, when Go is installed: a local build is
-# the user's own program, not a download with no reputation, and antivirus leaves it alone.
-function Build-FromSource($out) {
-    if (-not (Get-Command go -ErrorAction SilentlyContinue)) { return $false }
-    $tag = $version
-    if (-not $tag) { return $false }
-    Write-Host "building firefighter $tag from source with Go (a minute or two)"
-    $oldBin = $env:GOBIN
-    $env:GOBIN = $out
-    try {
-        $r = Invoke-Native 'go' @('install', '-ldflags', "-X main.version=$($tag.TrimStart('v'))", "github.com/JoshWright22/firefighter/cmd/firefighter@$tag")
-    } finally {
-        $env:GOBIN = $oldBin
+function Install-LogonShortcut {
+    $startup = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup, [Environment+SpecialFolderOption]::Create)
+    if (-not $startup) { throw 'Could not locate the Startup folder for this user.' }
+    $link = Join-Path $startup 'firefighter.lnk'
+    $launcher = Join-Path $dir 'firefighterw.exe'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($link)
+    if (Test-Path -LiteralPath $launcher -PathType Leaf) {
+        $shortcut.TargetPath = $launcher
+        $shortcut.Arguments = ''
+    } else {
+        $shortcut.TargetPath = $exe
+        $shortcut.Arguments = 'daemon'
     }
-    if ($r.Code -ne 0) { Write-Host $r.Out }
-    return ($r.Code -eq 0) -and (Test-Path (Join-Path $out 'firefighter.exe'))
+    $shortcut.WorkingDirectory = $dir
+    $shortcut.Description = 'Start the FIREFIGHTER guard at sign-in'
+    $shortcut.Save()
+    Write-Host "set up logon startup at $link"
+
+    # Migrate entries created by previous versions after the new shortcut has been saved.
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    if (Get-ItemProperty -LiteralPath $runKey -Name 'firefighter' -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty -LiteralPath $runKey -Name 'firefighter'
+    }
+    $task = Get-ScheduledTask -TaskName 'firefighter' -TaskPath '\' -ErrorAction SilentlyContinue
+    if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }
 }
 
 if ($env:FIREFIGHTER_LOCAL_BINARY) {
@@ -117,19 +119,10 @@ if ($env:FIREFIGHTER_LOCAL_BINARY) {
             'none' { throw "no signed build provenance for ${name}: refusing to install it (report it: https://github.com/$repo/issues)" }
         }
         $src = "$tmp\firefighter.exe"
-        try { Expand-Archive "$tmp\$name" -DestinationPath $tmp -Force } catch { Write-Host "could not unpack ${name}: $_" }
-        if (-not (Test-Runs $src)) {
-            # Blocked or removed on arrival. Don't ask for an antivirus exclusion: build the same
-            # release from source instead, when Go is here.
-            Write-Host 'Windows security blocked the downloaded firefighter.exe (a false positive on a new unsigned program).'
-            $built = Join-Path $tmp 'built'
-            New-Item -ItemType Directory $built | Out-Null
-            # Ask first: building around a block on its own would hide it (security audit L3).
-            $answer = Read-Host "Build firefighter $version here from its tagged source with Go instead? [y/N]"
-            if ($answer -notmatch '^(y|yes)$' -or -not (Build-FromSource $built)) {
-                throw "firefighter.exe was blocked by antivirus. Install Go (https://go.dev/dl) and run this installer again to build it from source, or report the false positive: https://github.com/$repo/issues"
-            }
-            $src = Join-Path $built 'firefighter.exe'
+        Expand-Archive "$tmp\$name" -DestinationPath $tmp -Force
+        $r = Invoke-Native $src @('version')
+        if ($r.Code -ne 0 -or $r.Out.Trim() -ne "firefighter $($version.TrimStart('v'))") {
+            throw "firefighter.exe from $version did not pass the launch check. Check Windows Security Protection History and report the result at https://github.com/$repo/issues. $($r.Out)"
         }
         Install-Exe $src
     } finally {
@@ -152,3 +145,4 @@ $key.Close()
 $env:Path = "$dir;$env:Path"
 & $exe setup
 if ($LASTEXITCODE -ne 0) { throw "firefighter setup failed" }
+if (-not $env:FIREFIGHTER_NO_AUTOSTART) { Install-LogonShortcut }
